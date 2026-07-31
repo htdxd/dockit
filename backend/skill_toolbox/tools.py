@@ -6,7 +6,6 @@ import json
 import mimetypes
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -70,10 +69,8 @@ class ToolRegistry:
         if action in self.actions:
             return await asyncio.to_thread(self._exec_builtin, call)
         proc_holder: dict[str, subprocess.Popen[bytes] | None] = {"proc": None}
-        timing: dict[str, float] = {}
 
         def runner() -> ToolResult:
-            t_start = time.monotonic()
             proc_holder["proc"] = subprocess.Popen(
                 self._build_cmd(call),
                 stdin=subprocess.DEVNULL,
@@ -82,22 +79,19 @@ class ToolRegistry:
                 cwd=str(self.policy.root),
                 close_fds=True,
             )
-            timing["popen_done"] = time.monotonic() - t_start
             try:
                 stdout_b, stderr_b = proc_holder["proc"].communicate(timeout=300)
             except subprocess.TimeoutExpired:
                 self._kill(proc_holder["proc"])
                 return self._result(call, False, f"Script timed out: {call.arguments.get('action')}")
-            timing["total"] = time.monotonic() - t_start
             rc = proc_holder["proc"].returncode or 0
-            timing_str = f"[popen={timing.get('popen_done', 0):.2f}s total={timing.get('total', 0):.2f}s] "
             return self._result(
                 call,
                 rc == 0,
                 json.dumps(
                     {
                         "exit_code": rc,
-                        "stdout": timing_str + stdout_b.decode("utf-8", errors="replace")[-7900:],
+                        "stdout": stdout_b.decode("utf-8", errors="replace")[-8000:],
                         "stderr": stderr_b.decode("utf-8", errors="replace")[-2000:],
                     },
                     ensure_ascii=False,

@@ -58,11 +58,7 @@ impl BackendState {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("PYTHONUNBUFFERED", "1")
-            .env(
-                "SKILL_TOOLBOX_SCRIPT_LOG",
-                working_dir.join("script-dispatch.log"),
-            );
+            .env("PYTHONUNBUFFERED", "1");
         if let Some(path) = python_path {
             command.env("PYTHONPATH", path);
         }
