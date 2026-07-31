@@ -25,9 +25,17 @@ TEXT_SUFFIXES = {
     ".csv",
     ".py",
     ".html",
+    ".htm",
     ".css",
     ".js",
     ".ts",
+    ".svg",
+    ".xml",
+    ".rs",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".log",
 }
 
 
