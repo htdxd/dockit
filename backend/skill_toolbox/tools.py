@@ -76,9 +76,11 @@ class ToolRegistry:
             t_start = time.monotonic()
             proc_holder["proc"] = subprocess.Popen(
                 self._build_cmd(call),
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self.policy.root),
+                close_fds=True,
             )
             timing["popen_done"] = time.monotonic() - t_start
             try:
