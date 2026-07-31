@@ -114,11 +114,16 @@ class AgentRuntime:
                 skill_dir=skill.dir,
                 scripts=skill.scripts,
             )
-            messages = [
-                ConversationMessage(
-                    role="user", text=request.user_prompt or "按默认内容生成测试文档"
+            messages: list[ConversationMessage] = []
+            user_text = request.user_prompt or "按默认内容生成测试文档"
+            if staged:
+                files_list = "\n".join(f"  - {rel}" for rel, _ in staged)
+                user_text = (
+                    f"{user_text}\n\n"
+                    f"你上传的材料已暂存到工作区，相对路径如下（用 read 或 exec_cmd 的 "
+                    f"source 参数按此相对路径访问，不要猜其他路径）：\n{files_list}"
                 )
-            ]
+            messages.append(ConversationMessage(role="user", text=user_text))
             text_only_turns = 0
             for step in range(1, skill.max_steps + 1):
                 self.emit({"type": "model_started", "step": step})
