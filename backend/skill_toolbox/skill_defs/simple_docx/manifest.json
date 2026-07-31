@@ -1,0 +1,15 @@
+{
+  "id": "simple_docx",
+  "name": "简易 DOCX 测试",
+  "description": "生成包含表格、公式和代码块的基础 DOCX 文件。",
+  "allowed_actions": ["build_simple_docx"],
+  "max_steps": 10,
+  "initial_form": {
+    "prompt": {
+      "type": "textarea",
+      "label": "文档要求",
+      "required": false
+    }
+  }
+}
+

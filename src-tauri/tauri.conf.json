@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Skill Toolbox",
+  "version": "0.1.0",
+  "identifier": "io.skilltoolbox.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Skill Toolbox",
+        "width": 1080,
+        "height": 780,
+        "minWidth": 760,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
+

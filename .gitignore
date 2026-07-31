@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.playwright-cli/
+*.pyc
+node_modules/
+dist/
+src-tauri/target/
+backend-dist/
+
+# Vendored ppt-master skill (upstream tracked separately, 12000+ files)
+backend/skill_toolbox/skill_defs/ppt-master/
+
+# Runtime logs and diagnostic artifacts
+.skill-toolbox-logs/
+script-dispatch.log
+projects/
+test-materials/
+
+# Agent/tooling runtime state (OMC, spec-workflow)
+.omc/
+.spec-workflow/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
