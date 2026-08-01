@@ -54,58 +54,19 @@ class OpenAIProvider:
         message = response.choices[0].message
         calls: list[ToolCall] = []
         for call in message.tool_calls or []:
-            raw_args = call.function.arguments
             try:
-                arguments = json.loads(raw_args)
+                arguments = json.loads(call.function.arguments)
             except json.JSONDecodeError:
-                # Model sometimes emits malformed JSON for large content
-                # (unescaped SVG XML). Try to recover path/content fields
-                # so the tool can still execute instead of wasting a turn.
-                arguments = self._recover_args(raw_args)
+                arguments = {"_invalid_json": call.function.arguments[:2000]}
             calls.append(
                 ToolCall(id=call.id, name=call.function.name, arguments=arguments)
             )
         text = message.content or ""
         # OpenAI rejects assistant messages where both content and tool_calls
-        # are empty (400 "content or tool_calls must be set"). Supply a
-        # placeholder so the next turn's request stays valid.
+        # are empty (400). Supply a placeholder so the next request stays valid.
         if not text and not calls:
             text = "(no output)"
         return AssistantTurn(text=text, tool_calls=calls)
-
-    @staticmethod
-    def _recover_args(raw: str) -> dict[str, Any]:
-        """Best-effort recovery of path/content from malformed JSON.
-
-        When models emit large SVG content inside write tool calls, the JSON
-        sometimes breaks on unescaped characters. We extract the 'path' field
-        (short, usually intact) and the 'content' field (everything between
-        the first "content": " and the final closing quote) so the write can
-        proceed instead of wasting two turns on retry.
-        """
-        import re
-
-        recovered: dict[str, Any] = {}
-        # path is typically short and on the same line
-        path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw)
-        if path_match:
-            recovered["path"] = path_match.group(1)
-        # content: grab everything after "content": " up to the last "
-        content_match = re.search(r'"content"\s*:\s*"', raw)
-        if content_match:
-            start = content_match.end()
-            # take everything to the end, then strip trailing quote/brace
-            tail = raw[start:]
-            # remove trailing characters like " or } or whitespace
-            tail = tail.rstrip()
-            if tail.endswith('"}'):
-                tail = tail[:-2]
-            elif tail.endswith('"'):
-                tail = tail[:-1]
-            recovered["content"] = tail
-        if not recovered:
-            recovered["_invalid_json"] = raw[:500]
-        return recovered
 
     @staticmethod
     def _messages(
@@ -116,13 +77,12 @@ class OpenAIProvider:
             if message.role == "user":
                 result.append({"role": "user", "content": message.text})
             elif message.role == "assistant":
-                # OpenAI requires content or tool_calls on every assistant
-                # message; never emit {"content": null} with no tool_calls.
-                content = message.text or "(no output)" if not message.tool_calls else message.text or None
                 assistant: dict[str, Any] = {
                     "role": "assistant",
-                    "content": content,
+                    "content": message.text or None,
                 }
+                if not message.tool_calls and not message.text:
+                    assistant["content"] = "(no output)"
                 if message.tool_calls:
                     assistant["tool_calls"] = [
                         {
