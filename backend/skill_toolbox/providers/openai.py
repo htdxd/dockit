@@ -49,6 +49,7 @@ class OpenAIProvider:
             model=self.model,
             messages=api_messages,
             tools=api_tools,
+            tool_choice="required",
             max_tokens=self.max_tokens,
         )
         message = response.choices[0].message
