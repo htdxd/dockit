@@ -21,54 +21,74 @@ def _function(
 TOOL_SPECS = [
     _function(
         "read",
-        "Read a text file or image from the task workspace.",
+        "Read a text or image file from the task workspace or the active skill's "
+        "read-only directory. Path must be relative (absolute paths are rejected). "
+        "Text formats (.txt/.md/.json/.yaml/.csv/.py/.svg/.xml/.html etc.) return "
+        "content with optional offset/limit pagination; images (.png/.jpg/.png/.gif/"
+        ".webp) return a base64 view.",
         {
-            "path": {"type": "string"},
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
+            "path": {"type": "string", "description": "Relative path from workspace root"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Line offset for text (default 0)"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Max lines for text (default 500)"},
         },
         ["path"],
     ),
     _function(
         "write",
-        "Create or completely rewrite a UTF-8 text file in the task workspace.",
-        {"path": {"type": "string"}, "content": {"type": "string"}},
+        "Create or completely rewrite a UTF-8 text file in the task workspace. "
+        "Path must be relative. Supports text formats including .svg/.xml/.json/"
+        ".md/.py/.html. Binary formats (.pptx/.docx/.pdf) are NOT supported — "
+        "produce them via exec_cmd scripts instead.",
+        {
+            "path": {"type": "string", "description": "Relative path from workspace root"},
+            "content": {"type": "string", "description": "Full file content (UTF-8 text)"},
+        },
         ["path", "content"],
     ),
     _function(
         "edit",
-        "Replace exact text in an existing UTF-8 text file.",
+        "Replace an exact text snippet in an existing workspace text file. "
+        "old_text must be unique unless replace_all=true. Path must be relative.",
         {
-            "path": {"type": "string"},
-            "old_text": {"type": "string"},
-            "new_text": {"type": "string"},
-            "replace_all": {"type": "boolean", "default": False},
+            "path": {"type": "string", "description": "Relative path from workspace root"},
+            "old_text": {"type": "string", "description": "Exact text to find"},
+            "new_text": {"type": "string", "description": "Replacement text"},
+            "replace_all": {"type": "boolean", "default": False, "description": "Replace all occurrences"},
         },
         ["path", "old_text", "new_text"],
     ),
     _function(
         "exec_cmd",
-        "Run an official action allowlisted by the active skill.",
-        {"action": {"type": "string"}, "args": {"type": "object"}},
+        "Run a skill-declared script action. The 'action' name and its argument "
+        "keys come from the active skill's manifest.json 'scripts' table. "
+        "Returns JSON with exit_code, stdout (last 8000 chars), and stderr.",
+        {
+            "action": {"type": "string", "description": "Action name from manifest.json scripts"},
+            "args": {"type": "object", "description": "Argument dict; keys match manifest argv placeholders"},
+        },
         ["action", "args"],
     ),
     _function(
         "ask_user_questions",
-        "Pause the task and ask all necessary structured questions together.",
+        "Pause the task and ask the user structured questions. This is the ONLY "
+        "way to get user input — there is no chat channel. Ask all needed questions "
+        "in one call. The task resumes when the user submits answers.",
         {
             "questions": {
                 "type": "array",
+                "description": "All questions to ask the user now",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "string"},
-                        "label": {"type": "string"},
+                        "id": {"type": "string", "description": "Stable identifier for the answer"},
+                        "label": {"type": "string", "description": "User-facing question text"},
                         "type": {
                             "type": "string",
                             "enum": ["text", "textarea", "select"],
+                            "description": "Input field type",
                         },
-                        "required": {"type": "boolean"},
-                        "options": {"type": "array", "items": {"type": "string"}},
+                        "required": {"type": "boolean", "description": "Whether the user must answer"},
+                        "options": {"type": "array", "items": {"type": "string"}, "description": "Choices for select type"},
                     },
                     "required": ["id", "label", "type"],
                     "additionalProperties": False,
@@ -79,8 +99,10 @@ TOOL_SPECS = [
     ),
     _function(
         "finish_task",
-        "Finish the task after verifying every artifact exists.",
-        {"artifacts": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+        "Finish the task. Pass relative paths of verified artifact files (must "
+        "exist in the workspace). They will be copied to the output directory. "
+        "This must be the ONLY tool call in its turn.",
+        {"artifacts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Relative workspace paths of final artifacts"}},
         ["artifacts"],
     ),
 ]
