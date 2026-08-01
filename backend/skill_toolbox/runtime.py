@@ -171,11 +171,22 @@ class AgentRuntime:
                 if not turn.tool_calls:
                     text_only_turns += 1
                     if text_only_turns >= 2:
-                        return self._failed("Model stopped without calling finish_task")
+                        return self._failed(
+                            "Model produced two consecutive turns with no tool calls. "
+                            "Every turn must call a tool (read/write/edit/exec_cmd/"
+                            "ask_user_questions/finish_task); plain-text turns stall "
+                            "the task."
+                        )
                     messages.append(
                         ConversationMessage(
                             role="user",
-                            text="任务尚未完成。请继续使用工具，并在产物验证后调用 finish_task。",
+                            text=(
+                                "你上一轮没有调用任何工具，任务无法推进。"
+                                "请在下一轮调用工具继续：需要确认就调 "
+                                "ask_user_questions，需要读写文件就调 read/write，"
+                                "需要跑脚本就调 exec_cmd，完成后调 finish_task。"
+                                "不要只输出文字。"
+                            ),
                         )
                     )
                     continue
