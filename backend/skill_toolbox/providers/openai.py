@@ -19,7 +19,7 @@ class OpenAIProvider:
         kwargs: dict[str, Any] = {
             "api_key": config.api_key,
             "max_retries": 0,
-            "timeout": 90.0,
+            "timeout": 1200.0,
         }
         if config.base_url:
             kwargs["base_url"] = config.base_url
