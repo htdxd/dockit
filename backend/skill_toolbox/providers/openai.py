@@ -61,7 +61,13 @@ class OpenAIProvider:
             calls.append(
                 ToolCall(id=call.id, name=call.function.name, arguments=arguments)
             )
-        return AssistantTurn(text=message.content or "", tool_calls=calls)
+        text = message.content or ""
+        # OpenAI rejects assistant messages where both content and tool_calls
+        # are empty (400 "content or tool_calls must be set"). Supply a
+        # placeholder so the next turn's request stays valid.
+        if not text and not calls:
+            text = "(no output)"
+        return AssistantTurn(text=text, tool_calls=calls)
 
     @staticmethod
     def _messages(
@@ -72,9 +78,12 @@ class OpenAIProvider:
             if message.role == "user":
                 result.append({"role": "user", "content": message.text})
             elif message.role == "assistant":
+                # OpenAI requires content or tool_calls on every assistant
+                # message; never emit {"content": null} with no tool_calls.
+                content = message.text or "(no output)" if not message.tool_calls else message.text or None
                 assistant: dict[str, Any] = {
                     "role": "assistant",
-                    "content": message.text or None,
+                    "content": content,
                 }
                 if message.tool_calls:
                     assistant["tool_calls"] = [
