@@ -170,24 +170,23 @@ class AgentRuntime:
                     self.emit({"type": "assistant_text", "text": progress_text})
                 if not turn.tool_calls:
                     text_only_turns += 1
-                    if text_only_turns >= 2:
+                    if text_only_turns >= 3:
                         return self._failed(
-                            "Model produced two consecutive turns with no tool calls. "
+                            "Model produced three consecutive turns with no tool calls. "
                             "Every turn must call a tool (read/write/edit/exec_cmd/"
-                            "ask_user_questions/finish_task); plain-text turns stall "
-                            "the task."
+                            "ask_user_questions/finish_task); plain-text or empty turns "
+                            "stall the task."
+                        )
+                    nudge = (
+                        "你上一轮没有调用任何工具（返回为空或纯文字），任务无法推进。"
+                        "请在下一轮立刻调用工具继续。"
+                    )
+                    if text_only_turns == 2:
+                        nudge += (
+                            "这是最后一次提醒——如果再不调用工具，任务将被判定失败。"
                         )
                     messages.append(
-                        ConversationMessage(
-                            role="user",
-                            text=(
-                                "你上一轮没有调用任何工具，任务无法推进。"
-                                "请在下一轮调用工具继续：需要确认就调 "
-                                "ask_user_questions，需要读写文件就调 read/write，"
-                                "需要跑脚本就调 exec_cmd，完成后调 finish_task。"
-                                "不要只输出文字。"
-                            ),
-                        )
+                        ConversationMessage(role="user", text=nudge)
                     )
                     continue
                 text_only_turns = 0
