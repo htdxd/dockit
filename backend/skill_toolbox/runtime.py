@@ -70,7 +70,7 @@ class AgentRuntime:
         provider: ModelProvider,
         emit: EventEmitter,
         input_broker: UserInputBroker | None = None,
-        model_timeout_seconds: float = 600.0,
+        model_timeout_seconds: float = 1200.0,
         tool_timeout_seconds: float = 90.0,
         debug_logger: DebugLogger | None = None,
     ) -> None:
