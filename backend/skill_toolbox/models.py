@@ -63,4 +63,4 @@ class ProviderConfig(BaseModel):
     model: str
     api_key: str = ""
     base_url: str | None = None
-    max_tokens: int = Field(default=4096, ge=256, le=32768)
+    max_tokens: int = Field(default=16384, ge=256, le=32768)
