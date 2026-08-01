@@ -37,7 +37,6 @@ class AnthropicProvider:
             system=system_prompt,
             messages=self._messages(messages),
             tools=tools,
-            tool_choice={"type": "any"},
             max_tokens=self.max_tokens,
         )
         text_parts: list[str] = []
