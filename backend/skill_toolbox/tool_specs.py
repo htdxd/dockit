@@ -64,7 +64,12 @@ TOOL_SPECS = [
         "Returns JSON with exit_code, stdout (last 8000 chars), and stderr.",
         {
             "action": {"type": "string", "description": "Action name from manifest.json scripts"},
-            "args": {"type": "object", "description": "Argument dict; keys match manifest argv placeholders"},
+            "args": {
+                "type": "object",
+                "description": "Argument dict; keys match manifest argv placeholders. "
+                "An optional 'env' sub-dict is appended to the command line as "
+                "KEY=VALUE pairs for scripts that want to read os.environ.",
+            },
         },
         ["action", "args"],
     ),

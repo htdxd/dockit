@@ -18,9 +18,12 @@ script-dispatch.log
 projects/
 test-materials/
 
-# Agent/tooling runtime state (OMC, spec-workflow)
+# Agent/tooling runtime state (OMC, spec-workflow, Codex/ZCode clients, Playwright MCP)
 .omc/
 .spec-workflow/
+.codex/
+.zcode/
+.playwright-mcp/
 
 # IDE / editor
 .idea/

@@ -1,0 +1,59 @@
+{
+  "id": "docx_pro",
+  "name": "专业 DOCX 生成",
+  "description": "商用级 Word 文档生成：封面、目录、三级页码、表格、图片、公式、公文版式、可填表单、模板套用，含 WPS 兼容与质量门。",
+  "required_capabilities": ["tool_calling", "json_schema"],
+  "optional_capabilities": ["vision"],
+  "allowed_actions": [],
+  "max_steps": 24,
+  "initial_form": {
+    "prompt": {
+      "type": "textarea",
+      "label": "文档要求",
+      "required": false
+    },
+    "complexity": {
+      "type": "select",
+      "label": "生成复杂度",
+      "required": true,
+      "options": [
+        {"value": "simple", "label": "简单（正文+标题，无封面/目录）"},
+        {"value": "standard", "label": "标准（封面+目录+页码+表格/图片）"},
+        {"value": "academic", "label": "学术（论文版式，公式/引用样式）"},
+        {"value": "gongwen", "label": "公文（GB/T 9704 版式）"},
+        {"value": "form", "label": "填报表单（可填写字段+文档保护）"},
+        {"value": "template", "label": "模板套用（套用上传模板样式）"}
+      ]
+    }
+  },
+  "scripts": {
+    "build_docx": {
+      "entry": "build_docx.py",
+      "argv": ["{source}", "{output}"]
+    },
+    "inject_toc": {
+      "entry": "inject_toc.py",
+      "argv": ["{source}", "{output}"]
+    },
+    "postcheck_docx": {
+      "entry": "postcheck_docx.py",
+      "argv": ["{source}"]
+    },
+    "render_pages": {
+      "entry": "render_pages.py",
+      "argv": ["{source}", "{output_dir}"]
+    },
+    "fill_form": {
+      "entry": "fill_form.py",
+      "argv": ["{source}", "{output}"]
+    },
+    "apply_template": {
+      "entry": "apply_template.py",
+      "argv": ["{source}", "{template}", "{output}"]
+    },
+    "officecli_gate": {
+      "entry": "officecli_gate.py",
+      "argv": []
+    }
+  }
+}

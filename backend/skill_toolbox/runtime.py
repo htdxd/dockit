@@ -39,6 +39,10 @@ class TaskRequest:
     user_prompt: str
     output_dir: Path
     materials: list[Path] = field(default_factory=list)
+    # Resolved model capabilities (e.g. {"vision": True}) injected as a banner
+    # at the top of the skill's system prompt so prompt-level routing can
+    # depend on them without guessing.
+    capabilities: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,13 @@ class AgentRuntime:
     async def run(self, request: TaskRequest) -> TaskResult:
         skill = load_skill(request.skill_id)
         request.output_dir.mkdir(parents=True, exist_ok=True)
+        system_prompt = skill.system_prompt
+        if request.capabilities:
+            banner = "[CAPABILITIES]\n" + "\n".join(
+                f"{name}: {str(value).lower()}"
+                for name, value in sorted(request.capabilities.items())
+            )
+            system_prompt = f"{banner}\n\n{system_prompt}"
         self.emit({"type": "task_started", "skill_id": skill.id})
         self.debug({
             "phase": "task_start",
@@ -91,6 +102,7 @@ class AgentRuntime:
             "user_prompt": request.user_prompt,
             "output_dir": str(request.output_dir),
             "materials": [str(p) for p in request.materials],
+            "capabilities": request.capabilities,
         })
         with tempfile.TemporaryDirectory(prefix="skill-toolbox-") as temp:
             workspace = Path(temp)
@@ -129,9 +141,7 @@ class AgentRuntime:
                 self.emit({"type": "model_started", "step": step})
                 try:
                     turn = await asyncio.wait_for(
-                        self.provider.complete(
-                            skill.system_prompt, messages, TOOL_SPECS
-                        ),
+                        self.provider.complete(system_prompt, messages, TOOL_SPECS),
                         timeout=self.model_timeout_seconds,
                     )
                 except TimeoutError:

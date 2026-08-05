@@ -141,6 +141,10 @@ class ToolRegistry:
             raise ValueError(f"Script not found for action: {action}")
         cmd = [sys.executable, str(entry)]
         cmd.extend(self._render(token, args) for token in argv_template)
+        if env_args := args.get("env", {}):
+            if not isinstance(env_args, dict):
+                raise ValueError("env must be an object mapping variable names to values")
+            cmd.extend(f"{name}={value}" for name, value in env_args.items())
         return cmd
 
     def _result(

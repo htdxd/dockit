@@ -9,10 +9,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from skill_toolbox.capabilities import missing_required, resolve_capabilities
 from skill_toolbox.models import ProviderConfig
 from skill_toolbox.providers import create_provider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest, UserInputBroker
+from skill_toolbox.skills import load_skill
 from skill_toolbox.unicode_utils import sanitize_data
 
 Emitter = Callable[[dict[str, Any]], None]
@@ -69,6 +71,24 @@ class SidecarService:
             )
             return
         config = ProviderConfig.model_validate(payload["provider"])
+        skill = load_skill(str(payload["skill_id"]))
+        capabilities = resolve_capabilities(config)
+        missing = missing_required(skill.required_capabilities, capabilities)
+        if missing:
+            self._emit(
+                request_id,
+                {
+                    "type": "task_failed",
+                    "error": (
+                        f"Skill '{skill.id}' requires capability "
+                        f"'{missing[0]}' but the configured model "
+                        f"({config.model or 'unknown'}) does not provide it. "
+                        "Switch to a capable model in Settings or choose a "
+                        "different skill."
+                    ),
+                },
+            )
+            return
         provider = self.provider_factory(config)
         broker = UserInputBroker()
         self.brokers[request_id] = broker
@@ -97,10 +117,11 @@ class SidecarService:
             debug_logger=debug_logger,
         )
         request = TaskRequest(
-            skill_id=str(payload["skill_id"]),
+            skill_id=skill.id,
             user_prompt=str(payload.get("user_prompt", "")),
             output_dir=output_dir,
             materials=materials,
+            capabilities=capabilities,
         )
         self._emit(request_id, {"type": "debug_log_path", "path": str(log_path)})
         task = asyncio.create_task(self._run(request_id, runtime, request, log_path))

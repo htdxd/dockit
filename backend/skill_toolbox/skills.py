@@ -17,6 +17,8 @@ class SkillDefinition:
     initial_form: dict[str, Any]
     scripts: dict[str, tuple[str, tuple[str, ...]]]
     dir: Path
+    required_capabilities: frozenset[str] = frozenset()
+    optional_capabilities: frozenset[str] = frozenset()
 
 
 def load_skill(skill_id: str) -> SkillDefinition:
@@ -40,4 +42,6 @@ def load_skill(skill_id: str) -> SkillDefinition:
         initial_form=manifest.get("initial_form", {}),
         scripts=scripts,
         dir=skill_dir,
+        required_capabilities=frozenset(manifest.get("required_capabilities", [])),
+        optional_capabilities=frozenset(manifest.get("optional_capabilities", [])),
     )

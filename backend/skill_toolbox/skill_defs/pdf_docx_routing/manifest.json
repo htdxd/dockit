@@ -1,0 +1,32 @@
+{
+  "id": "pdf_docx_routing",
+  "name": "PDF 转 DOCX 路由",
+  "description": "按 PDF 类型和模型视觉能力选择 MinerU DOCX 转换及质量检查路线。",
+  "allowed_actions": [],
+  "max_steps": 20,
+  "initial_form": {
+    "prompt": {
+      "type": "textarea",
+      "label": "转换要求（可选：输出语言、指定页码、版式或可编辑性优先级）",
+      "required": false
+    }
+  },
+  "scripts": {
+    "inspect_pdf": {
+      "entry": "inspect_pdf.py",
+      "argv": ["{source}"]
+    },
+    "convert_pdf": {
+      "entry": "convert_pdf.py",
+      "argv": ["{source}", "{output}", "{model}", "{ocr}", "{formula}", "{table}", "{language}", "{pages}"]
+    },
+    "audit_docx": {
+      "entry": "audit_docx.py",
+      "argv": ["{source}"]
+    },
+    "render_docx": {
+      "entry": "render_docx.py",
+      "argv": ["{source}", "{output_dir}"]
+    }
+  }
+}

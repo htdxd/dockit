@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="zh-CN" id="root">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocKit · 版本 B：Dashboard 卡片风</title>
+<style>
+  :root{
+    --bg:#f2f4f9; --card:#ffffff; --border:#e6e9f2; --text:#1c2340;
+    --t2:#5a6285; --t3:#98a0bf; --brand:#1e3a8a; --brand-soft:#dbe4ff;
+    --green:#22b07d; --amber:#f59e0b; --amber-bg:#fff8ec; --amber-bd:#f7e3bd;
+    --shadow:0 1px 2px rgba(28,35,64,.05),0 4px 16px rgba(28,35,64,.06);
+  }
+  /* 深色模式（纯黑背景） */
+  html[data-theme="dark"]{
+    --bg:#000000; --card:#0e0e10; --border:#1e1e24; --text:#e8e8ea;
+    --t2:#98a0bf; --t3:#5a6285; --brand:#7cb3ff; --brand-soft:rgba(124,179,255,.13);
+    --amber-bg:rgba(245,158,11,.08); --amber-bd:rgba(245,158,11,.3);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.3);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);font-size:14px;line-height:1.55;
+    transition:background .2s,color .2s;
+  }
+  .mono{font-family:"Cascadia Code","SF Mono",Consolas,monospace;}
+  /* ===== 布局 ===== */
+  .app{display:flex;min-height:100vh;}
+  .side{width:224px;flex-shrink:0;background:var(--card);border-right:1px solid var(--border);padding:20px 14px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;}
+  .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px;}
+  .brand-icon{width:34px;height:34px;border-radius:10px;background:var(--brand);display:grid;place-items:center;color:#fff;font-size:17px;}
+  .brand-name{font-size:16px;font-weight:700;letter-spacing:-.01em;}
+  .brand-sub{font-size:11px;color:var(--t3);}
+  .nav-label{font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.08em;padding:12px 10px 6px;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;color:var(--t2);margin-bottom:3px;font-size:13.5px;}
+  html[data-theme="dark"] .nav-item:hover{background:rgba(255,255,255,.11);color:var(--text);}
+  .nav-item:hover{background:#f6f8fd;color:var(--text);}
+  html[data-theme="dark"] .nav-item:hover{background:rgba(255,255,255,.11);}
+  .nav-item.active{background:var(--brand-soft);color:var(--brand);font-weight:600;}
+  .nav-icon{width:20px;text-align:center;font-size:15px;}
+  .side-card{margin-top:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:13px;}
+  .side-card .t{font-size:12.5px;font-weight:600;}
+  .side-card .d{font-size:11px;color:var(--t2);margin:4px 0 0;}
+  /* ===== 主区 ===== */
+  .main{flex:1;padding:20px 26px 48px;min-width:0;}
+  .hello{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap;}
+  .hello .h{font-size:18px;font-weight:700;}
+  .hello .h-sub{font-size:12.5px;color:var(--t3);margin-top:2px;}
+  .w-model{display:inline-flex;align-items:center;gap:7px;font-size:12px;padding:6px 13px;border-radius:99px;background:var(--card);border:1px solid var(--border);color:var(--t2);cursor:pointer;}
+  .live{width:7px;height:7px;border-radius:50%;background:#35d07f;box-shadow:0 0 6px #35d07f;}
+  .theme-btn{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:6px 12px;border-radius:99px;background:var(--card);border:1px solid var(--border);color:var(--t2);cursor:pointer;font-family:inherit;}
+  .theme-btn:hover{color:var(--text);}
+  /* 一级标签 — 已并入侧栏，顶部不再重复 */
+  /* .ptabs / .ptab removed */
+  /* 二级标签 */
+  .subtabs{display:flex;gap:6px;margin:16px 0 14px;}
+  .subtab{
+    font-size:12.5px;padding:6px 14px;border-radius:99px;color:var(--t2);cursor:pointer;
+    background:var(--card);border:1px solid var(--border);display:flex;align-items:center;gap:6px;user-select:none;
+  }
+  .subtab:hover{color:var(--text);}
+  .subtab.active{background:var(--brand);color:#fff;border-color:var(--brand);font-weight:600;}
+  html[data-theme="dark"] .subtab.active{color:#0e1220;}
+  .badge{background:var(--amber);color:#fff;border-radius:99px;font-size:10px;line-height:1;padding:2px 6px;font-weight:700;}
+  .subtab.active .badge{background:#fff;color:var(--brand);}
+  /* 卡片 */
+  .card{background:var(--card);border-radius:8px;border:1px solid var(--border);padding:18px;}
+  .card + .card{margin-top:13px;}
+  .card-title{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+  .no{width:20px;height:20px;border-radius:6px;background:var(--brand-soft);color:var(--brand);font-size:11px;display:grid;place-items:center;font-weight:700;flex-shrink:0;}
+  .card-title .sub{font-weight:400;font-size:12px;color:var(--t3);}
+  .fld-l .sub2{font-weight:400;font-size:11.5px;color:var(--t3);}
+  /* 目标页数自定义 */
+  .pages-row{display:flex;flex-direction:column;gap:9px;}
+  .pages-custom{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .p-mode{
+    font-size:11.5px;padding:3px 11px;border-radius:6px;border:1px solid var(--border);
+    color:var(--t2);cursor:pointer;background:var(--card);user-select:none;
+  }
+  .p-mode.on{background:var(--brand-soft);color:var(--brand);border-color:var(--brand);font-weight:600;}
+  .p-fields{display:inline-flex;align-items:center;gap:6px;margin-left:6px;}
+  .p-num{width:64px;text-align:center;padding:5px 6px;}
+  .p-sep{color:var(--t3);}
+  .p-unit{font-size:12px;color:var(--t2);}
+  /* model 选择行 */
+  .model-row{margin-top:12px;}
+  .model-ctl{display:flex;gap:8px;margin-top:6px;align-items:center;}
+  .model-sel{flex:1;min-width:0;appearance:auto;}
+  .model-custom{flex:1;min-width:0;}
+  .model-hint{font-size:11px;color:var(--t3);margin-top:5px;}
+  .btn-sm{padding:7px 13px;font-size:12.5px;white-space:nowrap;}
+  /* 上传区域（加大 + 明显标注"可选"） */
+  .upload-big{
+    border:2px dashed #b9c4e8;border-radius:10px;background:var(--brand-soft);
+    padding:38px 20px;text-align:center;color:var(--text);cursor:pointer;
+    transition:border-color .14s,background .14s;
+  }
+  html[data-theme="dark"] .upload-big{border-color:#3d4a75;background:rgba(124,179,255,.07);}
+  .upload-big:hover{border-color:var(--brand);}
+  .upload-big .u-ic{font-size:36px;opacity:.85;}
+  .upload-big .u-t{font-size:14.5px;font-weight:600;margin-top:10px;}
+  .upload-big .u-optional{
+    display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:var(--brand);
+    background:#fff;border:1px solid var(--brand);border-radius:99px;padding:2px 11px;
+  }
+  html[data-theme="dark"] .upload-big .u-optional{background:transparent;color:var(--brand);}
+  .upload-big .u-optional.req{background:#fff8ec;color:#92600a;border-color:#f7e3bd;}
+  html[data-theme="dark"] .upload-big .u-optional.req{background:transparent;color:#f2b64c;border-color:rgba(245,158,11,.45);}
+  .upload-big .fmt{display:block;font-size:11px;color:var(--t3);margin-top:9px;font-family:Consolas,monospace;}
+  .frow{display:flex;align-items:center;gap:9px;padding:8px 11px;margin-top:7px;font-size:12.5px;background:#f6f8fd;border-radius:8px;}
+  html[data-theme="dark"] .frow{background:rgba(255,255,255,.11);}
+  .frow .fsz{margin-left:auto;font-family:Consolas,monospace;color:var(--t3);font-size:11px;}
+  .frow .fx{color:var(--t3);cursor:pointer;}
+  label.fld-l{display:block;font-size:12.5px;font-weight:600;margin:14px 0 6px;}
+  label.fld-l em{color:var(--amber);font-style:normal;}
+  .inp,.txa{width:100%;border:1px solid var(--border);border-radius:7px;padding:8px 12px;font-size:13.5px;font-family:inherit;color:var(--text);background:var(--card);outline:none;}
+  .inp:focus,.txa:focus{border-color:var(--brand);}
+  .txa{min-height:58px;resize:vertical;}
+  .inp::placeholder,.txa::placeholder{color:var(--t3);}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;}
+  .chip{font-size:12.5px;padding:5px 13px;border-radius:6px;border:1px solid var(--border);color:var(--t2);cursor:pointer;background:var(--card);user-select:none;}
+  .chip.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600;}
+  html[data-theme="dark"] .chip.on{color:#0e1220;}
+  details.more{margin-top:12px;}
+  details.more summary{font-size:12.5px;color:var(--t2);cursor:pointer;user-select:none;list-style:none;}
+  details.more summary::before{content:'＋ ';color:var(--t3);}
+  details.more[open] summary::before{content:'－ ';}
+  details.more .txa{margin-top:8px;}
+  .cta-row{display:flex;align-items:center;gap:13px;margin-top:16px;flex-wrap:wrap;}
+  .btn{background:var(--brand);color:#fff;border:none;border-radius:7px;padding:9px 22px;font-size:13.5px;font-weight:600;cursor:pointer;}
+  html[data-theme="dark"] .btn{color:#0e1220;}
+  .btn:hover{opacity:.88;}
+  .btn-note{font-size:12px;color:var(--t3);}
+  /* 进行中 */
+  .taskline{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--t2);padding:9px 12px;background:#f6f8fd;border-radius:8px;}
+  html[data-theme="dark"] .taskline{background:rgba(255,255,255,.11);}
+  .taskline .tid{font-family:Consolas,monospace;font-size:11px;color:var(--t3);}
+  .rowtag{margin-left:auto;font-size:11px;color:var(--brand);background:var(--brand-soft);padding:2px 9px;border-radius:99px;font-weight:700;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;}
+  .steps{display:flex;align-items:flex-start;margin:16px 0 2px;}
+  .step{flex:1;text-align:center;position:relative;}
+  .step+.step::before{content:'';position:absolute;left:-50%;top:9px;width:100%;height:2px;background:#e3e8f5;}
+  html[data-theme="dark"] .step+.step::before{background:#2a3152;}
+  .step .b{width:19px;height:19px;border-radius:50%;margin:0 auto 5px;background:#e8ecf8;color:var(--t3);display:grid;place-items:center;font-size:10px;position:relative;z-index:1;}
+  html[data-theme="dark"] .step .b{background:#262c47;}
+  .step.done .b{background:#d9f3e8;color:var(--green);}
+  .step.done::before{background:#b5e6d1;}
+  html[data-theme="dark"] .step.done .b{background:rgba(34,176,125,.18);color:#7ee0b8;}
+  html[data-theme="dark"] .step.done::before{background:rgba(34,176,125,.35);}
+  .step.now .b{background:var(--brand);color:#fff;}
+  html[data-theme="dark"] .step.now .b{color:#0e1220;}
+  .step.now::before{background:#b5e6d1;}
+  html[data-theme="dark"] .step.now::before{background:rgba(34,176,125,.35);}
+  .step .sn{font-size:11px;color:var(--t2);}
+  .step.now .sn{color:var(--text);font-weight:600;}
+  .bar{height:7px;background:#eef0f8;border-radius:99px;overflow:hidden;margin-top:13px;}
+  html[data-theme="dark"] .bar{background:#262c47;}
+  .bar i{display:block;height:100%;width:64%;background:var(--brand);border-radius:99px;}
+  .bar-meta{display:flex;justify-content:space-between;font-size:11.5px;color:var(--t3);margin-top:5px;}
+  /* 澄清 */
+  .clarify{background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:8px;padding:16px;margin-top:14px;}
+  .c-head{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;color:#92600a;}
+  .c-head .rounds{margin-left:auto;font-family:Consolas,monospace;font-size:11px;font-weight:400;color:#b8914c;}
+  .q{margin-top:11px;font-size:13px;font-weight:600;}
+  .why{font-weight:400;font-size:11.5px;color:var(--t2);margin:3px 0 9px;}
+  .c-foot{display:flex;align-items:center;gap:14px;margin-top:13px;padding-top:11px;border-top:1px dashed var(--amber-bd);}
+  .skip{font-size:12.5px;color:var(--t2);cursor:pointer;} .skip:hover{color:var(--text);}
+  .btn-s{background:var(--amber);color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:12.5px;font-weight:600;cursor:pointer;margin-left:auto;}
+  /* 产物 */
+  .vrow{display:flex;align-items:center;gap:11px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--card);flex-wrap:wrap;}
+  .vrow.cur{border-color:var(--brand);background:var(--brand-soft);}
+  .v-badge{width:34px;height:40px;border-radius:8px;display:grid;place-items:center;font-size:13px;flex-shrink:0;}
+  .v-docx{background:#e3ecff;color:#3d6ef5;} .v-pdf{background:#ffe8ea;color:#ef5b7a;}
+  html[data-theme="dark"] .v-docx{background:rgba(61,110,245,.18);color:#93b4ff;}
+  html[data-theme="dark"] .v-pdf{background:rgba(239,91,122,.18);color:#ff9aab;}
+  .v-title{font-size:13px;font-weight:700;font-family:Consolas,monospace;}
+  .v-sub{font-size:11px;color:var(--t3);}
+  .v-open{margin-left:auto;font-size:12px;color:var(--brand);font-weight:600;background:var(--card);border:1px solid var(--border);padding:4px 11px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+  .feedback{display:flex;align-items:center;gap:10px;margin-top:14px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 13px;}
+  .feedback input{flex:1;border:none;background:none;outline:none;font-size:13px;font-family:inherit;color:var(--text);min-width:0;}
+  .feedback input::placeholder{color:var(--t3);}
+  .send{width:34px;height:34px;border-radius:7px;border:none;background:var(--brand);color:#fff;font-size:14px;cursor:pointer;flex-shrink:0;}
+  html[data-theme="dark"] .send{color:#0e1220;}
+  /* 空状态 · 设置 */
+  .empty{text-align:center;color:var(--t3);padding:46px 0;font-size:13px;background:var(--card);border:1px dashed var(--border);border-radius:10px;}
+  .empty a{color:var(--brand);cursor:pointer;font-weight:600;}
+  .set-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .caps{display:flex;gap:8px;font-family:Consolas,monospace;font-size:11.5px;}
+  .cap{padding:3px 10px;border-radius:6px;background:#f6f8fd;border:1px solid var(--border);color:var(--t2);}
+  html[data-theme="dark"] .cap{background:rgba(255,255,255,.11);}
+  .cap b{color:var(--green);font-weight:600;}
+  .sec-note{font-size:12px;color:var(--t3);border-top:1px solid var(--border);margin-top:14px;padding-top:10px;}
+  .foot{font-size:11.5px;color:var(--t3);text-align:center;margin-top:36px;}
+  [hidden]{display:none !important;}
+  /* ===== 动作反馈：弹窗 / Toast / 进度动画 ===== */
+  .overlay{position:fixed;inset:0;background:rgba(19,23,42,.55);z-index:50;display:flex;align-items:center;justify-content:center;animation:fadeIn .14s ease;}
+  @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+  .dialog{width:480px;max-width:calc(100vw - 40px);background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 22px;animation:pop .15s ease;}
+  @keyframes pop{from{transform:scale(.96) translateY(8px);opacity:0;}to{transform:none;opacity:1;}}
+  .dialog .d-head{display:flex;align-items:center;gap:8px;font-size:14.5px;font-weight:700;color:#92600a;}
+  html[data-theme="dark"] .dialog .d-head{color:#f2b64c;}
+  .dialog .d-head .rounds{margin-left:auto;font-family:Consolas,monospace;font-size:11px;font-weight:400;color:#b8914c;}
+  .dialog .d-sub{font-size:12px;color:var(--t2);margin-top:4px;}
+  .dialog .d-q{margin-top:14px;font-size:13px;font-weight:600;}
+  .dialog .d-why{font-size:11.5px;color:var(--t2);margin:3px 0 9px 20px;}
+  .dialog .d-foot{display:flex;align-items:center;gap:14px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
+  .dialog .d-skip{font-size:12.5px;color:var(--t2);cursor:pointer;} .dialog .d-skip:hover{color:var(--text);}
+  .dialog .d-ok{background:var(--amber);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;}
+  #toasts{position:fixed;top:64px;right:20px;z-index:60;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+  .toast{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--border);border-left:4px solid var(--green);border-radius:8px;padding:10px 15px;font-size:13px;animation:tIn .2s ease;}
+  @keyframes tIn{from{transform:translateX(30px);opacity:0;}to{transform:none;opacity:1;}}
+  .toast.info{border-left-color:var(--brand);} .toast.warn{border-left-color:var(--amber);}
+  .bar i.anim{background:repeating-linear-gradient(-45deg,var(--brand) 0 9px,rgba(30,58,138,.45) 9px 18px);background-size:200% 100%;animation:stripe 1s linear infinite;transition:width .5s ease;}
+  html[data-theme="dark"] .bar i.anim{background:repeating-linear-gradient(-45deg,#7cb3ff 0 9px,rgba(124,179,255,.45) 9px 18px);background-size:200% 100%;}
+  @keyframes stripe{to{background-position:-25.5px 0;}}
+  .pulse-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--brand);animation:pulse 1.2s ease infinite;}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(.75);}}
+  .subtab.flash{animation:flash .5s ease 3;}
+  @keyframes flash{0%,100%{background:transparent;}50%{background:var(--brand-soft);}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 侧边栏（品牌与快捷导航） -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-icon">✦</div>
+      <div><div class="brand-name">DocKit</div><div class="brand-sub">AI 文档产物工具箱</div></div>
+    </div>
+    <div class="nav-label">V1 工具</div>
+    <div class="nav-item" data-tool="ppt"><span class="nav-icon">📊</span> PPT 生成</div>
+    <div class="nav-item active" data-tool="resume"><span class="nav-icon">📄</span> 简历生成</div>
+    <div class="nav-item" data-tool="docx"><span class="nav-icon">📝</span> DOCX 生成</div>
+    <div class="nav-item" data-tool="pdf"><span class="nav-icon">🔄</span> PDF 转 DOCX</div>
+    <div class="nav-label">其他</div>
+    <div class="nav-item" data-tool="settings"><span class="nav-icon">⚙</span> 设置</div>
+    <div class="side-card">
+      <div class="t">🔒 数据只在本地</div>
+      <div class="d">材料与产物保存在你选择的目录中，仅按你的模型配置发出请求。</div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <div class="hello">
+      <div>
+        <div class="h">下午好 👋 今天要把什么材料变成成品文件？</div>
+        <div class="h-sub">从左侧选择一个工具开始 —— 仅 3 步：填信息 → 答少量问题 → 拿到文件</div>
+      </div>
+      <div class="w-model" onclick="go('settings')"><span class="live"></span> gpt-4o · 兼容接入 · tool_calling ✓ vision ✓</div>
+      <button class="theme-btn" id="theme-btn" onclick="toggleTheme()">🌗 深色模式</button>
+    </div>
+
+    <!-- ============ PPT ============ -->
+    <section class="page" id="page-ppt" hidden>
+      <nav class="subtabs">
+        <div class="subtab active" data-sub="new">新建任务</div>
+        <div class="subtab" data-sub="run">进行中</div>
+        <div class="subtab" data-sub="art">产物版本</div>
+      </nav>
+      <div class="subpage" id="sub-ppt-new">
+        <div class="card">
+          <div class="card-title"><span class="no">1</span> 演示主题 <span class="sub">必填</span></div>
+          <input class="inp" placeholder="例如：Q3 产品复盘汇报">
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">2</span> 上传参考材料 <span class="sub">可选 · 用于丰富演示内容</span></div>
+          <div class="upload-big">
+            <div class="u-ic">⭳</div>
+            <div class="u-t">拖入文件，或点击选择</div>
+            <div class="u-optional">可选 · 不上传也能生成</div>
+            <span class="fmt">pdf / docx / md / txt</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">3</span> 风格与页数</div>
+          <label class="fld-l" style="margin-top:0;">风格</label>
+          <div class="chips"><span class="chip on">商务简洁</span><span class="chip">学术答辩</span><span class="chip">活泼宣讲</span><span class="chip">极简黑白</span></div>
+          <label class="fld-l">目标页数 <span class="sub2">— 精确值或区间均可</span></label>
+          <div class="pages-row">
+            <div class="chips" id="pages-quick">
+              <span class="chip on" data-v="10">约 10 页</span>
+              <span class="chip" data-v="20">约 20 页</span>
+              <span class="chip" data-v="30">约 30 页</span>
+            </div>
+            <div class="pages-custom">
+              <span class="p-mode on" data-m="exact">精确</span>
+              <span class="p-mode" data-m="range">区间</span>
+              <span class="p-fields">
+                <input class="inp p-num mono" id="pages-min" value="10" inputmode="numeric">
+                <span class="p-sep" id="pages-sep" hidden>–</span>
+                <input class="inp p-num mono" id="pages-max" value="15" inputmode="numeric" hidden>
+                <span class="p-unit">页</span>
+              </span>
+            </div>
+          </div>
+          <div class="cta-row">
+            <button class="btn" onclick="startTask('ppt')">开始生成 PPT</button>
+            <span class="btn-note">缺失关键信息时会先收到少量澄清问题</span>
+          </div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-ppt-run" hidden><div class="empty">暂无进行中的任务 —— <a onclick="goSub('ppt','new')">去新建任务</a></div></div>
+      <div class="subpage" id="sub-ppt-art" hidden><div class="empty">暂无产物，生成后的 .pptx 会出现并保留在这里</div></div>
+    </section>
+
+    <!-- ============ 简历 ============ -->
+    <section class="page" id="page-resume">
+      <nav class="subtabs">
+        <div class="subtab active" data-sub="new">新建任务</div>
+        <div class="subtab" data-sub="run">进行中 <span class="badge">1</span></div>
+        <div class="subtab" data-sub="art">产物版本</div>
+      </nav>
+      <div class="subpage" id="sub-resume-new">
+        <div class="card">
+          <div class="card-title"><span class="no">1</span> 目标岗位 <span class="sub">必填</span></div>
+          <input class="inp" value="深度学习算法工程师（校招）">
+          <details class="more"><summary>补充要求（可选）</summary>
+            <textarea class="txa" placeholder="如：突出实习项目，弱化社团经历…"></textarea>
+          </details>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">2</span> 上传经历材料 <span class="sub">可选 · 没有材料也可以先写提纲</span></div>
+          <div class="upload-big">
+            <div class="u-ic">⭳</div>
+            <div class="u-t">拖入文件，或点击选择</div>
+            <div class="u-optional">可选 · 不上传也能生成</div>
+            <span class="fmt">pdf / docx / md / txt</span>
+          </div>
+          <div class="frow">📎 张三_项目经历.pdf <span class="fsz">312KB</span> <span class="fx">×</span></div>
+          <div class="frow">📎 自我介绍.md <span class="fsz">4KB</span> <span class="fx">×</span></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">3</span> 输出选项</div>
+          <label class="fld-l" style="margin-top:0;">格式</label>
+          <div class="chips"><span class="chip on">DOCX</span><span class="chip">PDF</span><span class="chip">两者都要</span></div>
+          <label class="fld-l">篇幅</label>
+          <div class="chips"><span class="chip on">一页（推荐）</span><span class="chip">两页</span></div>
+          <div class="cta-row">
+            <button class="btn" onclick="startTask('resume')">开始生成简历</button>
+            <span class="btn-note">自动检查超页 · 溢出 · 层级</span>
+          </div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-resume-run" hidden>
+        <div class="card">
+          <div class="card-title">🚀 当前任务</div>
+          <div class="taskline">📄 深度学习算法工程师（校招）<span class="tid">task_20260805_03</span><span class="rowtag"><span class="pulse-dot"></span> 运行中</span></div>
+          <div class="steps">
+            <div class="step done"><div class="b">✓</div><div class="sn">解析材料</div></div>
+            <div class="step done"><div class="b">✓</div><div class="sn">澄清确认</div></div>
+            <div class="step now"><div class="b">3</div><div class="sn">生成正文</div></div>
+            <div class="step"><div class="b">4</div><div class="sn">版式检查</div></div>
+            <div class="step"><div class="b">5</div><div class="sn">写入产物</div></div>
+          </div>
+          <div class="bar"><i class="anim" style="width:64%"></i></div>
+          <div class="bar-meta"><span>正在生成：项目经历段…</span><span class="mono">~40s</span></div>
+        </div>
+        <div class="clarify">
+          <div class="c-head">💬 需要补充 1 项信息 <span class="rounds">第 1 / 最多 3 轮</span></div>
+          <div class="q">❓ 项目中“性能提升明显”的量化指标是？</div>
+          <div class="why">影响产物质量 · 无法从材料可靠推断</div>
+          <div class="chips">
+            <span class="chip on">准确率 +8.2%</span><span class="chip">延迟 -35%</span><span class="chip">吞吐 ×2.1</span><span class="chip">✎ 自定义…</span>
+          </div>
+          <div class="c-foot"><span class="skip" onclick="clarifyDone('skip')">跳过，按当前资料生成 →</span><button class="btn-s" onclick="clarifyDone('ok')">提交并继续</button></div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-resume-art" hidden>
+        <div class="vrow cur">
+          <div class="v-badge v-docx">W</div>
+          <div><div class="v-title">resume-v3.docx</div><div class="v-sub">14:32 · 压缩到一页，突出 Python</div></div>
+          <div class="v-open">Word 打开</div>
+        </div>
+        <div class="vrow">
+          <div class="v-badge v-docx">W</div>
+          <div><div class="v-title">resume-v2.docx</div><div class="v-sub">14:18 · 项目经历补量化指标</div></div>
+          <div class="v-open">打开</div>
+        </div>
+        <div class="vrow">
+          <div class="v-badge v-pdf">P</div>
+          <div><div class="v-title">resume-v1.pdf</div><div class="v-sub">13:55 · 首次生成</div></div>
+          <div class="v-open">打开</div>
+        </div>
+        <div class="feedback">
+          <span>✍️</span>
+          <input placeholder="对当前版本提修改要求 —— 将生成 v4，不覆盖旧版">
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DOCX ============ -->
+    <section class="page" id="page-docx" hidden>
+      <nav class="subtabs">
+        <div class="subtab active" data-sub="new">新建任务</div>
+        <div class="subtab" data-sub="run">进行中</div>
+        <div class="subtab" data-sub="art">产物版本</div>
+      </nav>
+      <div class="subpage" id="sub-docx-new">
+        <div class="card">
+          <div class="card-title"><span class="no">1</span> 文档用途</div>
+          <div class="chips" id="use-chips">
+            <span class="chip on" data-v="工作报告">工作报告</span>
+            <span class="chip" data-v="会议纪要">会议纪要</span>
+            <span class="chip" data-v="总结复盘">总结复盘</span>
+            <span class="chip" data-v="项目方案">项目方案</span>
+            <span class="chip" data-v="作业报告">作业报告</span>
+            <span class="chip" data-v="__other">✎ 其他…</span>
+          </div>
+          <input class="inp mono" id="use-custom" style="margin-top:10px;display:none;" placeholder="自定义用途，例如：实验报告、读书笔记…">
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">2</span> 结构化要求 <span class="sub">主要输入，写越清楚产物越准确</span></div>
+          <textarea class="txa" style="min-height:100px;" placeholder="例如：面向管理层的 Q3 销售复盘：业绩总览 → 区域对比表 → 改进计划，约 8 页"></textarea>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">3</span> 上传参考材料 <span class="sub">可选 · 提供素材可显著提升产物贴合度</span></div>
+          <div class="upload-big">
+            <div class="u-ic">⭳</div>
+            <div class="u-t">拖入文件，或点击选择</div>
+            <div class="u-optional">可选 · 不上传也能生成</div>
+            <span class="fmt">pdf / docx / md / txt</span>
+          </div>
+          <div class="cta-row">
+            <button class="btn" onclick="startTask('docx')">开始生成文档</button>
+            <span class="btn-note">生成后用 Word / WPS 继续编辑</span>
+          </div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-docx-run" hidden><div class="empty">暂无进行中的任务 —— <a onclick="goSub('docx','new')">去新建任务</a></div></div>
+      <div class="subpage" id="sub-docx-art" hidden><div class="empty">暂无产物，生成后的 .docx 会出现并保留在这里</div></div>
+    </section>
+
+    <!-- ============ PDF→DOCX ============ -->
+    <section class="page" id="page-pdf" hidden>
+      <nav class="subtabs">
+        <div class="subtab active" data-sub="new">新建任务</div>
+        <div class="subtab" data-sub="run">进行中</div>
+        <div class="subtab" data-sub="art">产物版本</div>
+      </nav>
+      <div class="subpage" id="sub-pdf-new">
+        <div class="card">
+          <div class="card-title"><span class="no">1</span> 选择 PDF <span class="sub">必填 · 仅支持 .pdf</span></div>
+          <div class="upload-big">
+            <div class="u-ic">⭳</div>
+            <div class="u-t">拖入 PDF 文件，或点击选择</div>
+            <div class="u-optional req">必填 · 转换需要源文件</div>
+            <span class="fmt">仅 .pdf · 单文件最大 50MB</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="no">2</span> 修复选项 <span class="sub">可多选 · 不需要可跳过</span></div>
+          <div class="chips" data-multi><span class="chip on">保留表格结构</span><span class="chip">修复扫描件文字（OCR）</span><span class="chip">保留图片位置</span></div>
+          <div class="cta-row">
+            <button class="btn" onclick="startTask('pdf')">开始转换</button>
+            <span class="btn-note">结果与原件同目录另存，不覆盖原文件</span>
+          </div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-pdf-run" hidden><div class="empty">暂无进行中的任务 —— <a onclick="goSub('pdf','new')">去新建任务</a></div></div>
+      <div class="subpage" id="sub-pdf-art" hidden><div class="empty">暂无产物，转换后的 .docx 会出现并保留在这里</div></div>
+    </section>
+
+    <!-- ============ 设置 ============ -->
+    <section class="page" id="page-settings" hidden>
+      <div class="card">
+        <div class="card-title">🔌 模型接入（OpenAI 兼容优先）</div>
+        <div class="set-grid">
+          <div><label class="fld-l" style="margin-top:0;">base_url</label><input class="inp mono" id="cfg-base" value="https://api.your-gateway.com/v1"></div>
+          <div><label class="fld-l" style="margin-top:0;">api_key</label><input class="inp mono" id="cfg-key" type="password" value="sk-1234567890abcdef"></div>
+        </div>
+        <div class="model-row">
+          <label class="fld-l" style="margin:0;">model</label>
+          <div class="model-ctl">
+            <select class="inp mono model-sel" id="cfg-model">
+              <option value="">— 点击右侧按钮获取模型列表 —</option>
+            </select>
+            <input class="inp mono model-custom" id="cfg-model-custom" style="display:none;" placeholder="手动输入模型名…">
+            <button class="btn btn-sm" id="btn-fetch-models" onclick="fetchModels()">⟳ 获取模型列表</button>
+          </div>
+          <div class="model-hint" id="model-hint">获取失败时可切换为手动输入</div>
+        </div>
+        <div class="cta-row">
+          <button class="btn" onclick="validateConn()">校验连接</button>
+          <span class="caps"><span class="cap">tool_calling <b>✓</b></span><span class="cap">json_schema <b>✓</b></span><span class="cap">vision <b>✓</b></span></span>
+        </div>
+        <div class="sec-note">任务开始前检查模型能力，不兼容时明确报错，不静默降级。</div>
+      </div>
+      <div class="card">
+        <div class="card-title">📂 输出目录</div>
+        <input class="inp mono" value="~\Documents\artifacts\">
+        <div class="sec-note">材料与产物仅保存在本地；工具执行限制在任务目录内，可审计、有超时。</div>
+      </div>
+    </section>
+
+    <div class="foot">数据只在本地 · 产物用 Word / WPS / PowerPoint 打开 · 每次反馈生成新版本</div>
+  </main>
+</div>
+
+<!-- 澄清弹窗 -->
+<div id="clarify-modal" class="overlay" hidden>
+  <div class="dialog">
+    <div class="d-head">💬 需要补充 1 项信息 <span class="rounds">第 1 / 最多 3 轮</span></div>
+    <div class="d-sub">缺少的信息会明显影响产物质量，回答后立即继续生成。</div>
+    <div class="d-q">❓ 项目中“性能提升明显”的量化指标是？</div>
+    <div class="d-why">影响产物质量 · 无法从材料可靠推断</div>
+    <div class="chips" style="margin-left:20px;">
+      <span class="chip on">准确率 +8.2%</span><span class="chip">延迟 -35%</span><span class="chip">吞吐 ×2.1</span><span class="chip">✎ 自定义…</span>
+    </div>
+    <div class="d-foot">
+      <span class="d-skip" onclick="clarifyDone('skip')">跳过，按当前资料生成 →</span>
+      <button class="d-ok" onclick="clarifyDone('ok')">提交并继续</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div id="toasts"></div>
+
+<script>
+  const $$ = s => [...document.querySelectorAll(s)];
+  function go(tool){
+    $$('.subtabs .subtab');
+    $$('.page').forEach(p => p.hidden = p.id !== 'page-' + tool);
+    $$('.nav-item[data-tool]').forEach(n => n.classList.toggle('active', n.dataset.tool === tool));
+  }
+  function goSub(tool, sub){
+    go(tool);
+    const page = document.getElementById('page-' + tool);
+    page.querySelectorAll('.subtab').forEach(t => t.classList.toggle('active', t.dataset.sub === sub));
+    ['new','run','art'].forEach(s => {
+      const el = document.getElementById(`sub-${tool}-${s}`);
+      if (el) el.hidden = s !== sub;
+    });
+  }
+  $$('.nav-item[data-tool]').forEach(n => n.onclick = () => go(n.dataset.tool));
+  $$('.subtab').forEach(t => t.onclick = () => goSub(t.closest('.page').id.slice(5), t.dataset.sub));
+  $$('.chips').forEach(g => g.addEventListener('click', e => {
+    if (!e.target.classList.contains('chip')) return;
+    if (g.hasAttribute('data-multi')) { e.target.classList.toggle('on'); return; }
+    g.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === e.target));
+    // 文档用途 → 其他自定义
+    if (g.id === 'use-chips') {
+      const isOther = e.target.dataset.v === '__other';
+      document.getElementById('use-custom').style.display = isOther ? 'block' : 'none';
+      if (isOther) document.getElementById('use-custom').focus();
+    }
+    // 目标页数 → 快捷chip同步到精确输入
+    if (g.id === 'pages-quick') {
+      document.getElementById('pages-min').value = e.target.dataset.v;
+      setPagesMode('exact');
+    }
+  }));
+
+  /* ============== 目标页数：精确 / 区间切换 ============== */
+  function setPagesMode(m){
+    $$('.p-mode').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+    const isRange = m === 'range';
+    document.getElementById('pages-max').hidden = !isRange;
+    document.getElementById('pages-sep').hidden = !isRange;
+    // 用户改成手动时清掉快捷chip
+    if (isRange) $$('#pages-quick .chip').forEach(c => c.classList.remove('on'));
+  }
+  $$('.p-mode').forEach(b => b.onclick = () => setPagesMode(b.dataset.m));
+  ['pages-min','pages-max'].forEach(id => document.getElementById(id)
+    .addEventListener('input', () => $$('#pages-quick .chip').forEach(c => c.classList.remove('on'))));
+
+  /* ============== 设置：获取模型列表 ============== */
+  function fetchModels(){
+    const btn = document.getElementById('btn-fetch-models');
+    const hint = document.getElementById('model-hint');
+    btn.disabled = true; btn.textContent = '获取中…';
+    hint.textContent = `GET ${document.getElementById('cfg-base').value}/models`;
+    // 模拟：真实实现调用 base_url + /models 并填入选项
+    setTimeout(() => {
+      const demo = ['gpt-4o','gpt-4o-mini','gpt-4.1','deepseek-v3.2','qwen3-max','kimi-k2'];
+      const sel = document.getElementById('cfg-model');
+      sel.innerHTML = demo.map(m => `<option value="${m}">${m}</option>`).join('') + '<option value="__custom">✎ 手动输入…</option>';
+      sel.value = 'gpt-4o';
+      btn.disabled = false; btn.textContent = '⟳ 获取模型列表';
+      hint.textContent = `已获取 ${demo.length} 个模型 · 也可选"手动输入"`;
+      toast('模型列表已更新', 'ok');
+    }, 700);
+  }
+  document.getElementById('cfg-model').addEventListener('change', e => {
+    const isCustom = e.target.value === '__custom';
+    document.getElementById('cfg-model-custom').style.display = isCustom ? 'block' : 'none';
+    if (isCustom) document.getElementById('cfg-model-custom').focus();
+  });
+  function validateConn(){
+    toast('连接校验通过 · 模型能力符合所有 Skill 要求', 'ok');
+  }
+
+  /* ============== 主题切换 ============== */
+  function toggleTheme(){
+    const html = document.getElementById('root');
+    const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    document.getElementById('theme-btn').textContent = next === 'dark' ? '☀ 浅色模式' : '🌗 深色模式';
+  }
+
+  /* ================== 动作反馈 ================== */
+  const toastBox = document.getElementById('toasts');
+  function toast(msg, type='ok'){
+    const el = document.createElement('div');
+    el.className = 'toast ' + (type==='info' ? 'info' : type==='warn' ? 'warn' : '');
+    el.innerHTML = `<span>${type==='ok' ? '✅' : type==='warn' ? '⚠️' : 'ℹ️'}</span><span>${msg}</span>`;
+    toastBox.appendChild(el);
+    setTimeout(() => {
+      el.style.opacity = '0'; el.style.transform = 'translateX(20px)'; el.style.transition = 'all .3s';
+      setTimeout(() => el.remove(), 320);
+    }, 2600);
+  }
+
+  function startTask(tool){
+    if (tool === 'resume') {
+      document.getElementById('clarify-modal').hidden = false;
+      return;
+    }
+    const subRun = document.getElementById(`sub-${tool}-run`);
+    if (subRun && subRun.querySelector('.empty')) {
+      subRun.innerHTML = runningHTML(tool);
+      setTimeout(() => advanceStep(tool), 1100);
+    }
+    goSub(tool, 'run');
+    toast('任务已开始，正在解析材料…', 'info');
+    flashRunTab(tool);
+  }
+
+  function runningHTML(tool){
+    const name = {ppt:'Q3 产品复盘汇报', docx:'Q3 销售复盘报告', pdf:'contract.pdf'}[tool] || '任务';
+    return `
+      <div class="card">
+        <div class="card-title">🚀 当前任务</div>
+        <div class="taskline">📄 ${name}<span class="tid">task_20260805_new</span><span class="rowtag"><span class="pulse-dot"></span> 运行中</span></div>
+        <div class="steps" style="margin-top:12px;">
+          <div class="step done"><div class="b">✓</div><div class="sn">解析材料</div></div>
+          <div class="step now"><div class="b">2</div><div class="sn">澄清确认</div></div>
+          <div class="step"><div class="b">3</div><div class="sn">生成正文</div></div>
+          <div class="step"><div class="b">4</div><div class="sn">版式检查</div></div>
+          <div class="step"><div class="b">5</div><div class="sn">写入产物</div></div>
+        </div>
+        <div class="bar"><i class="anim" style="width:12%"></i></div>
+        <div class="bar-meta"><span>正在解析输入材料…</span><span class="mono">~2s</span></div>
+      </div>`;
+  }
+
+  function flashRunTab(tool){
+    const page = document.getElementById('page-' + tool);
+    const tab = page.querySelector('.subtab[data-sub="run"]');
+    if (!tab) return;
+    tab.classList.add('flash');
+    setTimeout(() => tab.classList.remove('flash'), 1800);
+  }
+
+  function clarifyDone(action){
+    document.getElementById('clarify-modal').hidden = true;
+    if (action === 'skip') toast('已跳过澄清，按当前资料生成简历', 'warn');
+    else toast('澄清已提交，继续生成简历', 'ok');
+    goSub('resume', 'run');
+  }
+
+  function advanceStep(tool){
+    const steps = document.querySelectorAll(`#sub-${tool}-run .step`);
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i].classList.contains('now')) {
+        steps[i].classList.remove('now');
+        steps[i].classList.add('done');
+        steps[i].querySelector('.b').textContent = '✓';
+        if (i + 1 < steps.length) {
+          steps[i+1].classList.add('now');
+          steps[i+1].classList.remove('done');
+        }
+        break;
+      }
+    }
+    const bar = document.querySelector(`#sub-${tool}-run .bar i`);
+    if (bar) bar.style.width = '45%';
+  }
+</script>
+</body>
+</html>

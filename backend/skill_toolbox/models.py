@@ -64,3 +64,6 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     base_url: str | None = None
     max_tokens: int = Field(default=16384, ge=256, le=32768)
+    # Explicit user override for the vision capability. None = unknown, resolved
+    # from the static model table in skill_toolbox.capabilities.
+    vision: bool | None = None

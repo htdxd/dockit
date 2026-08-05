@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Skill Toolbox",
+  "productName": "DocKit",
   "version": "0.1.0",
   "identifier": "io.skilltoolbox.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Skill Toolbox",
+        "title": "DocKit · AI 文档产物工具箱",
         "width": 1080,
         "height": 780,
         "minWidth": 760,
