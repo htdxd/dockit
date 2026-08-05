@@ -84,10 +84,17 @@ def resolve_vision_capable(config: ProviderConfig) -> bool:
 
 
 def resolve_capabilities(config: ProviderConfig) -> dict[str, bool]:
-    """Resolve the full capability set advertised to a skill's system prompt."""
-    capabilities = {name: True for name in ASSUMED_PRESENT}
-    capabilities["vision"] = resolve_vision_capable(config)
-    return capabilities
+    """Resolve the full capability set advertised to a skill's system prompt.
+
+    tool_calling / json_schema default to True (the runtime's tool loop and
+    JSON tool schemas require them) but can be explicitly overridden by the
+    user (e.g. a strict OpenAI-compatible gateway that rejects tool calling).
+    """
+    return {
+        "tool_calling": config.tool_calling if config.tool_calling is not None else True,
+        "json_schema": config.json_schema if config.json_schema is not None else True,
+        "vision": resolve_vision_capable(config),
+    }
 
 
 def missing_required(

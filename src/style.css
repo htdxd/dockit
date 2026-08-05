@@ -209,8 +209,8 @@ html[data-theme="dark"] .v-pdf{background:rgba(239,91,122,.18);color:#ff9aab;}
 .cap{padding:3px 10px;border-radius:6px;background:#f6f8fd;border:1px solid var(--border);color:var(--t2);}
 html[data-theme="dark"] .cap{background:rgba(255,255,255,.16);}
 .cap b{color:var(--green);font-weight:600;}
-.cap-vision{cursor:pointer;user-select:none;transition:opacity .15s ease,border-color .15s ease;}
-.cap-vision:hover{border-color:var(--brand);}
+.cap-clickable{cursor:pointer;user-select:none;transition:border-color .15s ease,opacity .15s ease;}
+.cap-clickable:hover{border-color:var(--brand);}
 .cap-dim b{color:var(--t3);}
 .cap-dim{opacity:.55;border-style:dashed;}
 /* 无视觉能力警告（DOCX 生成页） */
@@ -219,6 +219,23 @@ html[data-theme="dark"] .cap{background:rgba(255,255,255,.16);}
   background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:8px;animation:fadeUp .2s ease;
 }
 html[data-theme="dark"] .vision-warn{color:#f2b64c;}
+/* 供应商卡片列表 */
+.p-cards{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:13px;}
+.p-card{
+  min-width:150px;padding:11px 13px;border:1px solid var(--border);border-radius:8px;
+  background:var(--card);cursor:pointer;user-select:none;
+  transition:border-color .15s ease,box-shadow .2s ease,background .2s ease;
+}
+.p-card:hover{border-color:var(--brand);box-shadow:var(--shadow);}
+.p-card.active{border-color:var(--brand);background:var(--brand-soft);}
+.p-card .p-name{font-size:13px;font-weight:700;}
+.p-card .p-meta{font-size:11px;color:var(--t3);margin-top:2px;font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;}
+.p-card .p-badge{display:inline-block;font-size:10px;font-weight:700;color:var(--brand);background:var(--brand-soft);border-radius:99px;padding:1px 8px;margin-top:5px;}
+.p-card.add{display:grid;place-items:center;min-height:76px;color:var(--t3);border-style:dashed;font-size:12.5px;}
+.p-card.add:hover{color:var(--brand);border-color:var(--brand);}
+.btn-sec.danger{color:#c0392b;border-color:#e4b8b3;}
+html[data-theme="dark"] .btn-sec.danger{color:#ff9aab;border-color:rgba(239,91,122,.4);}
+.btn-sec.danger:hover{color:#fff;background:#c0392b;border-color:#c0392b;}
 .sec-note{font-size:12px;color:var(--t3);border-top:1px solid var(--border);margin-top:14px;padding-top:10px;}
 .foot{font-size:11.5px;color:var(--t3);text-align:center;margin-top:36px;}
 /* ===== 动作反馈：弹窗 / Toast / 进度动画 ===== */

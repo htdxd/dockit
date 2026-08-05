@@ -181,6 +181,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_sql::Builder::default().build())
         .manage(BackendState::default())
         .invoke_handler(tauri::generate_handler![send_backend_message])
         .run(tauri::generate_context!())

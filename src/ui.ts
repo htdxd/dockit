@@ -383,9 +383,14 @@ export function mountLayout(root: HTMLElement): void {
           <div class="subtab" data-sub="services">第三方服务</div>
         </nav>
         <div class="subpage" id="sub-settings-providers">
+          <div class="p-cards" id="provider-cards"></div>
           <div class="card">
-            <div class="card-title">🔌 模型接入（OpenAI 兼容优先）</div>
+            <div class="card-title">🔌 当前供应商 <span class="sub" id="provider-card-name-hint">点击上方卡片切换，或添加新的</span></div>
             <div class="set-grid">
+              <div>
+                <label class="fld-l" style="margin-top:0;">名称</label>
+                <input class="inp" id="provider-name" placeholder="例如：OpenAI 主账号">
+              </div>
               <div>
                 <label class="fld-l" style="margin-top:0;">Provider</label>
                 <select class="inp" id="provider-kind">
@@ -394,10 +399,10 @@ export function mountLayout(root: HTMLElement): void {
                   <option value="openai_compatible" selected>OpenAI-compatible</option>
                 </select>
               </div>
-              <div>
-                <label class="fld-l" style="margin-top:0;">api_key</label>
-                <input class="inp mono" id="api-key" type="password" placeholder="仅在内存中使用" autocomplete="off">
-              </div>
+            </div>
+            <div style="margin-top:12px;">
+              <label class="fld-l" style="margin:0;">api_key</label>
+              <input class="inp mono" id="api-key" type="password" placeholder="仅在内存中使用" autocomplete="off">
             </div>
             <div style="margin-top:12px;">
               <label class="fld-l" style="margin:0;">base_url <span class="sub2" id="base-url-hint">（兼容 Provider 必填）</span></label>
@@ -417,12 +422,13 @@ export function mountLayout(root: HTMLElement): void {
             <div class="cta-row">
               <button class="btn" id="btn-validate">校验连接</button>
               <span class="caps">
-                <span class="cap">tool_calling <b>✓</b></span>
-                <span class="cap">json_schema <b>✓</b></span>
-                <span class="cap cap-vision" id="cap-vision" title="点击可手动点亮/熄灭该模型的视觉能力标签">vision <b>✓</b></span>
+                <span class="cap cap-clickable" id="cap-tool-calling" title="点击可手动关闭/开启该模型的工具调用能力">tool_calling <b>✓</b></span>
+                <span class="cap cap-clickable" id="cap-json-schema" title="点击可手动关闭/开启该模型的 JSON Schema 能力">json_schema <b>✓</b></span>
+                <span class="cap cap-clickable cap-vision" id="cap-vision" title="点击可手动点亮/熄灭该模型的视觉能力标签">vision <b>✓</b></span>
               </span>
+              <span class="btn-sec danger" id="btn-delete-provider">🗑 删除此供应商</span>
             </div>
-            <div class="sec-note">任务开始前检查模型能力，不兼容时明确报错，不静默降级。vision 标签按模型静态表自动判定，可手动切换。</div>
+            <div class="sec-note">任务开始前检查模型能力，不兼容时明确报错，不静默降级。三个能力标签均可点击手动覆盖；tool_calling / json_schema 默认开启，vision 按模型静态表自动判定。</div>
           </div>
           <div class="card">
             <div class="card-title">📂 输出目录</div>

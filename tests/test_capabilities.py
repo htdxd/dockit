@@ -10,8 +10,19 @@ from skill_toolbox.capabilities import (
 from skill_toolbox.models import ProviderConfig
 
 
-def _config(model: str, vision: bool | None = None) -> ProviderConfig:
-    return ProviderConfig(kind="openai", model=model, vision=vision)
+def _config(
+    model: str,
+    vision: bool | None = None,
+    tool_calling: bool | None = None,
+    json_schema: bool | None = None,
+) -> ProviderConfig:
+    return ProviderConfig(
+        kind="openai",
+        model=model,
+        vision=vision,
+        tool_calling=tool_calling,
+        json_schema=json_schema,
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,6 +101,14 @@ def test_resolve_capabilities_shape() -> None:
 
     capabilities = resolve_capabilities(_config("deepseek-chat"))
     assert capabilities["vision"] is False
+
+
+def test_user_override_for_tool_calling_and_json_schema() -> None:
+    # Explicit override wins; None falls back to the default True.
+    assert resolve_capabilities(_config("gpt-4o", tool_calling=False))["tool_calling"] is False
+    assert resolve_capabilities(_config("gpt-4o", tool_calling=True))["tool_calling"] is True
+    assert resolve_capabilities(_config("gpt-4o", json_schema=False))["json_schema"] is False
+    assert resolve_capabilities(_config("gpt-4o", json_schema=None))["json_schema"] is True
 
 
 def test_missing_required_reports_only_absent_capabilities() -> None:
