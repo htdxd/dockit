@@ -72,6 +72,25 @@ class SidecarService:
         self.provider_factory = provider_factory
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.brokers: dict[str, UserInputBroker] = {}
+        # MinerU token from the Settings page "第三方服务" tab. Held in memory
+        # only (never persisted to disk by the backend), injected as the
+        # MINERU_TOKEN env var into exec_cmd subprocesses for the PDF skill.
+        self._mineru_key: str | None = None
+
+    def _set_mineru_key(self, request_id: str, payload: dict[str, Any]) -> None:
+        self._mineru_key = str(payload.get("mineru_key", "")).strip() or None
+        self._emit(
+            request_id,
+            {"type": "mineru_key_updated", "configured": self._mineru_key is not None},
+        )
+
+    def _task_env(self, skill_id: str) -> dict[str, str]:
+        """Env vars for a task's exec_cmd subprocesses. Currently: the MinerU
+        token (Settings → 第三方服务) for the PDF skill only, so the key never
+        reaches other skills' subprocesses."""
+        if skill_id == "pdf_docx_routing" and self._mineru_key:
+            return {"MINERU_TOKEN": self._mineru_key}
+        return {}
 
     async def handle(self, message: dict[str, Any]) -> None:
         request_id = str(message.get("id", ""))
@@ -94,6 +113,11 @@ class SidecarService:
                 self._cancel_task(request_id)
             elif message_type == "ping":
                 self._emit(request_id, {"type": "pong"})
+            elif message_type == "set_mineru_key":
+                self._set_mineru_key(request_id, payload)
+            elif message_type == "clear_mineru_key":
+                self._mineru_key = None
+                self._emit(request_id, {"type": "mineru_key_cleared"})
             elif message_type == "fetch_models":
                 await self._fetch_models(request_id, payload)
             else:
@@ -166,6 +190,7 @@ class SidecarService:
             output_dir=output_dir,
             materials=materials,
             capabilities=capabilities,
+            env=self._task_env(skill.id),
         )
         self._emit(request_id, {"type": "debug_log_path", "path": str(log_path)})
         task = asyncio.create_task(self._run(request_id, runtime, request, log_path))

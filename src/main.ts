@@ -181,6 +181,7 @@ async function loadSettings(): Promise<void> {
   if (outputDir && globalSettings.output_dir) outputDir.value = globalSettings.output_dir;
   const mineru = element<HTMLInputElement>("#mineru-key");
   if (mineru && globalSettings.mineru_key) mineru.value = globalSettings.mineru_key;
+  void syncMineruKey();
 
   applyProviderToForm(activeProvider());
   renderProviderCards();
@@ -196,12 +197,26 @@ function saveGlobalFields(): void {
   void saveGlobalSettings(globalSettings);
 }
 
+/* 把 MinerU Token 同步给 sidecar（PDF 转换时注入 MINERU_TOKEN 环境变量）。
+   浏览器演示模式无 sidecar，直接跳过。 */
+async function syncMineruKey(): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  const key = element<HTMLInputElement>("#mineru-key").value.trim();
+  if (!key) {
+    await send({ id: "mineru-key", type: "clear_mineru_key", payload: {} });
+    return;
+  }
+  await send({ id: "mineru-key", type: "set_mineru_key", payload: { mineru_key: key } });
+}
+
 /* 表单字段变更：写回当前供应商 + 全局字段
    （#provider-kind / #model 已有专用监听器，不在此重复注册，避免双写 DB） */
 ["#provider-name", "#base-url", "#api-key", "#model-custom", "#mineru-key", "#output-dir"].forEach((selector) => {
   document.querySelector<HTMLElement>(selector)?.addEventListener("change", () => {
-    if (selector === "#mineru-key" || selector === "#output-dir") saveGlobalFields();
-    else saveCurrentProvider();
+    if (selector === "#mineru-key" || selector === "#output-dir") {
+      saveGlobalFields();
+      if (selector === "#mineru-key") void syncMineruKey();
+    } else saveCurrentProvider();
   });
 });
 element<HTMLInputElement>("#model-custom").addEventListener("input", saveCurrentProvider);
@@ -485,7 +500,7 @@ document.querySelectorAll<HTMLElement>("[data-pick]").forEach((zone) => {
 });
 
 /* ===== 任务 ===== */
-const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro" };
+const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", pdf: "pdf_docx_routing" };
 let taskState: TaskState = initialTaskState;
 let taskId = "";
 const backendLogs: string[] = [];
@@ -542,6 +557,24 @@ function toolPrompt(tool: string): { title: string; prompt: string } | null {
     const vision = capabilityEffective("vision");
     const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，将走机械检查流程，不进行视觉版式核验。";
     return { title: use, prompt: `文档用途：${use}\n结构化要求：${req}\n生成复杂度：${complexity}${visionNote}` };
+  }
+  if (tool === "pdf") {
+    const pdfs = materialsByTool["pdf"];
+    if (!pdfs.length) {
+      toast("请先选择要转换的 PDF 文件", "warn");
+      return null;
+    }
+    const opts = document.querySelectorAll<HTMLElement>("#pdf-opts .chip.on");
+    const options = Array.from(opts)
+      .map((c) => c.dataset.v)
+      .filter((v): v is string => Boolean(v))
+      .join("、");
+    const vision = capabilityEffective("vision");
+    const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，无法进行视觉版式检查，仅报告机械检查结果。";
+    return {
+      title: `PDF 转 DOCX（${pdfs.length} 个文件）`,
+      prompt: `共 ${pdfs.length} 个 PDF 待转换，文件已暂存到工作区 sources/ 下（见材料列表）。\n修复选项：${options || "无（仅转换）"}${visionNote}`,
+    };
   }
   return null;
 }

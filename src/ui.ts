@@ -364,7 +364,7 @@ export function mountLayout(root: HTMLElement): void {
             </div>
             <div class="cta-row">
               <button class="btn" data-start="pdf">开始转换</button>
-              <span class="btn-note">即将上线 · 结果与原件同目录另存，不覆盖原文件</span>
+              <span class="btn-note">转换结果保存到输出目录，不覆盖原文件</span>
             </div>
           </div>
         </div>

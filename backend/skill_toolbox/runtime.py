@@ -43,6 +43,9 @@ class TaskRequest:
     # at the top of the skill's system prompt so prompt-level routing can
     # depend on them without guessing.
     capabilities: dict[str, bool] = field(default_factory=dict)
+    # Environment variables injected into exec_cmd subprocesses (e.g.
+    # MINERU_TOKEN for the PDF skill's MinerU scripts).
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,7 @@ class AgentRuntime:
                 skill.allowed_actions,
                 skill_dir=skill.dir,
                 scripts=skill.scripts,
+                env=request.env,
             )
             messages: list[ConversationMessage] = []
             user_text = request.user_prompt or "按默认内容生成测试文档"

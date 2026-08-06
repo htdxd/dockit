@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -46,11 +47,14 @@ class ToolRegistry:
         allowed_actions: frozenset[str],
         skill_dir: Path = Path("."),
         scripts: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         self.policy = policy
         self.allowed_actions = allowed_actions
         self.skill_dir = skill_dir
         self.scripts = scripts or {}
+        # Extra env vars merged into exec_cmd subprocesses (e.g. MINERU_TOKEN).
+        self.extra_env = env or {}
         self.actions: dict[str, Callable[[dict[str, Any]], None]] = {
             "build_simple_docx": self._build_simple_docx,
         }
@@ -85,6 +89,7 @@ class ToolRegistry:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self.policy.root),
+                env={**os.environ, **self.extra_env},
                 close_fds=True,
             )
             try:
