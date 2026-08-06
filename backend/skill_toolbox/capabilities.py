@@ -24,9 +24,6 @@ import re
 
 from skill_toolbox.models import ProviderConfig
 
-# Capabilities the runtime machinery itself requires to function at all.
-ASSUMED_PRESENT = ("tool_calling", "json_schema")
-
 # Static vision model table. Patterns are matched (case-insensitively) against
 # the configured model name. Keep the list tight: a false positive lets a
 # non-vision model claim visual verification it cannot perform.

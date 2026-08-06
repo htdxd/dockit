@@ -27,9 +27,8 @@ from typing import Any
 
 from docx import Document
 from docx.enum.section import WD_SECTION
-from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_ROW_HEIGHT_RULE
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor, Twips
@@ -38,12 +37,10 @@ from docx.text.paragraph import Paragraph
 
 # --- unit helpers -------------------------------------------------------------
 
-TWIPS_PER_MM = 56.6929
 A4_WIDTH_TWIPS = 11906
 A4_HEIGHT_TWIPS = 16838
 COVER_HEIGHT_BUDGET_TWIPS = 15638  # 16838 - 1200 safety (Word renders tall fonts bigger)
 SAFE_MAX_COVER_FONT_PT = 40
-DEFAULT_BODY_PT = 11.0
 DEFAULT_LINE_312 = 312  # 1.3x for 12pt SimSun body; override per profile
 
 _MATH_COMPLEX_RE = re.compile(r"\\(frac|sum|int|sqrt|matrix|cases|begin)", re.IGNORECASE)
@@ -60,14 +57,6 @@ def workspace_path(value: str, must_exist: bool) -> Path:
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def pt_to_twips(pt: float) -> int:
-    return int(round(pt * 20))
-
-
-def mm_to_twips(mm: float) -> int:
-    return int(round(mm * TWIPS_PER_MM))
 
 
 def cjk_title_layout(title: str, available_twips: int, preferred_pt: float = 40.0) -> float:
@@ -180,10 +169,6 @@ def set_table_column_widths_pct(table: Table, widths_pct: list[float]) -> None:
             tc_pr.append(tc_w)
 
 
-def set_keep_with_next(paragraph: Paragraph) -> None:
-    paragraph.paragraph_format.keep_with_next = True
-
-
 def set_line_spacing_twips(paragraph: Paragraph, twips: int = DEFAULT_LINE_312) -> None:
     paragraph.paragraph_format.line_spacing = Twips(twips)
     paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
@@ -233,12 +218,6 @@ def set_paragraph_border_bottom(paragraph: Paragraph, color: str = "C00000", sz:
     p_pr.append(p_bdr)
 
 
-def add_page_break_paragraph(document: Document) -> None:
-    paragraph = document.add_paragraph()
-    run = paragraph.add_run()
-    run.add_break(WD_BREAK.PAGE)
-
-
 # --- styles -------------------------------------------------------------------
 
 def ensure_heading_outline_levels(document: Document) -> None:
@@ -283,28 +262,6 @@ def configure_cjk_doc_defaults(document: Document) -> None:
         r_pr.append(lang)
     lang.set(qn("w:val"), "en-US")
     lang.set(qn("w:eastAsia"), "zh-CN")
-
-
-def ensure_custom_styles(document: Document) -> dict[str, Any]:
-    """Create (or fetch) the styles docx_pro relies on. Returns name -> style."""
-    styles = {
-        "DocxProBody": (document.styles, WD_STYLE_TYPE.PARAGRAPH, "DocxProBody"),
-        "DocxProHeading1": (document.styles, WD_STYLE_TYPE.PARAGRAPH, "Heading 1"),
-        "DocxProHeading2": (document.styles, WD_STYLE_TYPE.PARAGRAPH, "Heading 2"),
-        "DocxProHeading3": (document.styles, WD_STYLE_TYPE.PARAGRAPH, "Heading 3"),
-    }
-    created: dict[str, Any] = {}
-    for key, (_, _, base) in styles.items():
-        try:
-            created[key] = document.styles[key]
-        except KeyError:
-            created[key] = document.styles.add_style(key, WD_STYLE_TYPE.PARAGRAPH)
-            created[key].base_style = document.styles[base]
-    body = created["DocxProBody"]
-    body.font.size = Pt(DEFAULT_BODY_PT)
-    body.font.name = "Calibri"
-    body.element.get_or_add_rPr().set(qn("w:eastAsia"), "SimSun")
-    return created
 
 
 # --- cover --------------------------------------------------------------------

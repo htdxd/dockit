@@ -1,7 +1,6 @@
 import pytest
 
 from skill_toolbox.capabilities import (
-    ASSUMED_PRESENT,
     is_vision_model,
     missing_required,
     resolve_capabilities,
@@ -96,8 +95,8 @@ def test_static_table_used_when_no_override() -> None:
 def test_resolve_capabilities_shape() -> None:
     capabilities = resolve_capabilities(_config("gpt-4o"))
     assert capabilities["vision"] is True
-    for name in ASSUMED_PRESENT:
-        assert capabilities[name] is True
+    assert capabilities["tool_calling"] is True
+    assert capabilities["json_schema"] is True
 
     capabilities = resolve_capabilities(_config("deepseek-chat"))
     assert capabilities["vision"] is False

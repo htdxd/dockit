@@ -26,7 +26,7 @@ export function setTaskMeta(meta: { tool: string; title: string; taskId: string 
 }
 
 /* ===== 导航 ===== */
-export function goTool(tool: string): void {
+function goTool(tool: string): void {
   document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
     p.hidden = p.id !== `page-${tool}`;
   });

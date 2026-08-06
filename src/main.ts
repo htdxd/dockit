@@ -12,10 +12,12 @@ import {
   deleteProvider,
   effectiveModel,
   initDb,
+  kindLabel,
   listProviders,
   loadGlobalSettings,
   saveGlobalSettings,
   saveProvider,
+  _defaultProvider,
   type GlobalSettings,
   type ProviderConfig,
 } from "./settings";
@@ -50,18 +52,7 @@ function activeProvider(): ProviderConfig {
 
 function _defaultFormProvider(): ProviderConfig {
   const kind = element<HTMLSelectElement>("#provider-kind").value as ProviderConfig["kind"];
-  return {
-    id: crypto.randomUUID(),
-    name: defaultProviderName(kind),
-    kind,
-    base_url: "",
-    api_key: "",
-    model: "",
-    model_custom: "",
-    vision_override: null,
-    tool_calling_override: null,
-    json_schema_override: null,
-  };
+  return _defaultProvider({ kind });
 }
 
 /* ===== 客户端视觉判定：镜像后端 capabilities.py 的静态表（仅用于 UI 提示，后端为准） */
@@ -153,10 +144,6 @@ async function deleteActiveProvider(): Promise<void> {
   toast("供应商已删除", "warn");
 }
 
-function kindLabel(kind: ProviderConfig["kind"]): string {
-  return { openai: "OpenAI", anthropic: "Anthropic", openai_compatible: "兼容接入" }[kind] ?? kind;
-}
-
 function renderProviderCards(): void {
   const container = document.getElementById("provider-cards");
   if (!container) return;
@@ -209,8 +196,9 @@ function saveGlobalFields(): void {
   void saveGlobalSettings(globalSettings);
 }
 
-/* 表单字段变更：写回当前供应商 + 全局字段 */
-["#provider-name", "#provider-kind", "#base-url", "#api-key", "#model", "#model-custom", "#mineru-key", "#output-dir"].forEach((selector) => {
+/* 表单字段变更：写回当前供应商 + 全局字段
+   （#provider-kind / #model 已有专用监听器，不在此重复注册，避免双写 DB） */
+["#provider-name", "#base-url", "#api-key", "#model-custom", "#mineru-key", "#output-dir"].forEach((selector) => {
   document.querySelector<HTMLElement>(selector)?.addEventListener("change", () => {
     if (selector === "#mineru-key" || selector === "#output-dir") saveGlobalFields();
     else saveCurrentProvider();
@@ -228,10 +216,8 @@ function modelName(): string {
 }
 
 function syncModelSummary(): void {
-  const kind = activeProvider().kind;
-  const kindLabel = { openai: "OpenAI", anthropic: "Anthropic", openai_compatible: "兼容接入" }[kind] ?? kind;
   const name = modelName();
-  setModelSummary(name ? `${name} · ${kindLabel}` : "未配置模型");
+  setModelSummary(name ? `${name} · ${kindLabel(activeProvider().kind)}` : "未配置模型");
   syncCapabilityUi();
 }
 
@@ -278,7 +264,6 @@ function syncCapabilityUi(): void {
 element<HTMLSelectElement>("#provider-kind").addEventListener("change", () => {
   updateProviderUi();
   saveCurrentProvider();
-  syncModelSummary();
 });
 
 /* 三个能力标签点击：手动覆盖该能力（写入当前供应商） */
@@ -298,9 +283,9 @@ function toggleCapability(cap: "tool_calling" | "json_schema" | "vision"): void 
   toast(`已${next ? "开启" : "关闭"}${label}标签`, next ? "ok" : "warn");
 }
 
-element<HTMLElement>("#cap-tool-calling").addEventListener("click", () => toggleCapability("tool_calling"));
-element<HTMLElement>("#cap-json-schema").addEventListener("click", () => toggleCapability("json_schema"));
-element<HTMLElement>("#cap-vision").addEventListener("click", () => toggleCapability("vision"));
+(Object.keys(CAP_IDS) as Array<"tool_calling" | "json_schema" | "vision">).forEach((cap) => {
+  element<HTMLElement>(`#${CAP_IDS[cap]}`).addEventListener("click", () => toggleCapability(cap));
+});
 
 /* 卡片点击：切换 / 添加 / 删除（事件委托） */
 document.addEventListener("click", (e) => {
@@ -352,7 +337,6 @@ element<HTMLButtonElement>("#btn-fetch-models").addEventListener("click", () => 
     btn.textContent = "⟳ 获取模型列表";
     hint.textContent = `已获取 ${demo.length} 个模型 · 也可选"手动输入"`;
     saveCurrentProvider();
-    syncModelSummary();
     toast("模型列表已更新", "ok");
   }, 700);
 });
@@ -363,7 +347,6 @@ element<HTMLSelectElement>("#model").addEventListener("change", (e) => {
   custom.style.display = isCustom ? "block" : "none";
   if (isCustom) custom.focus();
   saveCurrentProvider();
-  syncModelSummary();
 });
 
 element<HTMLButtonElement>("#btn-validate").addEventListener("click", () => {

@@ -26,13 +26,10 @@ from docx.shared import Pt, Twips
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from docx_pro_engine import (  # noqa: E402
-    A4_HEIGHT_TWIPS,
-    COVER_HEIGHT_BUDGET_TWIPS,
     GONGWEN_FONTS,
     add_footer_page_field,
     add_formula,
     add_image,
-    add_page_break_paragraph,
     add_section_new_page,
     add_table,
     build_cover,
@@ -40,7 +37,6 @@ from docx_pro_engine import (  # noqa: E402
     configure_cjk_doc_defaults,
     ensure_heading_outline_levels,
     load_json,
-    mm_to_twips,
     set_first_line_indent_chars,
     set_line_spacing_twips,
     set_run_fonts,

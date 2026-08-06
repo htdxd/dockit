@@ -22,7 +22,7 @@ import json
 import re
 import sys
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -30,13 +30,21 @@ W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture"
 
 W = f"{{{W_NS}}}"
 WP = f"{{{WP_NS}}}"
 A = f"{{{A_NS}}}"
 R = f"{{{R_NS}}}"
-PIC = f"{{{PIC_NS}}}"
+
+
+def _para_text(p: ET.Element) -> str:
+    """Concatenated text of one paragraph's runs."""
+    return "".join(t.text or "" for t in p.findall(f".//{W}t"))
+
+
+def _all_text(root: ET.Element) -> str:
+    """Concatenated text of the whole document body."""
+    return "".join(t.text or "" for t in root.findall(f".//{W}t"))
 
 # Fonts considered safe (matches the fused SAFE list).
 SAFE_FONTS = {
@@ -119,7 +127,7 @@ def check_blank_pages(root: ET.Element) -> CheckResult:
     # Consecutive empty paragraphs >= 5
     streak = 0
     for p in paragraphs:
-        text = "".join(t.text or "" for t in p.findall(f".//{W}t"))
+        text = _para_text(p)
         if not text.strip():
             streak += 1
         else:
@@ -179,7 +187,7 @@ def check_cover_overflow(root: ET.Element) -> CheckResult:
     # trailing empty paragraphs in cover region
     trailing = 0
     for p in reversed(children[:cover_end]):
-        text = "".join(t.text or "" for t in p.findall(f".//{W}t"))
+        text = _para_text(p)
         if not text.strip() and not p.findall(f".//{W}br"):
             trailing += 1
         else:
@@ -300,7 +308,7 @@ def check_shading_type(root: ET.Element) -> CheckResult:
 
 
 def check_toc(root: ET.Element, docx_path: str) -> CheckResult:
-    body_text = "".join(t.text or "" for t in root.findall(f".//{W}t"))
+    body_text = _all_text(root)
     has_toc_title = "目录" in body_text or "Table of Contents" in body_text
     has_toc_field = any(
         instr.text and "TOC" in instr.text.upper()
@@ -387,7 +395,7 @@ def _check_cjk_indent(root: ET.Element) -> CheckResult:
         style = p.find(f"{W}pPr/{W}pStyle")
         if style is not None and (style.get(f"{W}val", "") or "").startswith("Heading"):
             continue
-        text = "".join(t.text or "" for t in p.findall(f".//{W}t"))
+        text = _para_text(p)
         if not any("\u4e00" <= ch <= "\u9fff" for ch in text):
             continue
         # Skip short labels (captions, table cells, centered lines).
@@ -427,7 +435,7 @@ def _check_numbering_continuity(root: ET.Element) -> CheckResult:
 
 
 def _check_cleanliness(root: ET.Element) -> CheckResult:
-    text = "".join(t.text or "" for t in root.findall(f".//{W}t"))
+    text = _all_text(root)
     matches = CLEANLINESS_RE.findall(text)
     return CheckResult(
         "cleanliness",
@@ -438,7 +446,7 @@ def _check_cleanliness(root: ET.Element) -> CheckResult:
 
 def _check_content_quality(root: ET.Element) -> CheckResult:
     issues: list[str] = []
-    paragraphs = ["".join(t.text or "" for t in p.findall(f".//{W}t")) for p in root.findall(f".//{W}p")]
+    paragraphs = [_para_text(p) for p in root.findall(f".//{W}p")]
     body_text = "\n".join(paragraphs)
     has_heading = any(p.startswith(("摘要", "引言", "结论", "Abstract", "Introduction")) for p in paragraphs)
     if len(paragraphs) > 8 and not has_heading:

@@ -48,6 +48,10 @@ const PROVIDER_KIND_LABEL: Record<ProviderConfig["kind"], string> = {
   openai_compatible: "兼容接入",
 };
 
+export function kindLabel(kind: ProviderConfig["kind"]): string {
+  return PROVIDER_KIND_LABEL[kind] ?? kind;
+}
+
 const TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
