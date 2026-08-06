@@ -5,6 +5,8 @@ import json
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,46 @@ from skill_toolbox.unicode_utils import sanitize_data
 Emitter = Callable[[dict[str, Any]], None]
 ProviderFactory = Callable[[ProviderConfig], ModelProvider]
 DEBUG_LOG_DIR = ".skill-toolbox-logs"
+MODELS_TIMEOUT_SECONDS = 15
+
+
+def request_models(kind: str, base_url: str, api_key: str) -> tuple[list[str], str | None]:
+    """GET the provider's model list and return (model_ids, error).
+
+    OpenAI / OpenAI-compatible:  GET {base}/models, Bearer auth, data[].id.
+    Anthropic:                   GET {base}/v1/models (or {base}/models when the
+                                 configured base already ends with /v1), x-api-key
+                                 auth + anthropic-version header.
+
+    Runs in a worker thread — never block the asyncio loop with it.
+    """
+    base = (base_url or "").rstrip("/")
+    if kind == "anthropic":
+        base = base or "https://api.anthropic.com"
+        endpoint = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Accept": "application/json",
+        }
+    else:
+        if not base:
+            return [], "base_url 为空"
+        endpoint = f"{base}/models"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+    request = urllib.request.Request(endpoint, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT_SECONDS) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return [], f"HTTP {exc.code}: {exc.reason}"
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        return [], str(exc)
+    models = [item.get("id") for item in data.get("data", []) if item.get("id")]
+    return models, None
 
 
 class SidecarService:
@@ -52,6 +94,8 @@ class SidecarService:
                 self._cancel_task(request_id)
             elif message_type == "ping":
                 self._emit(request_id, {"type": "pong"})
+            elif message_type == "fetch_models":
+                await self._fetch_models(request_id, payload)
             else:
                 self._emit(
                     request_id,
@@ -166,6 +210,21 @@ class SidecarService:
             )
             return
         task.cancel()
+
+    async def _fetch_models(self, request_id: str, payload: dict[str, Any]) -> None:
+        """Proxy the provider's model-list endpoint and emit the model ids.
+
+        Runs in a worker thread so the asyncio loop never blocks on a slow
+        gateway. The api_key stays in the payload; it is never persisted.
+        """
+        kind = str(payload.get("kind", "openai"))
+        base_url = str(payload.get("base_url", ""))
+        api_key = str(payload.get("api_key", ""))
+        models, error = await asyncio.to_thread(request_models, kind, base_url, api_key)
+        if error:
+            self._emit(request_id, {"type": "models_fetched", "models": [], "error": error})
+            return
+        self._emit(request_id, {"type": "models_fetched", "models": models})
 
     async def wait_all(self) -> None:
         active = [task for task in self.tasks.values() if not task.done()]

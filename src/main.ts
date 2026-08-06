@@ -320,25 +320,67 @@ document.addEventListener("click", (e) => {
 });
 
 /* ===== 设置页：获取模型列表 / 校验连接 / 输出目录 ===== */
-element<HTMLButtonElement>("#btn-fetch-models").addEventListener("click", () => {
+const MODELS_REQUEST_ID = "models-fetch";
+let modelsFetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 向 sidecar 请求模型列表（Tauri），浏览器演示降级为本地模拟列表 */
+function fetchModels(): void {
   const btn = element<HTMLButtonElement>("#btn-fetch-models");
   const hint = element<HTMLElement>("#model-hint");
+  const kind = element<HTMLSelectElement>("#provider-kind").value;
   const base = element<HTMLInputElement>("#base-url").value.trim();
+  const apiKey = element<HTMLInputElement>("#api-key").value.trim();
+
+  if (!apiKey) {
+    hint.textContent = "请先填写 api_key";
+    toast("请先填写 api_key", "warn");
+    return;
+  }
+  if (!("__TAURI_INTERNALS__" in window)) {
+    // 浏览器演示：无后端可用，保留本地模拟列表
+    const demo = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "deepseek-v3.2", "qwen3-max", "kimi-k2"];
+    fillModelOptions(demo, demo[0] ?? "");
+    hint.textContent = `浏览器演示模式 · 已填 ${demo.length} 个模拟模型`;
+    toast("浏览器演示模式：模型列表为本地模拟", "info");
+    return;
+  }
   btn.disabled = true;
   btn.textContent = "获取中…";
-  hint.textContent = base ? `GET ${base}/models` : "请先填写 base_url";
-  // 模拟：真实实现调用 base_url + /models 并填入选项
-  setTimeout(() => {
-    const demo = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "deepseek-v3.2", "qwen3-max", "kimi-k2"];
-    const sel = element<HTMLSelectElement>("#model");
-    sel.innerHTML = demo.map((m) => `<option value="${m}">${m}</option>`).join("") + '<option value="__custom">✎ 手动输入…</option>';
-    sel.value = "gpt-4o";
+  hint.textContent = base ? `GET ${base}/models` : "正在请求默认端点…";
+  void send({
+    id: MODELS_REQUEST_ID,
+    type: "fetch_models",
+    payload: { kind, base_url: base, api_key: apiKey },
+  }).catch((error) => {
+    hint.textContent = `请求失败：${String(error)}`;
     btn.disabled = false;
     btn.textContent = "⟳ 获取模型列表";
-    hint.textContent = `已获取 ${demo.length} 个模型 · 也可选"手动输入"`;
-    saveCurrentProvider();
-    toast("模型列表已更新", "ok");
-  }, 700);
+  });
+}
+
+/** 将模型列表填入下拉并强制选中第一个（用户确认的交互） */
+function fillModelOptions(models: string[], selected: string): void {
+  const sel = element<HTMLSelectElement>("#model");
+  sel.innerHTML = models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("")
+    + '<option value="__custom">✎ 手动输入…</option>';
+  sel.value = models.includes(selected) ? selected : (models[0] ?? "");
+  const custom = element<HTMLInputElement>("#model-custom");
+  custom.style.display = "none";
+  saveCurrentProvider();
+}
+
+element<HTMLButtonElement>("#btn-fetch-models").addEventListener("click", fetchModels);
+
+/* 填完 api_key / base_url / 切换 Provider 后自动请求模型列表（300ms 防抖） */
+function scheduleFetchModels(): void {
+  if (modelsFetchTimer) clearTimeout(modelsFetchTimer);
+  modelsFetchTimer = setTimeout(() => {
+    const apiKey = element<HTMLInputElement>("#api-key").value.trim();
+    if (apiKey) fetchModels();
+  }, 300);
+}
+["#api-key", "#base-url", "#provider-kind"].forEach((selector) => {
+  document.querySelector<HTMLElement>(selector)?.addEventListener("change", scheduleFetchModels);
 });
 
 element<HTMLSelectElement>("#model").addEventListener("change", (e) => {
@@ -601,6 +643,28 @@ if ("__TAURI_INTERNALS__" in window) {
         setState(
           reduceTaskEvent(taskState, { type: "task_failed", error: `${String(payload.event.error)}${logs}` }),
         );
+      }
+      return;
+    }
+    /* models_fetched 不关联具体任务，按 request id 处理（设置页模型列表） */
+    if (payload.id === MODELS_REQUEST_ID && payload.event.type === "models_fetched") {
+      const event = payload.event as { models?: string[]; error?: string };
+      const btn = document.getElementById("btn-fetch-models") as HTMLButtonElement | null;
+      const hint = document.getElementById("model-hint");
+      if (event.error) {
+        if (hint) hint.textContent = `获取失败：${event.error}`;
+        toast(`模型列表获取失败：${event.error}`, "warn");
+      } else if (event.models?.length) {
+        fillModelOptions(event.models, event.models[0]);
+        if (hint) hint.textContent = `已获取 ${event.models.length} 个模型 · 也可选"手动输入"`;
+        toast(`已获取 ${event.models.length} 个模型`, "ok");
+      } else {
+        if (hint) hint.textContent = "该端点未返回任何模型";
+        toast("该端点未返回任何模型，请检查 base_url", "warn");
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "⟳ 获取模型列表";
       }
       return;
     }
