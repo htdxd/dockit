@@ -45,6 +45,7 @@
      - 有 `vision` 能力时：先 `read` 该候选图确认是真人像，不是再换下一个候选。
      - 多个候选都 `portrait_likely` 时：**只选一张**（引用顺序最靠前），其余候选路径写入交付说明，方便用户手动换。
      - 若旧简历里没有任何 `portrait_likely` 的图，视为无照片。
+  2.5. **旧简历是 PDF 时**：先 `read` 该 pdf（自动触发 MinerU 萃取，返回 `media` 清单 + 文本），同样按上一条选 `portrait_likely=true` 且最靠前的图，`fields.photo = <media.path>`（在 work/materials/_media/ 下）。
   3. **以上都没有**：用 `ask_user_questions` 一次问清三选一：① 用户提供照片（告知路径或重新上传）；② 移除照片位（`fields.photo = "__remove__"`，fill 会删掉模板示例照片）；③ 保留模板示例照片（不写 photo 字段）。
   - 照片会自动等比嵌入原照片位，不改变模板照片框尺寸；照片源文件必须真实存在，不存在时保留模板原照片并在 `warnings` 说明。
 

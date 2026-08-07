@@ -25,11 +25,28 @@ TOOL_SPECS = [
         "read-only directory. Path must be relative (absolute paths are rejected). "
         "Text formats (.txt/.md/.json/.yaml/.csv/.py/.svg/.xml/.html etc.) return "
         "content with optional offset/limit pagination; images (.png/.jpg/.png/.gif/"
-        ".webp) return a base64 view.",
+        ".webp) return a base64 view. .md also returns a 'media' list of images it "
+        "references (materialized under work/_media/). .pdf triggers a MinerU "
+        "ingest and returns the extracted markdown text plus a media list.",
         {
             "path": {"type": "string", "description": "Relative path from workspace root"},
             "offset": {"type": "integer", "minimum": 0, "description": "Line offset for text (default 0)"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Max lines for text (default 500)"},
+        },
+        ["path"],
+    ),
+    _function(
+        "ingest",
+        "Extract an uploaded material (pdf / docx / md / txt) into a unified "
+        "intermediate representation under work/materials/: a markdown file "
+        "(images as ![alt](path), tables as HTML, formulas as $...$, code as "
+        "fenced blocks), a _media/ folder with materialized images, and a "
+        "manifest.json index. Returns the manifest entry for the file with "
+        "media metadata (width/height/aspect/portrait_likely). Idempotent: "
+        "already-ingested files return the cached entry. Path must be relative "
+        "and inside the workspace.",
+        {
+            "path": {"type": "string", "description": "Relative workspace path of the material to ingest"},
         },
         ["path"],
     ),

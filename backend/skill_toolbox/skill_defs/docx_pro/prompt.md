@@ -55,6 +55,18 @@
 
 若 `"available": false`，**保持纯 python-docx 路线**，不得谎报能力。交付说明中注明所用引擎。
 
+## 5.5 富内容利用（上传材料 → 产物）
+
+任务开始时会注入 `[MATERIALS]` 横幅：列出每个上传材料的萃取结果（`work/materials/manifest.json` + 各 `<stem>.md`）。**优先把材料里的富内容搬进产物，而不是自己凭空编**：
+
+1. **先读 `work/materials/manifest.json`**：每个源文件一条，`media[]` 含 `path`（工作区相对，可直接用作 `images[].source`）、`width/height/aspect/portrait_likely`。
+2. **图片**：材料里的图片（pdf 由 MinerU 抽出、docx/md 已物化到 `work/materials/_media/` 或 `work/_media/`）→ 写进规格 `images: [{source: <media.path>, width_mm, caption}]`。无视觉模型按 `width/height/aspect` 判断哪张适合插图（横图作 banner、竖图作侧图），**不要凭空造图**。
+3. **表格**：材料里的表格（ingest 已转成 HTML `<table>` 或 md 管道表）→ 规格 `tables[]`。直接复制数据，不臆造数值。
+4. **公式**：材料里的 `$...$` / LaTeX → 规格 `formulas: [{latex}]`（OMML/PNG 由生成器处理）。
+5. **代码**：材料里的代码围栏 → 规格 `paragraphs[].style="code"`。
+6. **照片（人像场景）**：简历/证件类材料若含人像（`portrait_likely=true`），无视觉模型按元数据自动选一张作为封面/内页插图，不询问用户。
+7. **材料无对应内容时**：宁缺毋滥，不要为凑数而编造图表数据。
+
 ## 6. 硬性规则（每条都必须在生成中落实）
 
 1. **标题必须用真 Heading 样式**（含 OutlineLevel），封面标题与"目录"二字除外；正文不得用加粗大字号冒充标题。

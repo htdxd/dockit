@@ -14,7 +14,7 @@ from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.skills import load_skill
 from skill_toolbox.tool_specs import TOOL_SPECS
-from skill_toolbox.tools import ToolRegistry
+from skill_toolbox.tools import INGEST_AUTO_BYTES, INGEST_DIR, ToolRegistry, ingest_material
 
 EventEmitter = Callable[[dict[str, Any]], None]
 DebugLogger = Callable[[dict[str, Any]], None]
@@ -140,6 +140,9 @@ class AgentRuntime:
                     f"你上传的材料已暂存到工作区，相对路径如下（用 read 或 exec_cmd 的 "
                     f"source 参数按此相对路径访问，不要猜其他路径）：\n{files_list}"
                 )
+            materials_banner = self._materials_banner(workspace, staged)
+            if materials_banner:
+                system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
             text_only_turns = 0
             for step in range(1, skill.max_steps + 1):
@@ -362,7 +365,6 @@ class AgentRuntime:
         return published
 
     @staticmethod
-    @staticmethod
     def _stage_materials(
         workspace: Path, materials: list[Path]
     ) -> list[tuple[str, Path]]:
@@ -376,3 +378,49 @@ class AgentRuntime:
                 shutil.copy2(src, target / src.name)
                 staged.append((f"sources/{src.name}", target / src.name))
         return staged
+
+    def _materials_banner(
+        self, workspace: Path, staged: list[tuple[str, Path]]
+    ) -> str:
+        """生成 [MATERIALS] 横幅：轻扫每个源文件 + ≤1MB 小文件自动萃取。
+
+        模型开箱即得材料富内容摘要（图片/表格/公式/代码可读性），大文件
+        标注"需 ingest"由模型按需调用。萃取失败不阻塞任务，只在横幅说明。
+        """
+        if not staged:
+            return ""
+        lines: list[str] = ["[MATERIALS]"]
+        for rel, abs_path in staged:
+            suffix = abs_path.suffix.lower()
+            size = abs_path.stat().st_size
+            kind = "pdf" if suffix == ".pdf" else ("docx" if suffix == ".docx" else "markdown" if suffix in {".md", ".markdown", ".txt"} else "other")
+            # 轻扫：类型/大小
+            if suffix not in {".pdf", ".docx", ".md", ".markdown", ".txt"}:
+                lines.append(f"- {rel} ({size} bytes, {suffix or 'unknown'}) 无法萃取，按需直接 read/exec_cmd")
+                continue
+            if size > INGEST_AUTO_BYTES:
+                lines.append(
+                    f"- {rel} ({size} bytes, {kind}) 较大：read 时会自动萃取；或手动调 ingest(path) 获取富内容"
+                )
+                continue
+            # 小文件自动萃取
+            try:
+                entry = ingest_material(
+                    abs_path, workspace / INGEST_DIR, self._task_env(request.skill_id) if hasattr(self, "_task_env") else {}
+                )
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"- {rel} 萃取失败: {exc}")
+                continue
+            if not entry.get("ok"):
+                lines.append(f"- {rel} 萃取失败: {entry.get('error')}")
+                continue
+            media = entry.get("media", [])
+            media_desc = (
+                f"{len(media)} 张图" if media else "无图"
+            )
+            lines.append(
+                f"- {rel}（{kind}）→ {entry.get('md_path')}，{media_desc}"
+                f"；图片元数据见 work/materials/manifest.json，可直接引用 media[].path"
+            )
+        return "\n".join(lines)
+

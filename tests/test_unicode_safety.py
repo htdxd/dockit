@@ -413,3 +413,169 @@ def test_fill_resume_replaces_photo_and_rewrites_rels(tmp_path: Path) -> None:
     ), rels
     # 新扩展名已注册，Word 不会报文件损坏
     assert re.search(r'<Default Extension="png"', ct, re.IGNORECASE)
+
+
+# ---------------- ingest 统一 IR 萃取 ----------------
+
+def _make_docx_with_table_and_image(path: Path, photo_wh: tuple[int, int] = (220, 260)) -> None:
+    """docx：一段文本 + 一个表格 + 一张图片（rId4 引用 media/photo.png）。"""
+    import zipfile
+
+    table = (
+        "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>姓名</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>张三</w:t></w:r></w:p></w:tc></w:tr>"
+        "<w:tr><w:tc><w:p><w:r><w:t>年龄</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>28</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+    )
+    img = (
+        "<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData>"
+        "<pic:pic><pic:blipFill><a:blip r:embed=\"rId4\"/></pic:blipFill></pic:pic>"
+        "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+    )
+    doc = (
+        "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>"
+        f"<w:document {_DOCX_NS}><w:body><w:p><w:r><w:t>标题</w:t></w:r></w:p>"
+        f"{table}{img}</w:body></w:document>"
+    )
+    rels = (
+        "<?xml version='1.0'?><Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>"
+        "<Relationship Id='rId4' Target='media/photo.png' "
+        "Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'/>"
+        "</Relationships>"
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", doc)
+        z.writestr("word/_rels/document.xml.rels", rels)
+        z.writestr("word/media/photo.png", _png_bytes(*photo_wh))
+
+
+def test_ingest_docx_produces_md_tables_and_media(tmp_path: Path) -> None:
+    """ingest docx → md 文本含 HTML 表格 + 媒体物化 + manifest 索引。"""
+    from skill_toolbox.tools import INGEST_DIR, ingest_material
+
+    src = tmp_path / "材料.docx"
+    _make_docx_with_table_and_image(src)
+    mats = tmp_path / INGEST_DIR
+
+    entry = ingest_material(src, mats, {})
+
+    assert entry["ok"] is True
+    assert entry["format"] == "docx"
+    md = (tmp_path / entry["md_path"]).read_text(encoding="utf-8")
+    assert "标题" in md
+    assert "<table>" in md and "张三" in md and "28" in md
+    media = entry["media"]
+    assert media and media[0]["name"] == "photo.png"
+    assert media[0]["portrait_likely"] is True
+    # manifest 落盘
+    assert (mats / "manifest.json").is_file()
+    # 幂等：再次 ingest 走缓存（manifest 里 sources 只有一条）
+    again = ingest_material(src, mats, {})
+    assert again["ok"] is True
+    manifest_text = (mats / "manifest.json").read_text(encoding="utf-8")
+    assert manifest_text.count("photo.png") > 0
+    assert manifest_text.count('"source":') == 1
+
+
+def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
+    """ingest md → 本地图片引用物化到 work/materials/_media/ 并进 manifest。"""
+    from skill_toolbox.tools import INGEST_DIR, ingest_material
+
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "fig.png").write_bytes(_png_bytes(600, 80))
+    md = tmp_path / "notes.md"
+    md.write_text("# 笔记\n\n![架构图](assets/fig.png)\n\n正文", encoding="utf-8")
+    mats = tmp_path / INGEST_DIR
+
+    entry = ingest_material(md, mats, {})
+
+    assert entry["ok"] is True
+    assert entry["format"] == "md"
+    assert (mats / "_media" / "fig.png").is_file()
+    assert entry["media"][0]["width"] == 600
+    assert (tmp_path / entry["md_path"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypatch) -> None:
+    """read .pdf → 自动 MinerU 萃取（mock 命令）→ 返回 md 文本 + media 清单。"""
+    from skill_toolbox.tools import ToolRegistry as _TR, _mineru_command
+    import subprocess as _sp
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nfake pdf bytes")
+    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+
+    calls = {"n": 0}
+
+    def fake_mineru():
+        return ["fake-mineru"]
+
+    def fake_run(*args, **kwargs):
+        calls["n"] += 1
+        cmd = list(args[0])
+        assert "flash-extract" in cmd or "extract" in cmd
+        # 模拟 MinerU：写一个 md 到 out_dir
+        out_dir = None
+        for i, a in enumerate(cmd):
+            if a == "-o":
+                out_dir = Path(cmd[i + 1])
+        assert out_dir is not None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "paper.md").write_text(
+            "# 论文标题\n\n![图1](media/fig1.png)\n\n正文内容",
+            encoding="utf-8",
+        )
+        if "media" in [x for x in cmd]:
+            pass
+        return type("CP", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr("skill_toolbox.tools._mineru_command", fake_mineru)
+    monkeypatch.setattr("skill_toolbox.tools.subprocess.run", fake_run)
+
+    result = await registry.execute(ToolCall(id="r", name="read", arguments={"path": "paper.pdf"}))
+
+    assert result.success is True, result.content
+    payload = json.loads(result.content)
+    assert payload["format"] == "markdown"
+    assert "论文标题" in payload["content"]
+    assert payload["md_path"] == "work/materials/paper.md"
+    assert calls["n"] == 1  # flash-extract 一次成功，不再回退
+
+
+@pytest.mark.asyncio
+async def test_read_md_returns_media_list(tmp_path: Path) -> None:
+    """read .md → 物化内嵌图片到 work/_media/ 并返回清单（与 docx 同模式）。"""
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "fig.png").write_bytes(_png_bytes(300, 400))
+    md = tmp_path / "report.md"
+    md.write_text("# 报告\n\n![图](assets/fig.png)", encoding="utf-8")
+    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+
+    result = await registry.execute(ToolCall(id="r", name="read", arguments={"path": "report.md"}))
+
+    assert result.success is True
+    payload = json.loads(result.content)
+    assert payload["format"] == "markdown"
+    assert payload["media"] and payload["media"][0]["name"] == "fig.png"
+    assert (tmp_path / payload["media"][0]["path"]).is_file()
+
+
+def test_materials_banner_scans_and_auto_ingests(tmp_path: Path) -> None:
+    """[MATERIALS] 横幅：小 md 自动萃取列 md 路径；大 pdf 引导 ingest；不支持的格式跳过。"""
+    from skill_toolbox.runtime import AgentRuntime
+    from skill_toolbox.providers.mock import ScriptedProvider
+
+    rt = AgentRuntime(ScriptedProvider([]), lambda e: None)
+    small_md = tmp_path / "notes.md"
+    small_md.write_text("# 笔记", encoding="utf-8")
+    big_pdf = tmp_path / "big.pdf"
+    big_pdf.write_bytes(b"%PDF-1.4" + b"0" * 1_200_000)
+    staged = [("sources/notes.md", small_md), ("sources/big.pdf", big_pdf)]
+
+    banner = rt._materials_banner(tmp_path, staged)
+
+    assert "[MATERIALS]" in banner
+    assert "work/materials/notes.md" in banner  # 小文件自动萃取
+    assert "sources/big.pdf" in banner
+    assert "ingest" in banner  # 大文件引导 ingest

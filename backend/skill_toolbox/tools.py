@@ -5,6 +5,8 @@ import base64
 import json
 import mimetypes
 import os
+import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -218,6 +220,316 @@ def _extract_docx_text(path: Path) -> str:
     return "\n".join(paragraphs)
 
 
+# ---------------- 材料萃取（ingest） ----------------
+#
+# 目标：把用户上传的各种源（pdf / docx / md）统一萃取成一份「中间表示」——
+# 一个 Markdown 文件（对齐 MinerU 的 md 输出约定：![img] 图片、$...$ 公式、
+# HTML 表格、``` 代码围栏）+ 一个媒体目录 + 一个 manifest 索引。模型读
+# manifest 即可决定用哪些富内容，而不是逐个试读（省步数、治 20 步烧尽）。
+#
+# 约定（对齐 resume_pro 已验证的 media 元数据模式）：
+#   manifest["media"][i] = {name, path(工作区相对), width, height, aspect,
+#                           portrait_likely, order}
+# 无视觉模型按 width/height/aspect/portrait_likely 自动选图，不询问用户。
+
+INGEST_DIR = "work/materials"
+INGEST_MANIFEST = "manifest.json"  # 相对 materials/ 目录（ingest 入口的路径基准不一致，避免拼接错位）
+INGEST_AUTO_BYTES = 1_000_000  # 横幅里 ≤1MB 的小文件自动萃取
+
+# 图片引用在 md 文本中的两种形态：![alt](path) 与 <img src="path">
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)|<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def _md_link_targets(md_text: str) -> list[str]:
+    """提取 md 文本中引用的本地资源路径（图片/相对链接），仅保留工作区内可解析的。"""
+    targets: list[str] = []
+    for m in _MD_IMG_RE.finditer(md_text):
+        raw = m.group(1) or m.group(2)
+        raw = raw.split("#")[0].split("?")[0]
+        if not raw or raw.startswith(("http://", "https://", "data:")):
+            continue
+        targets.append(raw)
+    return targets
+
+
+def _ingest_docx(source: Path, materials: Path) -> tuple[str, list[Path]]:
+    """docx → md 文本 + 媒体物化到 materials/_media/。返回 (md_text, 媒体路径列表)。
+
+    用 lxml 走 w:tbl 表格 → HTML 表格、w:p 文本、r:embed 媒体（复用 docx 的
+    提取逻辑），不引第三方依赖（mammoth/pandoc 都不装）。
+    """
+    from skill_toolbox.tools import _extract_docx_media  # noqa: F401  # noqa: PLC0415
+
+    lines: list[str] = []
+    media_paths: list[Path] = []
+    try:
+        with zipfile.ZipFile(source) as z:
+            xml = z.read("word/document.xml")
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Not a readable .docx: {exc}") from None
+    try:
+        root = etree.fromstring(xml)
+    except etree.XMLSyntaxError as exc:
+        raise ValueError(f".docx document.xml parse failed: {exc}") from None
+    media_dir = materials / "_media"
+    for p in root.iter():
+        if p.tag == W_NS + "tbl":
+            # 表格 → HTML 表格
+            rows = []
+            for tr in p.iter(W_NS + "tr"):
+                cells = [
+                    "".join(t.text or "" for t in tc.iter(W_NS + "t"))
+                    for tc in tr.iter(W_NS + "tc")
+                ]
+                if cells:
+                    rows.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+            if rows:
+                lines.append("<table>" + "".join(rows) + "</table>")
+            continue
+        if p.tag == W_NS + "p":
+            text = "".join(t.text or "" for t in p.iter(W_NS + "t")).strip()
+            if text:
+                lines.append(text)
+    # 媒体物化（含人像启发式元数据，后续写进 manifest）
+    try:
+        media = _extract_docx_media(source, media_dir, materials.parent)
+        media_paths = [materials.parent / m["path"] for m in media]
+    except (ValueError, OSError):
+        media = []
+    return "\n\n".join(lines), media_paths
+
+
+def _ingest_markdown(source: Path, materials: Path) -> tuple[str, list[Path]]:
+    """md → 文本 + 物化本地图片引用到 materials/_media/。返回 (md_text, 媒体路径列表)。
+
+    md 里的图片是相对路径（如 images/fig1.png），模型需要的是可引用的磁盘
+    路径——物化（复制）到 _media/ 统一命名，避免源目录结构漂移。
+    """
+    try:
+        md_text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        md_text = source.read_text(encoding="utf-8", errors="replace")
+    media_paths: list[Path] = []
+    media_dir = materials / "_media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    for rel in _md_link_targets(md_text):
+        src = source.parent / rel
+        src = src.resolve()
+        try:
+            src.relative_to(source.parent.resolve())
+        except ValueError:
+            continue  # 逃出源目录的引用忽略
+        if not src.is_file():
+            continue
+        out = media_dir / src.name
+        try:
+            shutil.copy2(src, out)
+        except OSError:
+            continue
+        media_paths.append(out)
+    return md_text, media_paths
+
+
+def _mineru_command() -> list[str]:
+    """解析 mineru-open-api 可执行入口，返回 argv 前缀（不含子命令）。
+
+    Windows 上 npm 全局装的 mineru-open-api 是 .cmd 包装器，CreateProcess
+    不能直接跑 .cmd → 优先 node + 包内 JS 入口，退化为 cmd.exe /c。
+    """
+    cli = shutil.which("mineru-open-api")
+    if not cli:
+        raise RuntimeError(
+            "未找到 mineru-open-api。请安装：npm install -g mineru-open-api，"
+            "或在设置页「第三方服务」确认 MinerU Token 已填写。"
+        )
+    cli_path = Path(cli)
+    if cli_path.suffix.lower() in {".cmd", ".bat"}:
+        js_bin = cli_path.parent / "node_modules" / "mineru-open-api" / "bin" / "mineru-open-api"
+        node = shutil.which("node")
+        if node and js_bin.is_file():
+            return [node, str(js_bin)]
+        return ["cmd.exe", "/c", str(cli_path)]
+    return [str(cli_path)]
+
+
+def _run_mineru(source: Path, out_dir: Path, extra_env: dict[str, str]) -> None:
+    """MinerU 萃取：优先 flash-extract（免 token），超限/失败回退 extract。
+
+    token 由 sidecar 以 MINERU_TOKEN 注入 extra_env（仅 pdf 相关路径）；
+    这里不主动向用户要 key（约束：PDF skill 的 prompt 不得索要 MinerU token）。
+    """
+    base = _mineru_command()
+    # 先免 token 快速模式（≤10MB/≤20 页；只出 md——正是我们的 IR 形态）
+    try:
+        completed = subprocess.run(
+            base + ["flash-extract", str(source), "-o", str(out_dir)],
+            capture_output=True, timeout=300,
+        )
+        md_files = list(out_dir.glob("*.md"))
+        if completed.returncode == 0 and md_files:
+            return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # 回退：带 token 的 extract（--timeout 可调；输出仍统一 -f md 到 out_dir）
+    token = extra_env.get("MINERU_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "MinerU 免 token 快速萃取失败，且未配置 MINERU_TOKEN。"
+            "请在设置页「第三方服务」填写 MinerU API Token 后重试。"
+        )
+    cmd = base + [
+        "extract", str(source), "-o", str(out_dir), "-f", "md",
+        "--timeout", "1800",
+    ]
+    try:
+        completed = subprocess.run(cmd, capture_output=True, timeout=1860,
+                                   env={**os.environ, **extra_env})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"MinerU extract 调用失败: {exc}") from None
+    md_files = list(out_dir.glob("*.md"))
+    if completed.returncode or not md_files:
+        detail = (completed.stderr or b"").decode("utf-8", errors="replace")[-2000:]
+        raise RuntimeError(f"MinerU extract 失败: {detail or '未产出 md'}")
+
+
+def _ingest_pdf(source: Path, materials: Path, extra_env: dict[str, str]) -> tuple[str, list[Path]]:
+    """pdf → MinerU md（落 materials/）+ 媒体物化。返回 (md_text, 媒体路径列表)。
+
+    MinerU 的 md 输出带图片引用（对齐 ![img] 约定），图片在 _media/ 下，
+    manifest 统一索引。
+    """
+    out_dir = materials
+    _run_mineru(source, out_dir, extra_env)
+    md_files = list(out_dir.glob("*.md"))
+    if not md_files:
+        raise RuntimeError("MinerU 未产出 Markdown")
+    md_path = md_files[0]
+    md_text = md_path.read_text(encoding="utf-8", errors="replace")
+    media_paths: list[Path] = []
+    if md_path.parent.glob("_media/*"):
+        media_paths = list(md_path.parent.glob("_media/*"))
+    return md_text, media_paths
+
+
+def _media_meta(path: Path, root: Path, order: int) -> dict[str, Any]:
+    """单张图片的元数据（对齐 resume_pro 的 media 清单字段）。"""
+    dims = _image_size(path)
+    width, height = dims or (None, None)
+    aspect = (width / height) if width and height else None
+    portrait_likely = bool(
+        aspect is not None and 0.75 <= aspect <= 1.35
+        and (width or 0) >= 80 and (height or 0) >= 80
+    )
+    return {
+        "name": path.name,
+        "path": _relative_to_cwd(path, root),
+        "size": path.stat().st_size,
+        "width": width,
+        "height": height,
+        "aspect": round(aspect, 2) if aspect else None,
+        "portrait_likely": portrait_likely,
+        "order": order,
+    }
+
+
+def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
+    """萃取单个源文件到 work/materials/，返回描述（供横幅与 read 复用）。
+
+    幂等：已萃取（manifest 里存在）直接复用，重跑零成本。
+    返回 {source, format, ok, md_path, media: [meta...], cached, error}
+    """
+    materials.mkdir(parents=True, exist_ok=True)
+    manifest_path = materials / INGEST_MANIFEST  # work/materials/manifest.json
+    manifest: dict[str, Any] = {"sources": []}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {"sources": []}
+    key = source.resolve()
+    existing = next((s for s in manifest["sources"] if Path(s.get("source", "")).resolve() == key), None)
+    if existing and existing.get("md_path") and Path(materials / existing["md_path"]).is_file():
+        existing["cached"] = True
+        return existing
+
+    suffix = source.suffix.lower()
+    try:
+        if suffix == ".pdf":
+            md_text, media_paths = _ingest_pdf(source, materials, extra_env or {})
+        elif suffix == ".docx":
+            md_text, media_paths = _ingest_docx(source, materials)
+        elif suffix in {".md", ".markdown", ".txt"}:
+            md_text, media_paths = _ingest_markdown(source, materials)
+        else:
+            raise ValueError(f"ingest 不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt）")
+    except Exception as exc:  # noqa: BLE001 - 萃取失败要落到 manifest 供模型看到错误
+        entry = {"source": str(source), "format": suffix.lstrip("."), "ok": False, "error": str(exc)}
+        manifest["sources"].append(entry)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise
+
+    # 写 md 文件（统一命名 <stem>.md）
+    md_path = materials / f"{source.stem}.md"
+    md_path.write_text(md_text, encoding="utf-8")
+    media: list[dict[str, Any]] = []
+    for order, mp in enumerate(media_paths):
+        media.append(_media_meta(mp, materials.parent, order))
+    media.sort(key=lambda m: (m["order"], -m["size"]))
+    for m in media:
+        m.pop("order", None)
+    entry = {
+        "source": str(source),
+        "format": suffix.lstrip("."),
+        "ok": True,
+        "md_path": f"{INGEST_DIR}/{source.stem}.md",
+        "media": media,
+    }
+    manifest["sources"] = [s for s in manifest["sources"] if Path(s.get("source", "")).resolve() != key]
+    manifest["sources"].append(entry)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return entry
+
+
+def _manifest_entries(materials: Path) -> list[dict[str, Any]]:
+    manifest_path = materials / INGEST_MANIFEST
+    if not manifest_path.is_file():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return manifest.get("sources", [])
+
+
+def _materialize_md_media(md_path: Path, root: Path) -> list[dict[str, Any]]:
+    """物化 md 里引用的本地图片到 work/_media/<md名>/，返回媒体清单（与 docx 同模式）。"""
+    try:
+        md_text = md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    media: list[dict[str, Any]] = []
+    dest = root / "work" / "_media" / md_path.stem
+    dest.mkdir(parents=True, exist_ok=True)
+    order = 0
+    for rel in _md_link_targets(md_text):
+        src = (md_path.parent / rel).resolve()
+        try:
+            src.relative_to(md_path.parent.resolve())
+        except ValueError:
+            continue
+        if not src.is_file() or src.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            continue
+        out = dest / src.name
+        try:
+            if not out.exists():
+                shutil.copy2(src, out)
+            media.append(_media_meta(out, root, order))
+            order += 1
+        except OSError:
+            continue
+    return media
+
+
 class ToolRegistry:
     def __init__(
         self,
@@ -241,6 +553,8 @@ class ToolRegistry:
         try:
             if call.name == "read":
                 return await asyncio.to_thread(self._read, call)
+            if call.name == "ingest":
+                return await asyncio.to_thread(self._ingest, call)
             if call.name == "write":
                 return await asyncio.to_thread(self._write, call)
             if call.name == "edit":
@@ -405,6 +719,60 @@ class ToolRegistry:
                     ensure_ascii=False,
                 ),
             )
+        if suffix == ".pdf":
+            # pdf 需要 ingest（MinerU 萃取）后才能读：返回萃取的 md 文本 +
+            # 媒体清单。首次自动触发 ingest（幂等，已萃取直接复用）。
+            if not path.is_relative_to(self.policy.root):
+                raise ValueError("read .pdf 仅支持工作区内文件（先 ingest 再读）")
+            entry = ingest_material(path, self.policy.root / INGEST_DIR, self.extra_env)
+            if not entry.get("ok"):
+                raise ValueError(f"pdf 萃取失败: {entry.get('error')}")
+            md_path = self.policy.root / entry["md_path"]
+            md_text = md_path.read_text(encoding="utf-8", errors="replace")
+            md_lines = md_text.splitlines()
+            offset = int(call.arguments.get("offset", 0))
+            limit = int(call.arguments.get("limit", 500))
+            content = "\n".join(md_lines[offset : offset + limit])
+            return self._result(
+                call,
+                True,
+                json.dumps(
+                    {
+                        "content": content,
+                        "format": "markdown",
+                        "lines": len(md_lines),
+                        "media": entry.get("media", []),
+                        "source": entry.get("source", ""),
+                        "md_path": entry.get("md_path", ""),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        if suffix == ".md":
+            if path.stat().st_size > MAX_TEXT_BYTES:
+                raise ValueError("Text file exceeds the 1 MB read limit")
+            md_text = path.read_text(encoding="utf-8", errors="replace")
+            lines = md_text.splitlines()
+            offset = int(call.arguments.get("offset", 0))
+            limit = int(call.arguments.get("limit", 500))
+            content = "\n".join(lines[offset : offset + limit])
+            # md 内嵌图片物化到 work/_media/<md名>/，返回清单（与 docx 同模式）
+            media: list[dict[str, Any]] = []
+            if path.is_relative_to(self.policy.root):
+                media = _materialize_md_media(path, self.policy.root)
+            return self._result(
+                call,
+                True,
+                json.dumps(
+                    {
+                        "content": content,
+                        "format": "markdown",
+                        "lines": len(lines),
+                        "media": media,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
         if suffix not in TEXT_SUFFIXES:
             raise ValueError(f"Unsupported read format: {suffix or 'unknown'}")
         if path.stat().st_size > MAX_TEXT_BYTES:
@@ -420,6 +788,25 @@ class ToolRegistry:
                 {"content": content, "offset": offset, "total_lines": len(lines)},
                 ensure_ascii=False,
             ),
+        )
+
+    def _ingest(self, call: ToolCall) -> ToolResult:
+        """ingest：把上传材料萃取成统一 IR（md + 媒体 + manifest）。"""
+        path_str = str(call.arguments["path"])
+        try:
+            path = self.policy.require_file(path_str)
+        except PolicyViolation:
+            raise ValueError(f"ingest 仅支持工作区内文件: {path_str}")
+        try:
+            entry = ingest_material(path, self.policy.root / INGEST_DIR, self.extra_env)
+        except Exception as exc:  # noqa: BLE001 - 失败信息要完整回给模型
+            return self._result(call, False, f"ingest 失败: {exc}")
+        if not entry.get("ok"):
+            return self._result(call, False, f"ingest 失败: {entry.get('error')}")
+        return self._result(
+            call,
+            True,
+            json.dumps(entry, ensure_ascii=False),
         )
 
     def _write(self, call: ToolCall) -> ToolResult:
