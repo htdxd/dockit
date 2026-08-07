@@ -24,6 +24,21 @@ ProviderFactory = Callable[[ProviderConfig], ModelProvider]
 DEBUG_LOG_DIR = ".skill-toolbox-logs"
 MODELS_TIMEOUT_SECONDS = 15
 
+# 产物文件名的 skill 来源标记 → 前端工具页。runtime._publish 会把标记打进
+# 文件名（如 resume.resume_pro.docx），_list_artifacts 据此按产生它的功能
+# 归类；无标记的历史文件进 unmarked，由前端按扩展名兜底。
+_SKILL_MARKERS: tuple[tuple[str, str], ...] = (
+    ("ppt", ".ppt-master."),
+    ("resume", ".resume_pro."),
+    ("docx", ".docx_pro."),
+    ("docx", ".simple_docx."),
+    ("pdf", ".pdf_docx_routing."),
+)
+
+
+def _EMPTY_BY_SKILL() -> dict[str, list[str]]:
+    return {"ppt": [], "resume": [], "docx": [], "pdf": [], "unmarked": []}
+
 
 def request_models(kind: str, base_url: str, api_key: str) -> tuple[list[str], str | None]:
     """GET the provider's model list and return (model_ids, error).
@@ -120,6 +135,8 @@ class SidecarService:
                 self._emit(request_id, {"type": "mineru_key_cleared"})
             elif message_type == "fetch_models":
                 await self._fetch_models(request_id, payload)
+            elif message_type == "list_artifacts":
+                await self._list_artifacts(request_id, payload)
             else:
                 self._emit(
                     request_id,
@@ -235,6 +252,63 @@ class SidecarService:
             )
             return
         task.cancel()
+
+    async def _list_artifacts(self, request_id: str, payload: dict[str, Any]) -> None:
+        """List previously generated artifact files in the configured output dir.
+
+        The UI shows "产物版本" from the last task's completion event only; on
+        app start (or when switching to the artifacts tab) the frontend asks
+        for anything already sitting in the output directory, so earlier
+        results reappear. Discovery is limited to the immediate output dir —
+        files are published flat (runtime._publish), so a flat list is the
+        contract; nothing recursive, nothing outside the dir.
+
+        Return shape: `files` (all, ordered by mtime desc) kept for
+        backward-compat, plus `by_skill` bucketing — runtime._publish stamps
+        each artifact name with its source skill (e.g. `resume.resume_pro.docx`),
+        so the frontend can route each file to the tool page that produced it
+        instead of guessing by extension. Unstamped legacy files land in
+        `unmarked`.
+        """
+        raw = str(payload.get("output_dir", "")).strip()
+        empty = {"type": "artifacts_listed", "files": [], "by_skill": _EMPTY_BY_SKILL()}
+        if not raw:
+            self._emit(request_id, empty)
+            return
+        directory = Path(raw)
+        if not directory.is_dir():
+            self._emit(request_id, empty)
+            return
+        files: list[str] = []
+        try:
+            for path in directory.iterdir():
+                if path.is_file():
+                    name = path.name.lower()
+                    if name.endswith((".docx", ".doc", ".pdf", ".pptx", ".ppt", ".md", ".txt")):
+                        files.append(str(path.resolve()))
+        except OSError:
+            pass
+        files.sort(
+            key=lambda p: (-self._stat_mtime(p), p.casefold())
+        )
+        by_skill: dict[str, list[str]] = _EMPTY_BY_SKILL()
+        for absolute in files:
+            placed = False
+            for tool, marker in _SKILL_MARKERS:
+                if marker in absolute:
+                    by_skill[tool].append(absolute)
+                    placed = True
+                    break
+            if not placed:
+                by_skill["unmarked"].append(absolute)
+        self._emit(request_id, {"type": "artifacts_listed", "files": files, "by_skill": by_skill})
+
+    @staticmethod
+    def _stat_mtime(path: str) -> float:
+        try:
+            return Path(path).stat().st_mtime
+        except OSError:
+            return 0.0
 
     async def _fetch_models(self, request_id: str, payload: dict[str, Any]) -> None:
         """Proxy the provider's model-list endpoint and emit the model ids.

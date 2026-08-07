@@ -16,8 +16,11 @@ def workspace_path(value: str) -> Path:
 
 
 def run_text(command: list[str]) -> str:
+    # text=True 在中文 Windows 上用 GBK 解码 poppler 的 UTF-8 输出会抛
+    # UnicodeDecodeError；改为 bytes 捕获 + UTF-8 容错解码。
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=30).stdout
+        proc = subprocess.run(command, capture_output=True, timeout=30)
+        return proc.stdout.decode("utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ""
 

@@ -151,7 +151,20 @@ export function mountLayout(root: HTMLElement): void {
           <div class="h">下午好 👋 今天要把什么材料变成成品文件？</div>
           <div class="h-sub">从左侧选择一个工具开始 —— 填信息 → 答少量问题 → 拿到文件</div>
         </div>
-        <div class="w-model" data-go="settings"><span class="live"></span><span id="model-summary">未配置模型</span></div>
+        <div class="w-model" id="w-model" data-go="settings"><span class="live"></span><span id="model-summary">未配置模型</span><span class="w-chev">▾</span></div>
+        <div class="model-picker" id="model-picker" hidden>
+          <div class="mp-head">切换供应商 / 模型</div>
+          <div class="mp-cols">
+            <div class="mp-col">
+              <div class="mp-col-title">供应商</div>
+              <div class="mp-providers" id="mp-providers"></div>
+            </div>
+            <div class="mp-col">
+              <div class="mp-col-title">模型 <span class="mp-hint" id="mp-models-hint"></span></div>
+              <div class="mp-models" id="mp-models"><div class="mp-empty">点击左侧供应商获取模型列表</div></div>
+            </div>
+          </div>
+        </div>
         <button class="theme-btn" id="theme-btn">🌗 深色模式</button>
       </div>
       <div id="form-error" class="form-error" role="alert"></div>
@@ -241,13 +254,38 @@ export function mountLayout(root: HTMLElement): void {
               <div class="u-ic">⭳</div>
               <div class="u-t">拖入文件，或点击选择</div>
               <div class="u-optional">可选 · 不上传也能生成</div>
-              <span class="fmt">pdf / docx / md / txt</span>
+              <span class="fmt">pdf / docx / md / txt / jpg / png（jpg/png 作证件照）</span>
             </div>
             <input id="materials-input-resume" type="file" multiple hidden>
             <div id="materials-list-resume"></div>
           </div>
           <div class="card">
-            <div class="card-title"><span class="no">3</span> 输出选项</div>
+            <div class="card-title"><span class="no">3</span> 选择模板 <span class="sub">必选</span></div>
+            <div class="tmpl-grid" id="resume-template">
+              <div class="tmpl-card on" data-template="t001" tabindex="0" role="button" aria-label="选择模板 通用简洁风">
+                <img src="resume-templates/t001.jpg" alt="通用简洁风" loading="lazy">
+                <div class="tmpl-name">通用简洁风</div>
+              </div>
+              <div class="tmpl-card" data-template="t002" tabindex="0" role="button" aria-label="选择模板 简约风">
+                <img src="resume-templates/t002.jpg" alt="简约风" loading="lazy">
+                <div class="tmpl-name">简约风</div>
+              </div>
+              <div class="tmpl-card" data-template="t046" tabindex="0" role="button" aria-label="选择模板 蓝灰设计风">
+                <img src="resume-templates/t046.jpg" alt="蓝灰设计风" loading="lazy">
+                <div class="tmpl-name">蓝灰设计风</div>
+              </div>
+              <div class="tmpl-card" data-template="t026" tabindex="0" role="button" aria-label="选择模板 黑色双栏">
+                <img src="resume-templates/t026.jpg" alt="黑色双栏" loading="lazy">
+                <div class="tmpl-name">黑色双栏</div>
+              </div>
+              <div class="tmpl-card" data-template="t109" tabindex="0" role="button" aria-label="选择模板 简约 word">
+                <img src="resume-templates/t109.jpg" alt="简约 word" loading="lazy">
+                <div class="tmpl-name">简约 word</div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><span class="no">4</span> 输出选项</div>
             <label class="fld-l" style="margin-top:0;">格式</label>
             <div class="chips" id="resume-format">
               <span class="chip on" data-v="DOCX">DOCX</span>
@@ -350,21 +388,15 @@ export function mountLayout(root: HTMLElement): void {
               <div class="u-ic">⭳</div>
               <div class="u-t">拖入 PDF 文件，或点击选择</div>
               <div class="u-optional req">必填 · 转换需要源文件</div>
-              <span class="fmt">仅 .pdf · 单文件最大 50MB</span>
+              <span class="fmt">仅 .pdf · 单文件 ≤ 200MB · ≤ 600 页（MinerU 限制）</span>
             </div>
             <input id="materials-input-pdf" type="file" multiple hidden>
             <div id="materials-list-pdf"></div>
           </div>
           <div class="card">
-            <div class="card-title"><span class="no">2</span> 修复选项 <span class="sub">可多选 · 不需要可跳过</span></div>
-            <div class="chips" data-multi id="pdf-opts">
-              <span class="chip on" data-v="保留表格结构">保留表格结构</span>
-              <span class="chip" data-v="修复扫描件文字（OCR）">修复扫描件文字（OCR）</span>
-              <span class="chip" data-v="保留图片位置">保留图片位置</span>
-            </div>
             <div class="cta-row">
               <button class="btn" data-start="pdf">开始转换</button>
-              <span class="btn-note">转换结果保存到输出目录，不覆盖原文件</span>
+              <span class="btn-note">转换结果保存到输出目录，不覆盖原文件。类型与修复策略由系统按 PDF 内容自动判断。</span>
             </div>
           </div>
         </div>
@@ -420,6 +452,7 @@ export function mountLayout(root: HTMLElement): void {
               <div class="model-hint" id="model-hint">获取失败时可切换为手动输入</div>
             </div>
             <div class="cta-row">
+              <button class="btn" id="btn-save-provider">💾 保存配置</button>
               <button class="btn" id="btn-validate">校验连接</button>
               <span class="caps">
                 <span class="cap cap-clickable" id="cap-tool-calling" title="点击可手动关闭/开启该模型的工具调用能力">tool_calling <b>✓</b></span>
@@ -428,7 +461,7 @@ export function mountLayout(root: HTMLElement): void {
               </span>
               <span class="btn-sec danger" id="btn-delete-provider">🗑 删除此供应商</span>
             </div>
-            <div class="sec-note">任务开始前检查模型能力，不兼容时明确报错，不静默降级。三个能力标签均可点击手动覆盖；tool_calling / json_schema 默认开启，vision 按模型静态表自动判定。</div>
+            <div class="sec-note">输入或切换卡片时已自动持久化到本地数据库；点「保存配置」可立即落盘确认。任务开始前检查模型能力，不兼容时明确报错，不静默降级。三个能力标签均可点击手动覆盖；tool_calling / json_schema 默认开启，vision 按模型静态表自动判定。</div>
           </div>
           <div class="card">
             <div class="card-title">📂 输出目录</div>
@@ -494,6 +527,8 @@ export function mountLayout(root: HTMLElement): void {
     const nav = t.closest<HTMLElement>(".nav-item[data-tool]");
     if (nav) {
       goTool(nav.dataset.tool!);
+      // 进入「设置」页时默认落到模型供应商配置（无默认字标签页时的兜底）
+      if (nav.dataset.tool === "settings") goSub("settings", "providers");
       return;
     }
     const sub = t.closest<HTMLElement>(".subtab[data-sub]");
@@ -511,6 +546,12 @@ export function mountLayout(root: HTMLElement): void {
     const mode = t.closest<HTMLElement>(".p-mode");
     if (mode && mode.dataset.m) {
       setPagesMode(mode.dataset.m as "exact" | "range");
+      return;
+    }
+    const tmpl = t.closest<HTMLElement>(".tmpl-card");
+    if (tmpl && tmpl.dataset.template) {
+      const grid = tmpl.closest<HTMLElement>(".tmpl-grid");
+      grid?.querySelectorAll(".tmpl-card").forEach((c) => c.classList.toggle("on", c === tmpl));
       return;
     }
     const chip = t.closest<HTMLElement>(".chip");
@@ -638,7 +679,7 @@ function renderArtView(tool: string, state: TaskState): void {
       const badge = ext === "PDF" ? "P" : "W";
       return `<div class="vrow ${i === 0 ? "cur" : ""}">
         <div class="v-badge ${badgeCls}">${badge}</div>
-        <div><div class="v-title">${escapeHtml(name)}</div><div class="v-sub">${ext} · 可在默认专业软件中打开</div></div>
+        <div><div class="v-title">${escapeHtml(name)}</div><div class="v-sub">${escapeHtml(p)} · 可在默认专业软件中打开</div></div>
         <div class="v-open" data-artifact-path="${escapeHtml(p)}">打开</div>
       </div>`;
     })
@@ -660,11 +701,16 @@ function questionField(question: Question): HTMLElement {
   const label = document.createElement("div");
   label.className = "d-q";
   label.append(document.createTextNode(`❓ ${question.label}${question.required ? "（必填）" : ""}`));
+  const fieldBox = document.createElement("div");
+  fieldBox.className = "d-field";
   let field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
   if (question.type === "textarea") {
     field = document.createElement("textarea");
     field.className = "txa";
+    fieldBox.append(field);
   } else if (question.type === "select") {
+    // 下拉选项之外，始终提供一个「✎ 自定义回答…」入口：
+    // 选中后展开自由输入框，其内容将作为该问题的回答。
     field = document.createElement("select");
     field.className = "inp mono";
     field.append(
@@ -674,16 +720,32 @@ function questionField(question: Question): HTMLElement {
         option.textContent = value;
         return option;
       }),
+      (() => {
+        const custom = document.createElement("option");
+        custom.value = "__custom__";
+        custom.textContent = "✎ 自定义回答…";
+        return custom;
+      })(),
     );
+    const customBox = document.createElement("input");
+    customBox.className = "inp d-custom";
+    customBox.placeholder = "输入自定义回答…";
+    customBox.dataset.customFor = question.id;
+    customBox.hidden = true;
+    field.addEventListener("change", () => {
+      const isCustom = field.value === "__custom__";
+      customBox.hidden = !isCustom;
+      if (isCustom) customBox.focus();
+    });
+    fieldBox.append(field, customBox);
   } else {
     field = document.createElement("input");
     field.className = "inp";
+    field.placeholder = "可直接输入自定义回答…";
+    fieldBox.append(field);
   }
   field.dataset.questionId = question.id;
   field.required = Boolean(question.required);
-  const fieldBox = document.createElement("div");
-  fieldBox.className = "d-field";
-  fieldBox.append(field);
   wrap.append(label, fieldBox);
   return wrap;
 }

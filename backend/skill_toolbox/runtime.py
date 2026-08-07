@@ -90,6 +90,7 @@ class AgentRuntime:
 
     async def run(self, request: TaskRequest) -> TaskResult:
         skill = load_skill(request.skill_id)
+        self.skill_id = skill.id  # _publish 用它给产物文件名打来源标记
         request.output_dir.mkdir(parents=True, exist_ok=True)
         system_prompt = skill.system_prompt
         if request.capabilities:
@@ -193,8 +194,9 @@ class AgentRuntime:
                             role="user",
                             text=(
                                 "你上一轮没有调用任何工具，任务无法推进。"
-                                "请调用工具继续（read/write/edit/exec_cmd/"
-                                "ask_user_questions/finish_task）。"
+                                "如果最终产物已经生成并验证完毕，请立即调用 "
+                                "finish_task 交付（只传产物相对路径）；否则请调用 "
+                                "read/write/edit/exec_cmd/ask_user_questions 继续。"
                             ),
                         )
                     )
@@ -337,9 +339,8 @@ class AgentRuntime:
         self.emit({"type": "task_failed", "error": error})
         return TaskResult(status="failed", error=error)
 
-    @staticmethod
     def _publish(
-        call: ToolCall, policy: WorkspacePolicy, output_dir: Path
+        self, call: ToolCall, policy: WorkspacePolicy, output_dir: Path
     ) -> list[Path]:
         artifacts = call.arguments.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
@@ -347,10 +348,14 @@ class AgentRuntime:
         published: list[Path] = []
         for relative in artifacts:
             source = policy.require_file(str(relative))
-            target = output_dir / source.name
+            # 文件名带 skill 来源标记（如 resume.resume_pro.docx），前端按标记
+            # 把产物归到产生它的功能页，避免按扩展名串检。同名去重仍保留，
+            # 去重后缀插在 stem 与标记之间，标记不丢（resume-2.resume_pro.docx）。
+            marker = f".{self.skill_id}"
+            target = output_dir / f"{source.stem}{marker}{source.suffix}"
             index = 2
             while target.exists():
-                target = output_dir / f"{source.stem}-{index}{source.suffix}"
+                target = output_dir / f"{source.stem}-{index}{marker}{source.suffix}"
                 index += 1
             shutil.copy2(source, target)
             published.append(target)

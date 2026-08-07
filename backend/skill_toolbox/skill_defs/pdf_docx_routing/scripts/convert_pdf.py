@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,24 +23,72 @@ def boolean(value: str) -> str:
     return normalized
 
 
+def mineru_command() -> list[str]:
+    """解析 mineru-open-api 的可执行入口，返回 argv 前缀（不含子命令）。
+
+    npm 全局安装的 mineru-open-api 在 Windows 上是 `mineru-open-api.cmd`
+    包装器，Python 的 subprocess 不带 shell 时无法直接执行 .cmd/.bat
+    （CreateProcess 不按 PATHEXT 解析）→ FileNotFoundError。
+    这里优先解析到 node + 包内 JS 入口直接调用；找不到 node 时退化为
+    `cmd.exe /c`（此时按字符串拼接命令，路径中不要含引号）。
+    """
+    cli = shutil.which("mineru-open-api")
+    if not cli:
+        raise RuntimeError(
+            "未找到 mineru-open-api，无法调用 MinerU 转换。请先安装并加入 PATH："
+            "npm install -g mineru-open-api（或在设置页确认 MinerU Token 已填写）。"
+        )
+    cli_path = Path(cli)
+    if cli_path.suffix.lower() in {".cmd", ".bat"}:
+        js_bin = cli_path.parent / "node_modules" / "mineru-open-api" / "bin" / "mineru-open-api"
+        node = shutil.which("node")
+        if node and js_bin.is_file():
+            return [node, str(js_bin)]
+        return ["cmd.exe", "/c", str(cli_path)]
+    return [str(cli_path)]
+
+
 def main() -> None:
     source = workspace_path(sys.argv[1], must_exist=True)
     output = workspace_path(sys.argv[2], must_exist=False)
-    model, ocr, formula, table, language, pages = sys.argv[3:]
+    args = sys.argv[3:]
+    # manifest argv 契约：model/ocr/formula/table/language 五项，默认处理全文。
+    # 早期契约曾含 {pages} 作为第 6 项（已移除）；若仍收到 6 项视为旧式调用，
+    # 丢弃末尾 pages 即可，不要把它传给 MinerU。
+    if len(args) == 6:
+        args = args[:5]
+    if len(args) != 5:
+        raise ValueError(
+            f"convert_pdf 需要 5 个参数（model/ocr/formula/table/language），"
+            f"实际收到 {len(args)} 个: {args!r}"
+        )
+    if any("{" in v or "}" in v for v in args):
+        raise ValueError(
+            f"convert_pdf 收到未渲染的占位符参数（参数缺漏）: {args!r}，请按 manifest 补齐"
+        )
+    model, ocr, formula, table, language = args
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        "mineru-open-api", "extract", str(source), "-o", str(output.parent), "-f", "docx",
+    command = mineru_command() + [
+        "extract", str(source), "-o", str(output.parent), "-f", "docx",
         "--model", model, "--ocr=" + boolean(ocr), "--formula=" + boolean(formula),
         "--table=" + boolean(table), "--language", language, "--timeout", "1800",
     ]
-    if pages.lower() != "all":
-        command.extend(["--pages", pages])
+    # 默认处理全文：不传 --pages。
 
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=1860)
+    # 用 bytes 捕获输出：中文 Windows 的默认编码是 GBK，text=True 会让
+    # subprocess 的 _readerthread 用 GBK 解码 MinerU 的 UTF-8 输出并崩溃
+    # （UnicodeDecodeError），导致 stderr 为 None、后续切片报 TypeError。
+    completed = subprocess.run(command, capture_output=True, timeout=1860)
+    stdout = completed.stdout.decode("utf-8", errors="replace")
+    stderr = completed.stderr.decode("utf-8", errors="replace")
     docx_files = sorted(output.parent.glob("*.docx"))
     if completed.returncode or not docx_files:
-        raise RuntimeError(completed.stderr[-2000:] or completed.stdout[-2000:] or "MinerU did not create a DOCX")
+        detail = stderr[-2000:] or stdout[-2000:] or "MinerU did not create a DOCX"
+        hint = ""
+        if "token" in detail.lower() or "auth" in detail.lower() or "401" in detail:
+            hint = "（提示：请到设置页「第三方服务」填写 MinerU API Token）"
+        raise RuntimeError(detail + hint)
 
     generated = docx_files[0]
     if generated.resolve() != output.resolve():

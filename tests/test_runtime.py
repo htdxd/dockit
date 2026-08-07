@@ -92,7 +92,8 @@ async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
     )
 
     assert result.status == "completed"
-    assert result.artifacts == [tmp_path / "published" / "runtime-test.docx"]
+    # 产物文件名带 skill 来源标记（.simple_docx.）
+    assert result.artifacts == [tmp_path / "published" / "runtime-test.simple_docx.docx"]
     assert result.artifacts[0].exists()
     assert any(event["type"] == "tool_started" for event in events)
     assert {

@@ -1,16 +1,15 @@
+# -*- coding: utf-8 -*-
 """render_pages.py — render a .docx to per-page PNGs for vision verification.
 
 Usage: python render_pages.py <input.docx> <output_dir>
 
 Pipeline: DOCX -> PDF -> PNG.
 - Windows: Word COM (ExportAsFixedFormat) — best fidelity for Word/WPS.
-- Fallback: LibreOffice headless (soffice --convert-to pdf) when Word is
-  unavailable.
+- Fallback: LibreOffice headless (soffice --convert-to pdf) when Word is unavailable.
 - Rasterize with pdftoppm (Poppler) at 120 DPI.
 
 Output: JSON {"pdf": ..., "images": [...page-N.png...], "page_images_created": N}
 """
-
 from __future__ import annotations
 
 import base64
@@ -20,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from docx_pro_engine import workspace_path
+from resume_engine import workspace_path
 
 
 def _run_capture(command: list[str], timeout: int) -> tuple[int, str, str]:
@@ -72,15 +71,8 @@ def _render_with_soffice(source: Path, pdf_path: Path) -> None:
         raise RuntimeError("Neither Word COM nor LibreOffice (soffice) is available")
     rc, stdout, stderr = _run_capture(
         [
-            soffice,
-            "--headless",
-            "--invisible",
-            "--norestore",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(pdf_path.parent),
-            str(source),
+            soffice, "--headless", "--invisible", "--norestore",
+            "--convert-to", "pdf", "--outdir", str(pdf_path.parent), str(source),
         ],
         300,
     )

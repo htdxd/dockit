@@ -18,7 +18,7 @@
     },
     "convert_pdf": {
       "entry": "convert_pdf.py",
-      "argv": ["{source}", "{output}", "{model}", "{ocr}", "{formula}", "{table}", "{language}", "{pages}"]
+      "argv": ["{source}", "{output}", "{model}", "{ocr}", "{formula}", "{table}", "{language}"]
     },
     "audit_docx": {
       "entry": "audit_docx.py",

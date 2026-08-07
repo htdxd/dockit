@@ -27,14 +27,16 @@ def _probe(binary: str) -> str | None:
         completed = subprocess.run(
             [binary, "--version"],
             capture_output=True,
-            text=True,
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:
         return None
-    output = (completed.stdout or completed.stderr).strip()
+    output = (
+        completed.stdout.decode("utf-8", errors="replace")
+        or completed.stderr.decode("utf-8", errors="replace")
+    ).strip()
     return output.splitlines()[0] if output else "unknown"
 
 

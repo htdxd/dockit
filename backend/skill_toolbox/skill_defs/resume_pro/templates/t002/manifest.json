@@ -1,0 +1,188 @@
+{
+  "id": "t002",
+  "name": "简约风",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "fields": [
+    {
+      "id": "photo",
+      "key": "photo",
+      "mode": "photo",
+      "locations": [
+        {
+          "anchor_idx": 7,
+          "rId": "rId4",
+          "media": "word/media/image1.png",
+          "width_pt": 79,
+          "height_pt": 104
+        }
+      ]
+    },
+    {
+      "id": "name",
+      "key": "name",
+      "mode": "line",
+      "text": "姓    名：简历模板资源网",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0,
+          "width_pt": 282.9,
+          "height_pt": 134.2,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "phone",
+      "key": "phone",
+      "mode": "line",
+      "text": "电    话：13500135000",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0,
+          "width_pt": 282.9,
+          "height_pt": 134.2,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "email",
+      "key": "email",
+      "mode": "line",
+      "text": "邮    箱：jianlimoban-ziyuan.com",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0,
+          "width_pt": 282.9,
+          "height_pt": 134.2,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "address",
+      "key": "address",
+      "mode": "line",
+      "text": "住    址：北京市东城区",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0,
+          "width_pt": 282.9,
+          "height_pt": 134.2,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "birth",
+      "key": "birth",
+      "mode": "line",
+      "text": "出生年月：1996.05",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 1,
+          "width_pt": 256.1,
+          "height_pt": 113.4,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "politics",
+      "key": "politics",
+      "mode": "line",
+      "text": "政治面貌：中共党员",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 1,
+          "width_pt": 256.1,
+          "height_pt": 113.4,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "education",
+      "key": "education",
+      "mode": "block",
+      "text": "2005.07-2009.06          简历模板资源网科技大学                      市场营销（本科）\n主修课程：\n管理学、微观经济学、宏观经济学、管理信息系统、统计学、会计学、财务管理、市场营销、经济法、消费者行为学、国际市场营销",
+      "locations": [
+        {
+          "anchor_idx": 8,
+          "wsp_idx": 3,
+          "width_pt": 506.2,
+          "height_pt": 77.3,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "key": "work",
+      "mode": "block",
+      "text": "2012-04至今            简历模板资源网信息科技有限公司           市场营销（实习生）\n负责公司线上端资源的销售工作（以开拓客户为主），公司主要资源以广点通、智汇推、百度、小米、360、沃门户等；\n实时了解行业的变化，跟踪客户的详细数据，为客户制定更完善的投放计划（合作过珍爱网、世纪佳缘、56视频、京东等客户）\n2010.03-2012.03        简历模板资源网信息科技有限公司          软件工程师\n负责公司业务系统的设计及改进，参与公司网上商城系统产品功能设计及实施工作。\n负责客户调研、客户需求分析、方案写作等工作， 参与公司多个大型电子商务项目的策划工作，担任大商集团网上商城一期建设项目经理。",
+      "locations": [
+        {
+          "anchor_idx": 10,
+          "wsp_idx": 3,
+          "width_pt": 506.2,
+          "height_pt": 164.0,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "work_1",
+      "key": "work",
+      "mode": "block",
+      "text": "2009.03-2011.06        简历模板资源网信息科技有限公司          校园大使主席 \n目标带领自己的团队，辅助完成在各高校的“伏龙计划”，向全球顶尖的AXA金融公司推送实习生资源。\n整体运营前期开展了相关的线上线下宣传活动，中期为进行咨询的人员提供讲解。后期进行了项目的维护阶段，保证了整个项目的完整性。",
+      "locations": [
+        {
+          "anchor_idx": 11,
+          "wsp_idx": 3,
+          "width_pt": 506.2,
+          "height_pt": 77.4,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "skill",
+      "key": "skill",
+      "mode": "block",
+      "text": "普通话一级甲等；\n大学英语四/六级（CET-4/6），良好的听说读写能力，快速浏览英语专业文件及书籍；\n通过全国计算机二级考试，熟练运用office相关软件。",
+      "locations": [
+        {
+          "anchor_idx": 12,
+          "wsp_idx": 3,
+          "width_pt": 506.2,
+          "height_pt": 59.4,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "key": "summary",
+      "mode": "block",
+      "text": "深度互联网从业人员，对互联网保持高度的敏感性和关注度，熟悉产品开发流程，有很强的产品规划、需求分析、交互设计能力，能独立承担APP和WEB项目的设计开发；有多个完整的项目经验，能快速适应团队节奏，善于沟通与合作。",
+      "locations": [
+        {
+          "anchor_idx": 9,
+          "wsp_idx": 3,
+          "width_pt": 506.2,
+          "height_pt": 42.2,
+          "font_size_pt": null
+        }
+      ]
+    }
+  ],
+  "notes": "分区标题（基本信息/教育背景/实习经历/校园经历/技能证书/自我评价）与装饰文本保留原样不替换。"
+}

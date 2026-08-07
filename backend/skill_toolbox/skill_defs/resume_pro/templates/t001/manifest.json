@@ -1,0 +1,173 @@
+{
+  "id": "t001",
+  "name": "通用简洁风",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "fields": [
+    {
+      "id": "photo",
+      "key": "photo",
+      "mode": "photo",
+      "locations": [
+        {
+          "anchor_idx": 0,
+          "rId": "rId4",
+          "media": "word/media/image1.jpeg",
+          "width_pt": 107,
+          "height_pt": 107
+        }
+      ]
+    },
+    {
+      "id": "language",
+      "key": "language",
+      "mode": "block",
+      "text": "语言能力：大学英语6级证书，荣获全国大学生英语竞赛一等奖，能够熟练的进行听、说、读、写。\n计算机：计算机二级证书，熟练操作windows平台上的各类应用软件，如Word、Excel、Power Point。\n团队能力：具有丰富的团队组建与扩充经验和项目管理与协调经验，能够独挡一面。",
+      "locations": [
+        {
+          "anchor_idx": 2,
+          "wsp_idx": 0,
+          "width_pt": 506.8,
+          "height_pt": 62.0,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "key": "work",
+      "mode": "block",
+      "text": "行政助理                       一路网络科技有限公司                          2015.03-2016.01\n负责中心的接待工作；\n负责中心的行政事务及前台管理；\n协助处理客户服务及简单客诉；\n负责中心简单财务管理，资产管控；",
+      "locations": [
+        {
+          "anchor_idx": 3,
+          "wsp_idx": 0,
+          "width_pt": 506.8,
+          "height_pt": 98.0,
+          "font_size_pt": 10.5
+        }
+      ]
+    },
+    {
+      "id": "work_1",
+      "key": "work",
+      "mode": "block",
+      "text": "行政主管                       贵泽实业有限公司                                 2016.03-至今\n拥负责本部的行政人事管理和日常事务，协助总监搞好各部门之间的综合协调，落实公司规章制度，沟通内外联系，保证上情下达和下情上报，负责对会议文件决定的事项进行催办、查办和落实，负责全公司组织系统及工作职责研讨和修订。\n编制公司人事管理制度，规避各项人事风险。\n负责招聘工作，制定公司的人力资源发展计划，确保人才梯队发展和人才储备及培养。\n督导公司各项行政、人事制度的执行，以及各项行政人事工作的进展情况，并采取必要的措施。",
+      "locations": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0,
+          "width_pt": 506.8,
+          "height_pt": 133.9,
+          "font_size_pt": 10.5
+        }
+      ]
+    },
+    {
+      "id": "education",
+      "key": "education",
+      "mode": "block",
+      "text": "工商管理                        上海大学（本科）                          2012.09-2016.07 \n主修课程：基础会计学、货币银行学、统计学、经济法概论、财务会计学、管理学原理、组织行为学、市场营销学、国际贸易理论、国际贸易实务、人力资源开发与管理、财务管理学、企业经营战略概论、质量管理学、西方经济学等等",
+      "locations": [
+        {
+          "anchor_idx": 7,
+          "wsp_idx": 0,
+          "width_pt": 506.8,
+          "height_pt": 79.0,
+          "font_size_pt": 10.5
+        }
+      ]
+    },
+    {
+      "id": "phone",
+      "key": "phone",
+      "mode": "line",
+      "text": "手机：  15834598856",
+      "locations": [
+        {
+          "anchor_idx": 10,
+          "wsp_idx": 0,
+          "width_pt": 179.4,
+          "height_pt": 99.5,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "email",
+      "key": "email",
+      "mode": "line",
+      "text": "邮箱：  5689745@qq.com",
+      "locations": [
+        {
+          "anchor_idx": 10,
+          "wsp_idx": 0,
+          "width_pt": 179.4,
+          "height_pt": 99.5,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "address",
+      "key": "address",
+      "mode": "line",
+      "text": "地址：  上海市浦东区",
+      "locations": [
+        {
+          "anchor_idx": 10,
+          "wsp_idx": 0,
+          "width_pt": 179.4,
+          "height_pt": 99.5,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "name",
+      "key": "name",
+      "mode": "line",
+      "text": "姓    名：  余涵",
+      "locations": [
+        {
+          "anchor_idx": 12,
+          "wsp_idx": 0,
+          "width_pt": 176.8,
+          "height_pt": 99.5,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "intent",
+      "key": "intent",
+      "mode": "line",
+      "text": "求职意向：  行政经理/主管",
+      "locations": [
+        {
+          "anchor_idx": 12,
+          "wsp_idx": 0,
+          "width_pt": 176.8,
+          "height_pt": 99.5,
+          "font_size_pt": 10.0
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "key": "summary",
+      "mode": "block",
+      "text": "工作积极认真，细心负责，熟练运用办公自动化软件，善于在工作中提出问题、发现问题、解决问题，有较强的分析能力；勤奋好学，踏实肯干，动手能力强，认真负责，有很强的社会责任感；坚毅不拔，吃苦耐劳，喜欢和勇于迎接新挑战。",
+      "locations": [
+        {
+          "anchor_idx": 9,
+          "wsp_idx": 0,
+          "width_pt": 493.8,
+          "height_pt": 62.0,
+          "font_size_pt": null
+        }
+      ]
+    }
+  ],
+  "notes": "分区标题（职业技能/工作经验/教育背景/自我评价/基本信息）与装饰文本（我一直在努力！/PERSONAL RESUME）保留原样不替换；姓名框内 '年 龄/学 历' 行保留原文。"
+}

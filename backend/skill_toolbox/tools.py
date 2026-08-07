@@ -7,9 +7,12 @@ import mimetypes
 import os
 import subprocess
 import sys
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from lxml import etree
 
 from skill_toolbox.actions.docx import build_simple_docx
 from skill_toolbox.models import ImageContent, ToolCall, ToolResult
@@ -38,6 +41,30 @@ TEXT_SUFFIXES = {
     ".cfg",
     ".log",
 }
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _extract_docx_text(path: Path) -> str:
+    """从 .docx 提取纯文本（w:t 拼接，段落换行分隔）。
+
+    模型经常需要读取用户上传的旧简历/参考 docx 来抽取信息，而 docx 是
+    zip 容器不能按文本直读。这里用标准库解包 + lxml 提 w:t，给 read 工具
+    一个轻量的 docx 文本视图（不含图片/表格样式，够做信息抽取）。
+    """
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("word/document.xml")
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Not a readable .docx: {exc}") from None
+    try:
+        root = etree.fromstring(xml)
+    except etree.XMLSyntaxError as exc:
+        raise ValueError(f".docx document.xml parse failed: {exc}") from None
+    paragraphs: list[str] = []
+    for p in root.iter(W_NS + "p"):
+        text = "".join(t.text or "" for t in p.iter(W_NS + "t"))
+        paragraphs.append(text)
+    return "\n".join(paragraphs)
 
 
 class ToolRegistry:
@@ -144,8 +171,21 @@ class ToolRegistry:
             entry = self.skill_dir / "custom_scripts" / entry_rel
         if not entry.is_file():
             raise ValueError(f"Script not found for action: {action}")
+        rendered = [self._render(token, args) for token in argv_template]
+        # 模型漏传参数时，_render 会把 {placeholder} 原样留在命令行里（例如
+        # MinerU 收到字面量 --pages {pages} 而报 invalid page number）。
+        # 在这里直接拒绝，给模型一个明确"缺哪个参数"的错误，而不是把占位符
+        # 传给脚本当合法值用。
+        missing = [
+            token for token, value in zip(argv_template, rendered) if "{" in value
+        ]
+        if missing:
+            raise ValueError(
+                f"Action '{action}' 缺少必要参数，未渲染的占位符: {missing}。"
+                f"argv 模板为 {list(argv_template)}，请把占位符对应的 key 传进 args。"
+            )
         cmd = [sys.executable, str(entry)]
-        cmd.extend(self._render(token, args) for token in argv_template)
+        cmd.extend(rendered)
         if env_args := args.get("env", {}):
             if not isinstance(env_args, dict):
                 raise ValueError("env must be an object mapping variable names to values")
@@ -187,6 +227,18 @@ class ToolRegistry:
                 base64_data=base64.b64encode(path.read_bytes()).decode("ascii"),
             )
             return self._result(call, True, f"Read image: {path.name}", [image])
+        if suffix == ".docx":
+            if path.stat().st_size > MAX_TEXT_BYTES:
+                raise ValueError("docx exceeds the 1 MB read limit")
+            content = _extract_docx_text(path)
+            return self._result(
+                call,
+                True,
+                json.dumps(
+                    {"content": content, "format": "docx-text", "lines": content.count("\n") + 1},
+                    ensure_ascii=False,
+                ),
+            )
         if suffix not in TEXT_SUFFIXES:
             raise ValueError(f"Unsupported read format: {suffix or 'unknown'}")
         if path.stat().st_size > MAX_TEXT_BYTES:

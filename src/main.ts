@@ -67,17 +67,115 @@ function isVisionModel(name: string): boolean {
   return VISION_MODEL_RE.some((re) => re.test(name));
 }
 
+function renderModelPicker(): void {
+  const box = document.getElementById("mp-providers");
+  if (!box) return;
+  const activeId = globalSettings.active_provider;
+  box.innerHTML = providers
+    .map((p) => {
+      const active = p.id === activeId;
+      const model = effectiveModel(p) || "未填模型";
+      return `<div class="mp-prov ${active ? "on" : ""}" data-mp-provider="${escapeHtml(p.id)}" title="${escapeHtml(p.base_url || kindLabel(p.kind))}">
+        <div class="mp-prov-name">${escapeHtml(p.name)}</div>
+        <div class="mp-prov-meta">${escapeHtml(kindLabel(p.kind))} · ${escapeHtml(model)}</div>
+      </div>`;
+    })
+    .join("") || `<div class="mp-empty">暂无供应商，请到设置页添加</div>`;
+}
+
+function pickerModelsHost(): HTMLElement | null {
+  return document.getElementById("mp-models");
+}
+
+function renderPickerModels(): void {
+  const host = pickerModelsHost();
+  if (!host) return;
+  const p = activeProvider();
+  host.innerHTML = `<div class="mp-empty">点击左侧供应商获取模型列表</div>`;
+  if (p.model === "__custom") {
+    host.innerHTML = `<div class="mp-model on" data-mp-model="__custom">✎ ${escapeHtml(p.model_custom || "手动输入")}</div>`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const wm = t.closest<HTMLElement>("#w-model");
+  if (wm) {
+    const picker = document.getElementById("model-picker");
+    if (!picker) return;
+    const willOpen = picker.hidden;
+    picker.hidden = !willOpen;
+    if (willOpen) {
+      renderModelPicker();
+      renderPickerModels();
+    }
+    return;
+  }
+  const prov = t.closest<HTMLElement>("[data-mp-provider]");
+  if (prov?.dataset.mpProvider) {
+    const id = prov.dataset.mpProvider;
+    if (id !== globalSettings.active_provider) {
+      void activateProvider(id);
+      renderModelPicker();
+    }
+    void fetchModelsForPicker();
+    return;
+  }
+  const model = t.closest<HTMLElement>("[data-mp-model]");
+  if (model?.dataset.mpModel) {
+    const value = model.dataset.mpModel;
+    const p = activeProvider();
+    const patch: ProviderConfig = { ...p, model: value === "__custom" ? "__custom" : value };
+    const idx = providers.findIndex((x) => x.id === p.id);
+    if (idx >= 0) providers[idx] = patch;
+    void saveProvider(patch);
+    applyProviderToForm(patch);
+    syncModelSummary();
+    renderModelPicker();
+    const picker = document.getElementById("model-picker");
+    if (picker) picker.hidden = true;
+    return;
+  }
+  const picker = document.getElementById("model-picker");
+  if (picker && !picker.hidden && !t.closest("#model-picker")) {
+    picker.hidden = true;
+  }
+});
+
+let pickerModelsRequest = 0;
+
+/** 对当前激活供应商发起一次 fetch_models 请求，结果渲染进二级模型列表 */
+function fetchModelsForPicker(): void {
+  const host = pickerModelsHost();
+  if (!host) return;
+  const p = activeProvider();
+  const reqId = `mp-models-${++pickerModelsRequest}`;
+  host.innerHTML = `<div class="mp-empty">正在获取模型列表…</div>`;
+  void send({
+    id: reqId,
+    type: "fetch_models",
+    payload: { kind: p.kind, base_url: p.base_url, api_key: p.api_key },
+  }).catch(() => {
+    host.innerHTML = `<div class="mp-empty">获取失败，请到设置页检查配置</div>`;
+  });
+}
+
 /* ===== 表单 ↔ 供应商 ===== */
 function formToProvider(): ProviderConfig {
   const current = activeProvider();
+  const selModel = element<HTMLSelectElement>("#model").value;
+  const customModel = element<HTMLInputElement>("#model-custom").value.trim();
   return {
     ...current,
     name: element<HTMLInputElement>("#provider-name").value.trim() || defaultProviderName(current.kind),
     kind: element<HTMLSelectElement>("#provider-kind").value as ProviderConfig["kind"],
     base_url: element<HTMLInputElement>("#base-url").value.trim(),
     api_key: element<HTMLInputElement>("#api-key").value.trim(),
-    model: element<HTMLSelectElement>("#model").value,
-    model_custom: element<HTMLInputElement>("#model-custom").value.trim(),
+    // select 为空时（当前模型不在下拉选项中）回退到内存值，绝不把空写回，
+    // 否则 saveCurrentProvider 会把已配置的 model 覆盖成 "" → 卡片变"未配置模型"、
+    // start_task 带空 model → 网关 400。
+    model: selModel || current.model || "",
+    model_custom: customModel || current.model_custom || "",
   };
 }
 
@@ -86,7 +184,17 @@ function applyProviderToForm(p: ProviderConfig): void {
   element<HTMLSelectElement>("#provider-kind").value = p.kind;
   element<HTMLInputElement>("#base-url").value = p.base_url;
   element<HTMLInputElement>("#api-key").value = p.api_key;
-  element<HTMLSelectElement>("#model").value = p.model;
+  const modelSel = element<HTMLSelectElement>("#model");
+  // 若当前模型不在下拉选项中，动态补一个 option，避免 select.value 变空后被
+  // formToProvider 误读为空并写回。
+  const model = p.model === "__custom" ? "" : p.model;
+  if (model && !Array.from(modelSel.options).some((o) => o.value === model)) {
+    const opt = document.createElement("option");
+    opt.value = model;
+    opt.textContent = model;
+    modelSel.appendChild(opt);
+  }
+  modelSel.value = p.model;
   element<HTMLInputElement>("#model-custom").value = p.model_custom;
   const custom = element<HTMLInputElement>("#model-custom");
   custom.style.display = p.model === "__custom" ? "block" : "none";
@@ -308,10 +416,13 @@ document.addEventListener("click", (e) => {
   const card = target.closest<HTMLElement>("[data-provider-id]");
   if (card?.dataset.providerId) {
     void activateProvider(card.dataset.providerId);
+    // 点击设置页供应商卡片 → 切换到「设置」页的「模型供应商」子页
+    goSub("settings", "providers");
     return;
   }
   if (target.closest<HTMLElement>("[data-add-provider]")) {
     void addProvider();
+    goSub("settings", "providers");
     return;
   }
   const del = target.closest<HTMLElement>("#btn-delete-provider");
@@ -331,7 +442,17 @@ document.addEventListener("click", (e) => {
     return;
   }
   const artifact = target.closest<HTMLElement>("[data-artifact-path]");
-  if (artifact?.dataset.artifactPath) void openPath(artifact.dataset.artifactPath);
+  if (artifact?.dataset.artifactPath) {
+    const path = artifact.dataset.artifactPath;
+    if ("__TAURI_INTERNALS__" in window) {
+      // 用系统默认应用打开产物（Tauri opener 插件）
+      void openPath(path).catch((error) => toast(`打开失败：${String(error)}`, "warn"));
+    } else {
+      // 浏览器演示：无 opener，提示
+      toast("桌面端打开产物（当前为浏览器预览模式）", "info");
+    }
+    return;
+  }
 });
 
 /* ===== 设置页：获取模型列表 / 校验连接 / 输出目录 ===== */
@@ -373,12 +494,24 @@ function fetchModels(): void {
   });
 }
 
-/** 将模型列表填入下拉并强制选中第一个（用户确认的交互） */
+/** 将模型列表填入下拉；优先保留当前生效模型（若在新列表里），
+    避免自动获取列表把用户手选的模型顶掉并写回 DB。 */
 function fillModelOptions(models: string[], selected: string): void {
   const sel = element<HTMLSelectElement>("#model");
   sel.innerHTML = models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("")
     + '<option value="__custom">✎ 手动输入…</option>';
-  sel.value = models.includes(selected) ? selected : (models[0] ?? "");
+  const current = effectiveModel(activeProvider());
+  sel.value = models.includes(current)
+    ? current
+    : models.includes(selected) ? selected : (models[0] ?? "");
+  // 当前模型不在新列表里 → 动态补 option，避免 select.value 变空
+  if (sel.value === "" && current) {
+    const opt = document.createElement("option");
+    opt.value = current;
+    opt.textContent = current;
+    sel.appendChild(opt);
+    sel.value = current;
+  }
   const custom = element<HTMLInputElement>("#model-custom");
   custom.style.display = "none";
   saveCurrentProvider();
@@ -404,6 +537,12 @@ element<HTMLSelectElement>("#model").addEventListener("change", (e) => {
   custom.style.display = isCustom ? "block" : "none";
   if (isCustom) custom.focus();
   saveCurrentProvider();
+});
+
+element<HTMLButtonElement>("#btn-save-provider").addEventListener("click", () => {
+  saveCurrentProvider();
+  saveGlobalFields();
+  toast("供应商配置已保存（本地数据库）", "ok");
 });
 
 element<HTMLButtonElement>("#btn-validate").addEventListener("click", () => {
@@ -500,7 +639,7 @@ document.querySelectorAll<HTMLElement>("[data-pick]").forEach((zone) => {
 });
 
 /* ===== 任务 ===== */
-const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", pdf: "pdf_docx_routing" };
+const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", pdf: "pdf_docx_routing", resume: "resume_pro" };
 let taskState: TaskState = initialTaskState;
 let taskId = "";
 const backendLogs: string[] = [];
@@ -564,17 +703,33 @@ function toolPrompt(tool: string): { title: string; prompt: string } | null {
       toast("请先选择要转换的 PDF 文件", "warn");
       return null;
     }
-    const opts = document.querySelectorAll<HTMLElement>("#pdf-opts .chip.on");
-    const options = Array.from(opts)
-      .map((c) => c.dataset.v)
-      .filter((v): v is string => Boolean(v))
-      .join("、");
     const vision = capabilityEffective("vision");
     const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，无法进行视觉版式检查，仅报告机械检查结果。";
     return {
       title: `PDF 转 DOCX（${pdfs.length} 个文件）`,
-      prompt: `共 ${pdfs.length} 个 PDF 待转换，文件已暂存到工作区 sources/ 下（见材料列表）。\n修复选项：${options || "无（仅转换）"}${visionNote}`,
+      prompt: `共 ${pdfs.length} 个 PDF 待转换，文件已暂存到工作区 sources/ 下（见材料列表）。${visionNote}`,
     };
+  }
+  if (tool === "resume") {
+    const role = val("resume-role");
+    if (!role) {
+      toast("请填写目标岗位", "warn");
+      return null;
+    }
+    const tpl = document.querySelector<HTMLElement>("#resume-template .tmpl-card.on")?.dataset.template ?? "t001";
+    const extra = val("resume-extra");
+    const format = chipVal("resume-format") || "DOCX";
+    const length = chipVal("resume-length") || "一页";
+    const lines = [
+      `简历模板：${tpl}`,
+      `目标岗位：${role}`,
+      `输出格式：${format}`,
+      `篇幅：${length}`,
+    ];
+    if (extra) lines.push(`补充要求：${extra}`);
+    const vision = capabilityEffective("vision");
+    if (!vision) lines.push("注意：当前模型无视觉能力，将走机械溢出检测流程，不进行视觉版式核验。");
+    return { title: `${role} 简历`, prompt: lines.join("\n") };
   }
   return null;
 }
@@ -630,12 +785,24 @@ document.querySelectorAll<HTMLButtonElement>("[data-start]").forEach((btn) => {
 });
 
 /* 澄清弹窗 */
+/* 澄清弹窗：收集每个问题的回答。select 若选中「✎ 自定义回答…」，
+   则用其展开的自由输入框内容作为回答；text/textarea 直接取输入值。 */
 function collectAnswers(): Record<string, string> {
   const answers: Record<string, string> = {};
   document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
     "#clarify-questions [data-question-id]",
   ).forEach((field) => {
-    answers[field.dataset.questionId ?? ""] = field.value;
+    const id = field.dataset.questionId ?? "";
+    let value: string;
+    if (field instanceof HTMLSelectElement && field.value === "__custom__") {
+      const custom = Array.from(
+        document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("#clarify-questions [data-custom-for]"),
+      ).find((el) => el.dataset.customFor === id);
+      value = custom?.value ?? "";
+    } else {
+      value = field.value;
+    }
+    answers[id] = value;
   });
   return answers;
 }
@@ -679,33 +846,128 @@ if ("__TAURI_INTERNALS__" in window) {
       }
       return;
     }
-    /* models_fetched 不关联具体任务，按 request id 处理（设置页模型列表） */
-    if (payload.id === MODELS_REQUEST_ID && payload.event.type === "models_fetched") {
-      const event = payload.event as { models?: string[]; error?: string };
-      const btn = document.getElementById("btn-fetch-models") as HTMLButtonElement | null;
-      const hint = document.getElementById("model-hint");
-      if (event.error) {
-        if (hint) hint.textContent = `获取失败：${event.error}`;
-        toast(`模型列表获取失败：${event.error}`, "warn");
-      } else if (event.models?.length) {
-        fillModelOptions(event.models, event.models[0]);
-        if (hint) hint.textContent = `已获取 ${event.models.length} 个模型 · 也可选"手动输入"`;
-        toast(`已获取 ${event.models.length} 个模型`, "ok");
-      } else {
-        if (hint) hint.textContent = "该端点未返回任何模型";
-        toast("该端点未返回任何模型，请检查 base_url", "warn");
-      }
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "⟳ 获取模型列表";
-      }
+    /* 产物扫描结果：无论任务是否存在，把已有产物按 skill 归属填入各工具产物页 */
+    if (payload.id === ARTIFACTS_REQUEST_ID && payload.event.type === "artifacts_listed") {
+      const event = payload.event as { files?: string[]; by_skill?: ArtifactBuckets };
+      setArtifacts(event.by_skill ?? {});
       return;
+    }
+    /* models_fetched 按 request id 分发：仅当 id 是模型列表请求时才消费并
+       return；其它 id（如任务完成事件）必须继续走下方 task 分发，不能被吞掉。 */
+    if (payload.event.type === "models_fetched") {
+      const event = payload.event as { models?: string[]; error?: string };
+      const isSettingsFetch = payload.id === MODELS_REQUEST_ID;
+      const isPickerFetch = typeof payload.id === "string" && payload.id.startsWith("mp-models-");
+      if (!isSettingsFetch && !isPickerFetch) {
+        // 不是模型列表请求 → 不拦截，继续走任务事件分发
+      } else if (isSettingsFetch) {
+        const btn = document.getElementById("btn-fetch-models") as HTMLButtonElement | null;
+        const hint = document.getElementById("model-hint");
+        if (event.error) {
+          if (hint) hint.textContent = `获取失败：${event.error}`;
+          toast(`模型列表获取失败：${event.error}`, "warn");
+        } else if (event.models?.length) {
+          fillModelOptions(event.models, event.models[0]);
+          if (hint) hint.textContent = `已获取 ${event.models.length} 个模型 · 也可选"手动输入"`;
+          toast(`已获取 ${event.models.length} 个模型`, "ok");
+        } else {
+          if (hint) hint.textContent = "该端点未返回任何模型";
+          toast("该端点未返回任何模型，请检查 base_url", "warn");
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "⟳ 获取模型列表";
+        }
+        return;
+      } else {
+        const host = pickerModelsHost();
+        if (!host) return;
+        if (event.error) {
+          host.innerHTML = `<div class="mp-empty">获取失败：${escapeHtml(event.error)}</div>`;
+        } else if (event.models?.length) {
+          const p = activeProvider();
+          const current = effectiveModel(p);
+          host.innerHTML = event.models
+            .map((m) => {
+              const on = m === current || (p.model === "__custom" && m === p.model_custom);
+              return `<div class="mp-model ${on ? "on" : ""}" data-mp-model="${escapeHtml(m)}" title="${escapeHtml(m)}">${escapeHtml(m)}</div>`;
+            })
+            .join("")
+            + (p.model === "__custom" ? `<div class="mp-model on" data-mp-model="__custom" title="${escapeHtml(p.model_custom || "手动输入")}">✎ ${escapeHtml(p.model_custom || "手动输入")}</div>` : "");
+        } else {
+          host.innerHTML = `<div class="mp-empty">该端点未返回任何模型，可到设置页手动输入</div>`;
+        }
+        return;
+      }
     }
     if (payload.id !== taskId) return;
     setState(reduceTaskEvent(taskState, payload.event));
   });
 }
 
+/* ===== 产物探查：启动 / 切到产物页时扫描输出目录 ===== */
+const ARTIFACTS_REQUEST_ID = "artifacts-scan";
+
+/** 启动后扫描输出目录（待 DB 设置加载完再发，确保 output-dir 已填充） */
+async function requestArtifactsScan(): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  await loadSettings();
+  const outputDir = element<HTMLInputElement>("#output-dir").value.trim();
+  if (!outputDir) return;
+  void send({ id: ARTIFACTS_REQUEST_ID, type: "list_artifacts", payload: { output_dir: outputDir } })
+    .catch(() => { /* 扫描失败静默，不打扰用户 */ });
+}
+
+type ArtifactBuckets = Record<string, string[]>;
+
+/** 纯扩展名分类（用于无 skill 标记的历史产物兜底）。md/txt 归属不明确，不放入任何功能页。 */
+function classifyByExt(files: string[]): ArtifactBuckets {
+  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [], pdf: [] };
+  for (const f of files) {
+    const name = f.toLowerCase();
+    if (name.endsWith(".pptx") || name.endsWith(".ppt")) buckets.ppt.push(f);
+    else if (name.endsWith(".docx") || name.endsWith(".doc")) buckets.docx.push(f);
+    else if (name.endsWith(".pdf")) buckets.pdf.push(f);
+  }
+  return buckets;
+}
+
+/** 把扫描结果按 skill 归属填入各工具产物页。
+ *  by_skill 来自 sidecar _list_artifacts：带标记的文件按产生它的 skill 归位
+ * （resume 页从此也会被填充）；unmarked（升级前的历史产物）按扩展名兜底，
+ * 不进入简历页。每个文件只归一个桶，杜绝串检/多检。 */
+async function setArtifacts(bySkill: ArtifactBuckets): Promise<void> {
+  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [], pdf: [] };
+  buckets.ppt.push(...(bySkill.ppt ?? []));
+  buckets.resume.push(...(bySkill.resume ?? []));
+  buckets.docx.push(...(bySkill.docx ?? []));
+  buckets.pdf.push(...(bySkill.pdf ?? []));
+  const fallback = classifyByExt(bySkill.unmarked ?? []);
+  buckets.ppt.push(...fallback.ppt);
+  buckets.docx.push(...fallback.docx);
+  buckets.pdf.push(...fallback.pdf);
+
+  // 按修改时间降序（新产物在前）——list_artifacts 已按 mtime 排序
+  for (const tool of Object.keys(buckets) as Array<keyof typeof buckets>) {
+    if (!buckets[tool].length) continue;
+    const host = document.getElementById(`art-${tool}`);
+    if (!host) continue;
+    host.innerHTML = buckets[tool]
+      .map((p, i) => {
+        const ext = (p.split(".").at(-1) ?? "FILE").toUpperCase();
+        const name = p.split(/[\\/]/).at(-1) ?? p;
+        const badgeCls = ext === "PDF" ? "v-pdf" : "v-docx";
+        const badge = ext === "PDF" ? "P" : "W";
+        return `<div class="vrow ${i === 0 ? "cur" : ""}">
+          <div class="v-badge ${badgeCls}">${badge}</div>
+          <div><div class="v-title">${escapeHtml(name)}</div><div class="v-sub">${escapeHtml(p)} · 可在默认专业软件中打开</div></div>
+          <div class="v-open" data-artifact-path="${escapeHtml(p)}">打开</div>
+        </div>`;
+      })
+      .join("");
+  }
+}
+
 /* ===== 启动 ===== */
-void loadSettings();
+void requestArtifactsScan();
 renderTaskState(taskState);
