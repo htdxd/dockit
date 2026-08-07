@@ -970,4 +970,8 @@ async function setArtifacts(bySkill: ArtifactBuckets): Promise<void> {
 
 /* ===== 启动 ===== */
 void requestArtifactsScan();
+// 切到某工具「产物」子页时重新扫描，刷新运行中产生的新产物
+window.addEventListener("dockit:artifacts-view-shown", () => {
+  void requestArtifactsScan();
+});
 renderTaskState(taskState);

@@ -145,15 +145,18 @@ def save_docx_xml(
             if skip_media and name in skip_media:
                 continue  # 照片被 __remove__ 移除，丢弃旧媒体
             if name == "word/_rels/document.xml.rels" and photos:
-                rels = zin.read(name).decode("utf-8")
+                # 用 XML 解析改写 Target，避免正则对属性顺序（Id 在 Target 前/后）敏感
+                # 导致照片位指向已删除的旧媒体（静默 broken image）。
+                rels_root = etree.fromstring(zin.read(name))
                 for p in photos:
-                    new_target = _rels_target(p["old_media"], p["user_image"])
-                    rels = re.sub(
-                        rf'(Id="{re.escape(p["rId"])}"[^>]*Target=")[^"]+(")',
-                        lambda m, _t=new_target: m.group(1) + _t + m.group(2),
-                        rels,
-                    )
-                zout.writestr(item, rels)
+                    for rel in rels_root:
+                        if rel.get("Id") == p["rId"]:
+                            rel.set("Target", _rels_target(p["old_media"], p["user_image"]))
+                            break
+                zout.writestr(
+                    item,
+                    etree.tostring(rels_root, xml_declaration=True, encoding="UTF-8", standalone=True),
+                )
                 continue
             if name == "[Content_Types].xml" and photos:
                 # 为用户图片扩展名补 Default 条目（缺则 Word 报文件损坏）
@@ -311,8 +314,12 @@ def _replace_line_value(tx, paras, old_line: str, new_text: str) -> int:
     """
     m = re.match(r"^([^：:]*[：:])", old_line)
     anchor = m.group(1) if m else ""
-    # 新值已含锚点 → 直接用新值；否则锚点 + 新值
-    if anchor and re.match(re.escape(anchor), new_text.replace(" ", "")):
+    # 新值已含锚点 → 直接用新值；否则锚点 + 新值。
+    # 模板锚点常含多个对齐空格（如"电    话："），归一化空白后再比对，
+    # 否则模型违规带标签填值"电话：138-…"时会被拼成"电    话：电话：138-…"。
+    anchor_norm = re.sub(r"\s+", "", anchor)
+    new_norm = re.sub(r"\s+", "", new_text)
+    if anchor_norm and new_norm.startswith(anchor_norm):
         new_full = new_text
     else:
         new_full = anchor + new_text if anchor else new_text

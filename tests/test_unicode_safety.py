@@ -7,6 +7,7 @@ from skill_toolbox.tools import ToolRegistry
 
 import asyncio
 import json
+import re
 
 
 @pytest.mark.asyncio
@@ -117,26 +118,45 @@ async def test_read_docx_returns_text_view(tmp_path: Path) -> None:
     assert "工作经历" in payload["content"]
 
 
-def _make_photo_docx(path: Path, photo_wh: tuple[int, int], logo_wh: tuple[int, int]) -> None:
-    """Build a .docx embedding two images via r:embed (photo first, logo second)."""
+def _png_bytes(w: int, h: int) -> bytes:
     import struct
-    import zipfile
 
-    def png_bytes(w: int, h: int) -> bytes:
-        def chunk(t: bytes, data: bytes) -> bytes:
-            return struct.pack(">I", len(data)) + t + data + struct.pack(">I", 0)
+    def chunk(t: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + t + data + struct.pack(">I", 0)
 
-        ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-        idat = b"x\x9c\x01\x00\x00\xff\x00\x00\x00\x00"
-        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    idat = b"x\x9c\x01\x00\x00\xff\x00\x00\x00\x00"
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
-    ns = (
-        "xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main' "
-        "xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships' "
-        "xmlns:wp='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing' "
-        "xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main' "
-        "xmlns:pic='http://schemas.openxmlformats.org/drawingml/2006/picture'"
+
+def _jpeg_bytes(w: int, h: int) -> bytes:
+    """最小合法 JPEG（SOI + SOF0 + EOI），SOF0 长度 17，标准三段式色度采样。"""
+    import struct
+
+    sof0 = (
+        b"\xff\xc0"
+        + struct.pack(">H", 17)  # 段长 = 8 + 3*components
+        + b"\x08"  # precision
+        + struct.pack(">HH", h, w)
+        + b"\x03"
+        + b"\x01\x22\x00" + b"\x02\x11\x01" + b"\x03\x11\x01"
     )
+    return b"\xff\xd8" + sof0 + b"\xff\xd9"
+
+
+_DOCX_NS = (
+    "xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main' "
+    "xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships' "
+    "xmlns:wp='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing' "
+    "xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main' "
+    "xmlns:pic='http://schemas.openxmlformats.org/drawingml/2006/picture'"
+)
+
+
+def _docx_with_images(path: Path, images: list[tuple[str, str, bytes]]) -> None:
+    """Build a .docx embedding images via r:embed. images = [(rid, rel_target, bytes)]，
+    引用顺序即列表顺序；rel_target 为 rels 里的 Target（如 media/photo.png）。"""
+    import zipfile
 
     def inline(rid: str) -> str:
         return (
@@ -147,20 +167,35 @@ def _make_photo_docx(path: Path, photo_wh: tuple[int, int], logo_wh: tuple[int, 
 
     doc = (
         "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>"
-        f"<w:document {ns}><w:body>{inline('rId100')}{inline('rId200')}</w:body></w:document>"
+        f"<w:document {_DOCX_NS}><w:body>{''.join(inline(rid) for rid, _, _ in images)}</w:body></w:document>"
+    )
+    rels_body = "".join(
+        f"<Relationship Id='{rid}' Target='{tgt}' "
+        "Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'/>"
+        for rid, tgt, _ in images
     )
     rels = (
         "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>"
         "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>"
-        "<Relationship Id='rId100' Target='media/photo.png' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'/>"
-        "<Relationship Id='rId200' Target='media/logo.png' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'/>"
-        "</Relationships>"
+        + rels_body
+        + "</Relationships>"
     )
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("word/document.xml", doc)
         z.writestr("word/_rels/document.xml.rels", rels)
-        z.writestr("word/media/photo.png", png_bytes(*photo_wh))
-        z.writestr("word/media/logo.png", png_bytes(*logo_wh))
+        for rid, tgt, raw in images:
+            z.writestr("word/" + tgt, raw)
+
+
+def _make_photo_docx(path: Path, photo_wh: tuple[int, int], logo_wh: tuple[int, int]) -> None:
+    """Build a .docx embedding two images via r:embed (photo first, logo second)."""
+    _docx_with_images(
+        path,
+        [
+            ("rId100", "media/photo.png", _png_bytes(*photo_wh)),
+            ("rId200", "media/logo.png", _png_bytes(*logo_wh)),
+        ],
+    )
 
 
 @pytest.mark.asyncio
@@ -293,3 +328,88 @@ def test_fill_resume_remove_photo(tmp_path: Path) -> None:
     assert not any(n in out_names for n in media_names), (
         f"old media {media_names} should be dropped from output"
     )
+
+
+def test_image_size_parses_jpeg_and_png(tmp_path: Path) -> None:
+    """JPEG SOF / PNG IHDR 尺寸解析——回归：import struct 曾只写在 PNG 分支内，
+    导致任何 JPEG 都抛 UnboundLocalError，read 含照片的旧简历 docx 整体失败。"""
+    from skill_toolbox.tools import _image_size
+
+    jpg = tmp_path / "photo.jpg"
+    jpg.write_bytes(_jpeg_bytes(300, 400))
+    assert _image_size(jpg) == (300, 400)
+    png = tmp_path / "photo.png"
+    png.write_bytes(_png_bytes(220, 260))
+    assert _image_size(png) == (220, 260)
+
+
+@pytest.mark.asyncio
+async def test_read_docx_media_with_jpeg(tmp_path: Path) -> None:
+    """含 JPEG 媒体的 docx read 不应抛错，且能解析出尺寸与人像启发式。"""
+    source = tmp_path / "jpeg_resume.docx"
+    _docx_with_images(
+        source,
+        [
+            ("rId4", "media/photo.jpg", _jpeg_bytes(300, 400)),  # 竖版近方形 → 人像
+            ("rId5", "media/banner.jpg", _jpeg_bytes(800, 120)),  # 横版条幅
+        ],
+    )
+    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    call = ToolCall(id="read-jpeg-docx", name="read", arguments={"path": source.name})
+
+    result = await registry.execute(call)
+
+    assert result.success is True, result.content
+    media = json.loads(result.content)["media"]
+    assert [m["name"] for m in media] == ["photo.jpg", "banner.jpg"]
+    assert media[0]["width"] == 300 and media[0]["height"] == 400
+    assert media[0]["portrait_likely"] is True
+    assert media[1]["portrait_likely"] is False
+
+
+def test_fill_resume_replaces_photo_and_rewrites_rels(tmp_path: Path) -> None:
+    """fill_resume with photo=<user image> swaps the media bytes, rewrites the rels
+    Target for that rId (attribute-order independent), and registers the extension
+    in [Content_Types].xml so Word doesn't report the file as corrupt."""
+    import subprocess
+    import sys
+    import zipfile as _zipfile
+
+    skill_dir = (
+        Path(__file__).resolve().parents[1]
+        / "backend" / "skill_toolbox" / "skill_defs" / "resume_pro"
+    )
+    script = skill_dir / "scripts" / "fill_resume.py"
+    tpl_dir = skill_dir / "templates" / "t001"
+    assert script.is_file() and (tpl_dir / "template.docx").is_file(), "resume_pro skill files missing"
+
+    workspace = tmp_path
+    user_photo = workspace / "me.png"
+    user_photo.write_bytes(_png_bytes(200, 260))
+    data = {"fields": {"photo": str(user_photo), "name": "张三"}}
+    data_path = workspace / "data.json"
+    data_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    out_path = workspace / "artifacts" / "resume.docx"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(tpl_dir), str(data_path), str(out_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120, cwd=str(workspace),
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    with _zipfile.ZipFile(out_path) as z:
+        out_names = z.namelist()
+        rels = z.read("word/_rels/document.xml.rels").decode("utf-8")
+        ct = z.read("[Content_Types].xml").decode("utf-8")
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+    # 旧媒体字节被替换为新图片（保留 rId4 drawing，仅换源）
+    assert "word/media/image1.jpeg" not in out_names
+    assert "word/media/image1_user.png" in out_names
+    assert "rId4" in doc_xml, "photo drawing must stay (image swapped, not removed)"
+    # rels 的 rId4 Target 指向新图片
+    assert re.search(r'Id="rId4"[^>]*Target="media/image1_user\.png"', rels) or re.search(
+        r'Target="media/image1_user\.png"[^>]*Id="rId4"', rels
+    ), rels
+    # 新扩展名已注册，Word 不会报文件损坏
+    assert re.search(r'<Default Extension="png"', ct, re.IGNORECASE)

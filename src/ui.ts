@@ -50,6 +50,11 @@ export function goSub(tool: string, sub: string): void {
     if (el) el.hidden = name !== sub;
   }
   replay(page.querySelector(`#sub-${tool}-${sub}`));
+  // 产物子页可见时通知 main.ts 重新扫描输出目录（运行中新增的产物
+  // 只进当前工具页，其它工具页需切页时才刷新）
+  if (sub === "art") {
+    window.dispatchEvent(new CustomEvent("dockit:artifacts-view-shown", { detail: { tool } }));
+  }
 }
 
 export function flashSubtab(tool: string, sub: string): void {
