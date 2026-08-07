@@ -305,3 +305,16 @@ html[data-theme="dark"] .dialog .d-head{color:#f2b64c;}
   .set-grid{grid-template-columns:1fr;}
   .hello .h{font-size:16px;}
 }
+/* ===== 能力探测状态 ===== */
+.probe-grid{display:flex;align-items:center;gap:16px;margin-top:12px;flex-wrap:wrap;}
+.probe-grid .inp{min-width:200px;}
+.probe-status{font-family:Consolas,monospace;font-size:12px;color:var(--t2);}
+.probe-status .probe-item{white-space:nowrap;}
+.probe-status.probe-ok{color:var(--green);}
+.probe-status.probe-warn{color:#b8860b;}
+html[data-theme="dark"] .probe-status.probe-warn{color:#e0b052;}
+.probe-status.probe-err{color:#e06c5c;}
+.probe-item[data-status="verified"]{color:var(--green);}
+.probe-item[data-status="unsupported"]{color:#e06c5c;}
+.probe-item[data-status="probe_error"]{color:#b8860b;}
+.probe-item[data-status="unknown"]{color:var(--t3);}

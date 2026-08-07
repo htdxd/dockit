@@ -20,3 +20,15 @@ class ScriptedProvider:
         if not self._turns:
             return AssistantTurn(text="Scripted provider exhausted")
         return self._turns.popleft()
+
+    async def probe(
+        self,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, tuple[str, str | None]]:
+        """Offline probe used by tests: every capability is verified."""
+        del capabilities
+        return {
+            "tool_calling": ("verified", None),
+            "vision": ("verified", None),
+            "reasoning_control": ("verified", "effort"),
+        }

@@ -2,9 +2,8 @@
   "id": "resume_pro",
   "name": "简历生成",
   "description": "基于精选模板库生成/填充中文简历：前端选模板 → 从用户材料抽取信息 → lxml 原位替换文本框内容（保留字体格式与版式）→ 溢出预警 + agent 改写适配 → 渲染校验 → 交付 docx/pdf。",
-  "required_capabilities": ["tool_calling", "json_schema"],
+  "required_capabilities": ["tool_calling"],
   "optional_capabilities": ["vision"],
-  "allowed_actions": [],
   "max_steps": 24,
   "initial_form": {
     "prompt": {

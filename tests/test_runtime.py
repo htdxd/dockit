@@ -33,7 +33,7 @@ class LargeResultTools:
 
 
 @pytest.mark.asyncio
-async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
+async def test_runtime_publishes_artifact(tmp_path: Path) -> None:
     provider = ScriptedProvider(
         [
             AssistantTurn(
@@ -42,29 +42,8 @@ async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
                         id="write-spec",
                         name="write",
                         arguments={
-                            "path": "work/spec.json",
-                            "content": """{
-                              "title": "Runtime 集成测试",
-                              "summary": "Agent loop 已成功生成文档。",
-                              "table": {"headers": ["项目", "结果"], "rows": [["Runtime", "通过"]]},
-                              "formula": "a² + b² = c²",
-                              "code": "print('hello')"
-                            }""",
-                        },
-                    )
-                ]
-            ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="build-docx",
-                        name="exec_cmd",
-                        arguments={
-                            "action": "build_simple_docx",
-                            "args": {
-                                "spec_path": "work/spec.json",
-                                "output_path": "artifacts/runtime-test.docx",
-                            },
+                            "path": "artifacts/runtime-test.md",
+                            "content": "Agent loop 已成功生成产物。",
                         },
                     )
                 ]
@@ -74,7 +53,7 @@ async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
                     ToolCall(
                         id="finish",
                         name="finish_task",
-                        arguments={"artifacts": ["artifacts/runtime-test.docx"]},
+                        arguments={"artifacts": ["artifacts/runtime-test.md"]},
                     )
                 ]
             ),
@@ -85,15 +64,14 @@ async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
 
     result = await runtime.run(
         TaskRequest(
-            skill_id="simple_docx",
+            skill_id="docx_pro",
             user_prompt="生成测试文档",
             output_dir=tmp_path / "published",
         )
     )
 
     assert result.status == "completed"
-    # 产物文件名带 skill 来源标记（.simple_docx.）
-    assert result.artifacts == [tmp_path / "published" / "runtime-test.simple_docx.docx"]
+    assert result.artifacts == [tmp_path / "published" / "runtime-test.docx_pro.md"]
     assert result.artifacts[0].exists()
     assert any(event["type"] == "tool_started" for event in events)
     assert {
@@ -106,11 +84,6 @@ async def test_runtime_generates_and_publishes_docx(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
-    spec = """{
-      "title":"混合调用测试","summary":"测试",
-      "table":{"headers":["A"],"rows":[["B"]]},
-      "formula":"x = 1","code":"print(1)"
-    }"""
     provider = ScriptedProvider(
         [
             AssistantTurn(
@@ -118,28 +91,13 @@ async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
                     ToolCall(
                         id="write",
                         name="write",
-                        arguments={"path": "work/spec.json", "content": spec},
+                        arguments={"path": "artifacts/mixed.md", "content": "测试"},
                     ),
                     ToolCall(
                         id="early-finish",
                         name="finish_task",
-                        arguments={"artifacts": ["artifacts/mixed.docx"]},
+                        arguments={"artifacts": ["artifacts/mixed.md"]},
                     ),
-                ]
-            ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="build",
-                        name="exec_cmd",
-                        arguments={
-                            "action": "build_simple_docx",
-                            "args": {
-                                "spec_path": "work/spec.json",
-                                "output_path": "artifacts/mixed.docx",
-                            },
-                        },
-                    )
                 ]
             ),
             AssistantTurn(
@@ -147,7 +105,7 @@ async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
                     ToolCall(
                         id="finish",
                         name="finish_task",
-                        arguments={"artifacts": ["artifacts/mixed.docx"]},
+                        arguments={"artifacts": ["artifacts/mixed.md"]},
                     )
                 ]
             ),
@@ -155,7 +113,7 @@ async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
     )
     runtime = AgentRuntime(provider=provider, emit=lambda _: None)
 
-    result = await runtime.run(TaskRequest("simple_docx", "测试", tmp_path))
+    result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
 
     assert result.status == "completed"
     assert result.artifacts[0].exists()
@@ -172,7 +130,7 @@ async def test_runtime_fails_with_clear_error_when_model_times_out(
         model_timeout_seconds=0.01,
     )
 
-    result = await runtime.run(TaskRequest("simple_docx", "测试", tmp_path))
+    result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
 
     assert result.status == "failed"
     assert result.error == "LLM request timed out after 0.01 seconds"

@@ -10,13 +10,11 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from lxml import etree
 
-from skill_toolbox.actions.docx import build_simple_docx
 from skill_toolbox.models import ImageContent, ToolCall, ToolResult
 from skill_toolbox.policy import PolicyViolation, WorkspacePolicy
 
@@ -581,20 +579,15 @@ class ToolRegistry:
     def __init__(
         self,
         policy: WorkspacePolicy,
-        allowed_actions: frozenset[str],
         skill_dir: Path = Path("."),
         scripts: dict[str, tuple[str, tuple[str, ...]]] | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
         self.policy = policy
-        self.allowed_actions = allowed_actions
         self.skill_dir = skill_dir
         self.scripts = scripts or {}
         # Extra env vars merged into exec_cmd subprocesses (e.g. MINERU_TOKEN).
         self.extra_env = env or {}
-        self.actions: dict[str, Callable[[dict[str, Any]], None]] = {
-            "build_simple_docx": self._build_simple_docx,
-        }
 
     async def execute(self, call: ToolCall) -> ToolResult:
         try:
@@ -613,12 +606,8 @@ class ToolRegistry:
             return self._result(call, False, str(exc))
 
     async def _exec_cmd_async(self, call: ToolCall) -> ToolResult:
-        """Dispatch exec_cmd: builtins run in-process; declared scripts run as
-        subprocesses with cooperative cancellation so runtime timeouts actually
-        terminate the spawned process instead of leaking it."""
-        action = str(call.arguments["action"])
-        if action in self.actions:
-            return await asyncio.to_thread(self._exec_builtin, call)
+        """Run declared scripts with cooperative cancellation so runtime
+        timeouts terminate the spawned process instead of leaking it."""
         proc_holder: dict[str, subprocess.Popen[bytes] | None] = {"proc": None}
 
         def runner() -> ToolResult:
@@ -675,7 +664,7 @@ class ToolRegistry:
     def _build_cmd(self, call: ToolCall) -> list[str]:
         action = str(call.arguments["action"])
         args = dict(call.arguments.get("args", {}))
-        if action not in self.allowed_actions and action not in self.scripts:
+        if action not in self.scripts:
             raise ValueError(f"Action is not allowed: {action}")
         entry_rel, argv_template = self.scripts[action]
         entry = self.skill_dir / "scripts" / entry_rel
@@ -899,26 +888,7 @@ class ToolRegistry:
         temp.replace(path)
         return self._result(call, True, f"Edited {path.relative_to(self.policy.root)}")
 
-    def _exec_builtin(self, call: ToolCall) -> ToolResult:
-        """Handle in-process builtin actions (e.g. build_simple_docx)."""
-        action = str(call.arguments["action"])
-        args = dict(call.arguments.get("args", {}))
-        if action not in self.allowed_actions and action not in self.scripts:
-            raise ValueError(f"Action is not allowed: {action}")
-        builtin = self.actions.get(action)
-        if builtin is None:
-            raise ValueError(
-                f"Action {action} is not a builtin; it must run via the subprocess path"
-            )
-        builtin(args)
-        return self._result(call, True, f"Action completed: {action}")
-
     def _render(self, token: str, args: dict[str, Any]) -> str:
         for key, value in args.items():
             token = token.replace("{" + key + "}", str(value))
         return token.replace("${SKILL_DIR}", str(self.skill_dir))
-
-    def _build_simple_docx(self, args: dict[str, Any]) -> None:
-        spec_path = self.policy.require_file(str(args["spec_path"]))
-        output_path = self.policy.resolve(str(args["output_path"]))
-        build_simple_docx(spec_path, output_path)

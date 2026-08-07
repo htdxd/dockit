@@ -63,7 +63,8 @@ describe("default provider template", () => {
     expect(provider.id).toMatch(/[0-9a-f-]{36}/);
     expect(provider.vision_override).toBeNull();
     expect(provider.tool_calling_override).toBeNull();
-    expect(provider.json_schema_override).toBeNull();
+    expect(provider.reasoning_level).toBe("auto");
+    expect(provider.capability_probe).toBe("");
     expect(provider.base_url).toBe("");
   });
 });

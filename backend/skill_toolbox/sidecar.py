@@ -11,18 +11,38 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from skill_toolbox.capabilities import missing_required, resolve_capabilities
-from skill_toolbox.models import ProviderConfig
+from skill_toolbox.capabilities import (
+    missing_required,
+    probe_fingerprint,
+    resolve_capabilities,
+)
+from skill_toolbox.models import CapabilityProbeReport, ProbeResult, ProviderConfig
 from skill_toolbox.providers import create_provider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest, UserInputBroker
 from skill_toolbox.skills import load_skill
-from skill_toolbox.unicode_utils import sanitize_data
+from skill_toolbox.unicode_utils import redact_secrets, sanitize_data
 
 Emitter = Callable[[dict[str, Any]], None]
 ProviderFactory = Callable[[ProviderConfig], ModelProvider]
 DEBUG_LOG_DIR = ".skill-toolbox-logs"
 MODELS_TIMEOUT_SECONDS = 15
+# 能力探测整体超时：三次最小请求（tool/vision/reasoning）串行执行。
+PROBE_TIMEOUT_SECONDS = 60.0
+
+
+def _EMPTY_REPORT(checked_at: float = 0.0) -> CapabilityProbeReport:
+    """A fresh all-unknown report, stamped with the current time."""
+    return CapabilityProbeReport(
+        tool_calling=ProbeResult(checked_at=checked_at),
+        vision=ProbeResult(checked_at=checked_at),
+        reasoning_control=ProbeResult(checked_at=checked_at),
+    )
+
+
+def _redact(text: str | None) -> str:
+    """Strip API keys / tokens before any probe detail reaches the UI or DB."""
+    return redact_secrets(text or "")
 
 # 产物文件名的 skill 来源标记 → 前端工具页。runtime._publish 会把标记打进
 # 文件名（如 resume.resume_pro.docx），_list_artifacts 据此按产生它的功能
@@ -31,7 +51,6 @@ _SKILL_MARKERS: tuple[tuple[str, str], ...] = (
     ("ppt", ".ppt-master."),
     ("resume", ".resume_pro."),
     ("docx", ".docx_pro."),
-    ("docx", ".simple_docx."),
     ("pdf", ".pdf_docx_routing."),
 )
 
@@ -87,6 +106,8 @@ class SidecarService:
         self.provider_factory = provider_factory
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.brokers: dict[str, UserInputBroker] = {}
+        # 独立运行的 capability probe 任务（不阻塞 stdin 消息循环）。
+        self.probes: dict[str, asyncio.Task[None]] = {}
         # MinerU token from the Settings page "第三方服务" tab. Held in memory
         # only (never persisted to disk by the backend), injected as the
         # MINERU_TOKEN env var into exec_cmd subprocesses for the PDF skill.
@@ -137,6 +158,8 @@ class SidecarService:
                 await self._fetch_models(request_id, payload)
             elif message_type == "list_artifacts":
                 await self._list_artifacts(request_id, payload)
+            elif message_type == "probe_capabilities":
+                await self._probe_capabilities(request_id, payload)
             else:
                 self._emit(
                     request_id,
@@ -325,8 +348,119 @@ class SidecarService:
             return
         self._emit(request_id, {"type": "models_fetched", "models": models})
 
+    async def _probe_capabilities(self, request_id: str, payload: dict[str, Any]) -> None:
+        """Run the three real capability probes for the current provider.
+
+        Dispatched as an independent asyncio task so the stdin message loop is
+        never blocked for the (up to PROBE_TIMEOUT_SECONDS) probe window. The
+        api_key lives only in memory — every detail/error emitted is redacted,
+        and the report is persisted by the frontend, never here.
+
+        The response carries a fingerprint snapshot of the probe request
+        (kind + base_url + model). The frontend persists the report only if the
+        provider is still on that fingerprint — a probe started on model A whose
+        answer arrives after the user switched to provider B must be dropped,
+        not written into B's row.
+        """
+        config = ProviderConfig.model_validate(payload["provider"])
+        if config.kind == "mock":
+            self._emit(
+                request_id,
+                {"type": "protocol_error", "error": "mock provider cannot be probed"},
+            )
+            return
+        fingerprint = probe_fingerprint(config)
+        task = asyncio.create_task(self._run_probe(request_id, config, fingerprint))
+        self.probes[request_id] = task
+        task.add_done_callback(lambda _t: self.probes.pop(request_id, None))
+
+    async def _run_probe(
+        self,
+        request_id: str,
+        config: ProviderConfig,
+        fingerprint: str,
+    ) -> None:
+        now = time.time()
+
+        def empty_report() -> CapabilityProbeReport:
+            return _EMPTY_REPORT(now)
+
+        try:
+            provider = self.provider_factory(config)
+        except Exception as exc:  # noqa: BLE001
+            detail = _redact(str(exc))[:200]
+            self._emit(
+                request_id,
+                {
+                    "type": "capabilities_probed",
+                    "fingerprint": fingerprint,
+                    "report": empty_report().model_dump(),
+                    "error": f"provider init failed: {detail}",
+                },
+            )
+            return
+        try:
+            raw = await asyncio.wait_for(provider.probe(), timeout=PROBE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            report = empty_report()
+            for capability in ("tool_calling", "vision", "reasoning_control"):
+                setattr(
+                    report,
+                    capability,
+                    ProbeResult(status="probe_error", checked_at=now, detail=f"timed out after {PROBE_TIMEOUT_SECONDS:g}s"),
+                )
+            self._emit(
+                request_id,
+                {
+                    "type": "capabilities_probed",
+                    "fingerprint": fingerprint,
+                    "report": report.model_dump(),
+                    "error": f"probe timed out after {PROBE_TIMEOUT_SECONDS:g}s",
+                },
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - a failed probe must not kill the Sidecar
+            detail = _redact(str(exc))[:200]
+            report = empty_report()
+            for capability in ("tool_calling", "vision", "reasoning_control"):
+                setattr(report, capability, ProbeResult(status="probe_error", checked_at=now, detail=detail))
+            self._emit(
+                request_id,
+                {
+                    "type": "capabilities_probed",
+                    "fingerprint": fingerprint,
+                    "report": report.model_dump(),
+                    "error": detail,
+                },
+            )
+            return
+        report = empty_report()
+        fields = set(CapabilityProbeReport.model_fields)
+        for capability, (status, detail) in raw.items():
+            if capability not in fields:
+                continue
+            safe_detail = _redact(detail)[:200] if detail else None
+            result = ProbeResult(status=status, checked_at=now, detail=safe_detail)
+            # Reasoning Control 探测的 detail 槽位承载验证成功的 control 类型
+            # （effort/budget/adaptive）；只接受白名单值，其它一律不写入 control，
+            # 避免任意 detail 文本污染 Literal 字段导致校验失败丢消息。
+            if (
+                capability == "reasoning_control"
+                and status == "verified"
+                and safe_detail in {"effort", "budget", "adaptive"}
+            ):
+                result.control = safe_detail  # type: ignore[assignment]
+            setattr(report, capability, result)
+        # 只把探测结果发回前端；不在此持久化 —— 持久化由前端在
+        # 指纹（kind/base_url/model）未变时经 save_provider 落库，避免双写竞态。
+        self._emit(
+            request_id,
+            {"type": "capabilities_probed", "fingerprint": fingerprint, "report": report.model_dump()},
+        )
+
     async def wait_all(self) -> None:
         active = [task for task in self.tasks.values() if not task.done()]
+        active.extend(task for task in self.probes.values() if not task.done())
         if active:
             await asyncio.gather(*active, return_exceptions=True)
 

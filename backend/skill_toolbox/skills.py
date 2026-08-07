@@ -12,7 +12,6 @@ class SkillDefinition:
     name: str
     description: str
     system_prompt: str
-    allowed_actions: frozenset[str]
     max_steps: int
     initial_form: dict[str, Any]
     scripts: dict[str, tuple[str, tuple[str, ...]]]
@@ -37,7 +36,6 @@ def load_skill(skill_id: str) -> SkillDefinition:
         name=manifest["name"],
         description=manifest["description"],
         system_prompt=prompt_path.read_text(encoding="utf-8"),
-        allowed_actions=frozenset(manifest["allowed_actions"]),
         max_steps=int(manifest.get("max_steps", 12)),
         initial_form=manifest.get("initial_form", {}),
         scripts=scripts,

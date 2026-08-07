@@ -126,7 +126,6 @@ class AgentRuntime:
             policy = WorkspacePolicy(workspace, read_roots=(skill.dir,))
             tools = ToolRegistry(
                 policy,
-                skill.allowed_actions,
                 skill_dir=skill.dir,
                 scripts=skill.scripts,
                 env=request.env,

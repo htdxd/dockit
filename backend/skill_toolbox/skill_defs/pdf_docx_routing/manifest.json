@@ -2,7 +2,6 @@
   "id": "pdf_docx_routing",
   "name": "PDF 转 DOCX 路由",
   "description": "按 PDF 类型和模型视觉能力选择 MinerU DOCX 转换及质量检查路线。",
-  "allowed_actions": [],
   "max_steps": 20,
   "initial_form": {
     "prompt": {

@@ -18,6 +18,8 @@ import {
   saveGlobalSettings,
   saveProvider,
   _defaultProvider,
+  type CapabilityProbeReport,
+  type CapabilityProbeResult,
   type GlobalSettings,
   type ProviderConfig,
 } from "./settings";
@@ -129,6 +131,7 @@ document.addEventListener("click", (e) => {
     const idx = providers.findIndex((x) => x.id === p.id);
     if (idx >= 0) providers[idx] = patch;
     void saveProvider(patch);
+    invalidateProbe();
     applyProviderToForm(patch);
     syncModelSummary();
     renderModelPicker();
@@ -165,6 +168,7 @@ function formToProvider(): ProviderConfig {
   const current = activeProvider();
   const selModel = element<HTMLSelectElement>("#model").value;
   const customModel = element<HTMLInputElement>("#model-custom").value.trim();
+  const reasoningEl = document.getElementById("reasoning-level") as HTMLSelectElement | null;
   return {
     ...current,
     name: element<HTMLInputElement>("#provider-name").value.trim() || defaultProviderName(current.kind),
@@ -176,6 +180,7 @@ function formToProvider(): ProviderConfig {
     // start_task 带空 model → 网关 400。
     model: selModel || current.model || "",
     model_custom: customModel || current.model_custom || "",
+    reasoning_level: (reasoningEl?.value as ProviderConfig["reasoning_level"]) ?? current.reasoning_level ?? "auto",
   };
 }
 
@@ -198,6 +203,8 @@ function applyProviderToForm(p: ProviderConfig): void {
   element<HTMLInputElement>("#model-custom").value = p.model_custom;
   const custom = element<HTMLInputElement>("#model-custom");
   custom.style.display = p.model === "__custom" ? "block" : "none";
+  const reasoning = document.getElementById("reasoning-level") as HTMLSelectElement | null;
+  if (reasoning) reasoning.value = p.reasoning_level ?? "auto";
   updateProviderUi();
 }
 
@@ -219,6 +226,7 @@ async function activateProvider(id: string): Promise<void> {
   applyProviderToForm(provider);
   renderProviderCards();
   syncModelSummary();
+  renderProbeStatus(parseStoredProbe(provider.capability_probe));
 }
 
 async function addProvider(): Promise<void> {
@@ -230,6 +238,7 @@ async function addProvider(): Promise<void> {
   applyProviderToForm(provider);
   renderProviderCards();
   syncModelSummary();
+  renderProbeStatus(null);
   toast("已添加供应商卡片，填写配置即可使用", "ok");
 }
 
@@ -249,6 +258,7 @@ async function deleteActiveProvider(): Promise<void> {
   applyProviderToForm(activeProvider());
   renderProviderCards();
   syncModelSummary();
+  renderProbeStatus(parseStoredProbe(activeProvider().capability_probe));
   toast("供应商已删除", "warn");
 }
 
@@ -294,6 +304,9 @@ async function loadSettings(): Promise<void> {
   applyProviderToForm(activeProvider());
   renderProviderCards();
   syncModelSummary();
+  // 从 DB 恢复探测结果展示
+  const report = parseStoredProbe(activeProvider().capability_probe);
+  renderProbeStatus(report);
 }
 
 function saveGlobalFields(): void {
@@ -324,7 +337,11 @@ async function syncMineruKey(): Promise<void> {
     if (selector === "#mineru-key" || selector === "#output-dir") {
       saveGlobalFields();
       if (selector === "#mineru-key") void syncMineruKey();
-    } else saveCurrentProvider();
+    } else {
+      // kind/base_url/model 是探测指纹的一部分：改动即失效
+      if (selector === "#base-url") invalidateProbe();
+      saveCurrentProvider();
+    }
   });
 });
 element<HTMLInputElement>("#model-custom").addEventListener("input", saveCurrentProvider);
@@ -344,37 +361,36 @@ function syncModelSummary(): void {
   syncCapabilityUi();
 }
 
-/** 能力默认值：tool_calling / json_schema 默认开启；vision 按模型静态表判定 */
-function capabilityDefault(cap: "tool_calling" | "json_schema" | "vision"): boolean {
+/** 能力默认值：tool_calling 默认开启；vision 按模型静态表判定 */
+function capabilityDefault(cap: "tool_calling" | "vision"): boolean {
   if (cap === "vision") return isVisionModel(modelName());
   return true;
 }
 
-function capabilityOverride(cap: "tool_calling" | "json_schema" | "vision"): boolean | null {
+function capabilityOverride(cap: "tool_calling" | "vision"): boolean | null {
   const p = activeProvider();
   if (cap === "vision") return p.vision_override ?? null;
-  if (cap === "tool_calling") return p.tool_calling_override ?? null;
-  return p.json_schema_override ?? null;
+  return p.tool_calling_override ?? null;
 }
 
-function capabilityEffective(cap: "tool_calling" | "json_schema" | "vision"): boolean {
+function capabilityEffective(cap: "tool_calling" | "vision"): boolean {
   return capabilityOverride(cap) ?? capabilityDefault(cap);
 }
 
-const CAP_IDS: Record<"tool_calling" | "json_schema" | "vision", string> = {
+const CAP_IDS: Record<"tool_calling" | "vision", string> = {
   tool_calling: "cap-tool-calling",
-  json_schema: "cap-json-schema",
   vision: "cap-vision",
 };
 
-/** 刷新三个能力标签：显示默认值 + 手动覆盖状态；vision 联动 DOCX 页警告 */
+/** 刷新能力标签：显示默认值 + 手动覆盖状态；vision 联动 DOCX 页警告。
+ *  JSON Schema 能力已移除（§5 数据模型），工具参数 schema 归入 Tool Calling。 */
 function syncCapabilityUi(): void {
-  (["tool_calling", "json_schema", "vision"] as const).forEach((cap) => {
+  (["tool_calling", "vision"] as const).forEach((cap) => {
     const badge = document.getElementById(CAP_IDS[cap]);
     if (!badge) return;
     const effective = capabilityEffective(cap);
     badge.classList.toggle("cap-dim", !effective);
-    const label = cap === "tool_calling" ? "工具调用" : cap === "json_schema" ? "JSON Schema" : "视觉能力";
+    const label = cap === "tool_calling" ? "工具调用" : "视觉能力";
     const state = capabilityOverride(cap) === null
       ? (effective ? "默认开启" : "默认关闭")
       : (effective ? "已手动开启" : "已手动关闭");
@@ -386,27 +402,27 @@ function syncCapabilityUi(): void {
 
 element<HTMLSelectElement>("#provider-kind").addEventListener("change", () => {
   updateProviderUi();
+  invalidateProbe();
   saveCurrentProvider();
 });
 
-/* 三个能力标签点击：手动覆盖该能力（写入当前供应商） */
-function toggleCapability(cap: "tool_calling" | "json_schema" | "vision"): void {
+/* 能力标签点击：手动覆盖该能力（写入当前供应商） */
+function toggleCapability(cap: "tool_calling" | "vision"): void {
   const provider = activeProvider();
   const idx = providers.findIndex((p) => p.id === provider.id);
   if (idx < 0) return;
   const next = !capabilityEffective(cap);
   const patch: Partial<ProviderConfig> = { ...provider };
   if (cap === "vision") patch.vision_override = next;
-  else if (cap === "tool_calling") patch.tool_calling_override = next;
-  else patch.json_schema_override = next;
+  else patch.tool_calling_override = next;
   providers[idx] = { ...provider, ...patch };
   void saveProvider(providers[idx]);
   syncCapabilityUi();
-  const label = cap === "tool_calling" ? "工具调用" : cap === "json_schema" ? "JSON Schema" : "视觉";
+  const label = cap === "tool_calling" ? "工具调用" : "视觉";
   toast(`已${next ? "开启" : "关闭"}${label}标签`, next ? "ok" : "warn");
 }
 
-(Object.keys(CAP_IDS) as Array<"tool_calling" | "json_schema" | "vision">).forEach((cap) => {
+(Object.keys(CAP_IDS) as Array<"tool_calling" | "vision">).forEach((cap) => {
   element<HTMLElement>(`#${CAP_IDS[cap]}`).addEventListener("click", () => toggleCapability(cap));
 });
 
@@ -536,6 +552,7 @@ element<HTMLSelectElement>("#model").addEventListener("change", (e) => {
   const custom = element<HTMLInputElement>("#model-custom");
   custom.style.display = isCustom ? "block" : "none";
   if (isCustom) custom.focus();
+  invalidateProbe();
   saveCurrentProvider();
 });
 
@@ -545,15 +562,136 @@ element<HTMLButtonElement>("#btn-save-provider").addEventListener("click", () =>
   toast("供应商配置已保存（本地数据库）", "ok");
 });
 
-element<HTMLButtonElement>("#btn-validate").addEventListener("click", () => {
-  const vision = capabilityEffective("vision");
-  toast(
-    vision
-      ? "连接校验通过 · 模型能力符合所有 Skill 要求（含视觉校验）"
-      : "连接校验通过 · 模型能力符合要求（无视觉，DOCX 将走机械检查流程）",
-    vision ? "ok" : "warn",
-  );
-});
+/* ===== 能力探测（真实请求） ===== */
+const PROBE_REQUEST_ID = "probe-capabilities";
+/** 发送探测时的快照指纹；回包时用它校验，避免过期结果写进别的供应商 */
+let probeRequestFingerprint: string | undefined;
+
+/** 从 DB 行解析探测报告；解析失败/为空 → null（显示「未检测」） */
+function parseStoredProbe(raw: string): CapabilityProbeReport | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as CapabilityProbeReport;
+    if (!parsed?.tool_calling || !parsed?.vision || !parsed?.reasoning_control) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** 修改 kind/base_url/model 后立即把探测状态重置为「未检测」。
+ *  不自动联网；由用户点击「检测模型能力」或首次任务显式触发。 */
+function invalidateProbe(): void {
+  const provider = activeProvider();
+  const idx = providers.findIndex((p) => p.id === provider.id);
+  if (idx < 0) return;
+  if (provider.capability_probe) {
+    providers[idx] = { ...provider, capability_probe: "" };
+    void saveProvider(providers[idx]);
+  }
+  renderProbeStatus(null);
+}
+
+function renderProbeStatus(report: CapabilityProbeReport | null): void {
+  const host = document.getElementById("probe-status");
+  if (!host) return;
+  if (!report) {
+    host.textContent = "未检测";
+    host.classList.remove("probe-ok", "probe-warn", "probe-err");
+    return;
+  }
+  const labels: Array<[string, CapabilityProbeResult]> = [
+    ["工具调用", report.tool_calling],
+    ["视觉", report.vision],
+    ["推理控制", report.reasoning_control],
+  ];
+  const statusText: Record<string, string> = {
+    verified: "✓",
+    unsupported: "✗",
+    probe_error: "!",
+    unknown: "?",
+  };
+  host.innerHTML = labels
+    .map(([label, r]) => `<span class="probe-item" data-status="${r.status}" title="${escapeHtml(r.detail ?? "")}">${label} ${statusText[r.status] ?? "?"}</span>`)
+    .join(" · ");
+  host.classList.toggle("probe-ok", report.tool_calling.status === "verified");
+  host.classList.toggle("probe-warn", report.tool_calling.status === "unknown" || report.tool_calling.status === "probe_error");
+  host.classList.toggle("probe-err", report.tool_calling.status === "unsupported");
+}
+
+/** 探测指纹：kind + base_url + model（镜像后端 capabilities.probe_fingerprint，
+ *  前后端一致，用于校验探测结果是否仍适用于当前供应商）。 */
+function probeFingerprint(p: {
+  kind: string;
+  base_url?: string | null;
+  model: string;
+}): string {
+  return JSON.stringify([p.kind, (p.base_url ?? "").replace(/\/+$/, ""), p.model]);
+}
+
+/** 把探测报告持久化到当前供应商 —— 仅当 kind/base_url/model 未变（指纹一致）时
+ *  才落库。探测期间用户切走/改了供应商时，过期结果直接丢弃，绝不写进别的行。 */
+function persistProbeReport(
+  report: CapabilityProbeReport,
+  requestFingerprint: string | undefined,
+): void {
+  const provider = activeProvider();
+  const currentFingerprint = probeFingerprint(provider);
+  if (requestFingerprint !== undefined && requestFingerprint !== currentFingerprint) {
+    renderProbeStatus(null);
+    toast("模型配置已变更，探测结果已丢弃", "warn");
+    return;
+  }
+  const idx = providers.findIndex((p) => p.id === provider.id);
+  if (idx < 0) return;
+  const patch = { ...provider, capability_probe: JSON.stringify(report) };
+  providers[idx] = patch;
+  void saveProvider(patch);
+}
+
+function probeCapabilities(): void {
+  const btn = document.getElementById("btn-probe") as HTMLButtonElement | null;
+  if (!btn) return;
+  const apiKey = element<HTMLInputElement>("#api-key").value.trim();
+  if (!apiKey) {
+    toast("请先填写 api_key", "warn");
+    return;
+  }
+  if (!("__TAURI_INTERNALS__" in window)) {
+    toast("浏览器演示模式：无法真实探测", "warn");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "探测中…";
+  const provider = activeProvider();
+  // 发送瞬间的快照指纹：回包比对以此为准（与后端 probe_fingerprint 归一化一致）
+  probeRequestFingerprint = probeFingerprint({
+    kind: element<HTMLSelectElement>("#provider-kind").value,
+    base_url: element<HTMLInputElement>("#base-url").value.trim() || null,
+    model: modelName(),
+  });
+  void send({
+    id: PROBE_REQUEST_ID,
+    type: "probe_capabilities",
+    payload: {
+      provider: {
+        kind: element<HTMLSelectElement>("#provider-kind").value,
+        model: modelName(),
+        api_key: apiKey,
+        base_url: element<HTMLInputElement>("#base-url").value.trim() || null,
+        reasoning_level: element<HTMLSelectElement>("#reasoning-level").value,
+        capability_probe: provider.capability_probe,
+      },
+    },
+  }).catch((error) => {
+    toast(`探测请求失败：${String(error)}`, "warn");
+    btn.disabled = false;
+    btn.textContent = "🔍 检测模型能力";
+  });
+}
+
+element<HTMLButtonElement>("#btn-probe").addEventListener("click", probeCapabilities);
+element<HTMLSelectElement>("#reasoning-level").addEventListener("change", () => saveCurrentProvider());
 
 element<HTMLButtonElement>("#choose-dir").addEventListener("click", async () => {
   const selected = await open({ directory: true, multiple: false, title: "选择输出目录" });
@@ -771,7 +909,8 @@ document.querySelectorAll<HTMLButtonElement>("[data-start]").forEach((btn) => {
           base_url: element<HTMLInputElement>("#base-url").value.trim() || null,
           vision: capabilityOverride("vision"),
           tool_calling: capabilityOverride("tool_calling"),
-          json_schema: capabilityOverride("json_schema"),
+          reasoning_level: element<HTMLSelectElement>("#reasoning-level").value,
+          capability_probe: activeProvider().capability_probe,
         },
         skill_id: SKILLS[tool],
         user_prompt: built.prompt,
@@ -854,8 +993,7 @@ if ("__TAURI_INTERNALS__" in window) {
     }
     /* models_fetched 按 request id 分发：仅当 id 是模型列表请求时才消费并
        return；其它 id（如任务完成事件）必须继续走下方 task 分发，不能被吞掉。 */
-    if (payload.event.type === "models_fetched") {
-      const event = payload.event as { models?: string[]; error?: string };
+    if (payload.event.type === "models_fetched") {      const event = payload.event as { models?: string[]; error?: string };
       const isSettingsFetch = payload.id === MODELS_REQUEST_ID;
       const isPickerFetch = typeof payload.id === "string" && payload.id.startsWith("mp-models-");
       if (!isSettingsFetch && !isPickerFetch) {
@@ -899,6 +1037,32 @@ if ("__TAURI_INTERNALS__" in window) {
         }
         return;
       }
+    }
+    if (payload.id === PROBE_REQUEST_ID && payload.event.type === "capabilities_probed") {
+      const event = payload.event as {
+        report?: CapabilityProbeReport;
+        error?: string;
+        fingerprint?: string;
+      };
+      const btn = document.getElementById("btn-probe") as HTMLButtonElement | null;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "🔍 检测模型能力";
+      }
+      if (event.error) {
+        renderProbeStatus(null);
+        toast(`能力探测失败：${event.error}`, "warn");
+      } else if (event.report) {
+        // 用发送瞬间的快照指纹校验（而非当前表单值），防止探测期间用户
+        // 切走/改了模型后，过期结果写进别的供应商。
+        const sentFingerprint = probeRequestFingerprint;
+        const serverFingerprint = event.fingerprint;
+        const effectiveFingerprint = serverFingerprint ?? sentFingerprint;
+        renderProbeStatus(event.report);
+        persistProbeReport(event.report, effectiveFingerprint);
+        toast("能力探测完成（Tool Calling / Vision / 推理控制）", "ok");
+      }
+      return;
     }
     if (payload.id !== taskId) return;
     setState(reduceTaskEvent(taskState, payload.event));

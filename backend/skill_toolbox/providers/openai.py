@@ -1,17 +1,38 @@
 from __future__ import annotations
 
+import base64
 import json
+import random
+import string
 from collections.abc import Sequence
 from typing import Any
 
 from openai import AsyncOpenAI
 
+from skill_toolbox.capabilities import openai_reasoning_effort
 from skill_toolbox.models import (
     AssistantTurn,
     ConversationMessage,
     ProviderConfig,
+    ReasoningLevel,
     ToolCall,
 )
+from skill_toolbox.unicode_utils import redact_secrets
+
+
+def _reasoning_kwargs(level: ReasoningLevel) -> dict[str, Any]:
+    """Map a user reasoning level to OpenAI-native request parameters.
+
+    OpenAI reasoning models (o1/o3/gpt-5) accept ``reasoning_effort`` with a
+    closed enum. ``auto`` sends nothing (provider default); unsupported/unknown
+    models get no parameter either — we never silently send a field the vendor
+    may reject. ``max_tokens`` stays the standard chat-completions parameter for
+    non-reasoning models; the project does not switch to the Responses API.
+    """
+    effort = openai_reasoning_effort(level)
+    if not effort:
+        return {}
+    return {"reasoning_effort": effort}
 
 
 class OpenAIProvider:
@@ -26,6 +47,7 @@ class OpenAIProvider:
         self.client = AsyncOpenAI(**kwargs)
         self.model = config.model
         self.max_tokens = config.max_tokens
+        self.reasoning_level = config.reasoning_level
 
     async def complete(
         self,
@@ -45,12 +67,14 @@ class OpenAIProvider:
             }
             for tool in tools
         ]
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=api_messages,
-            tools=api_tools,
-            max_tokens=self.max_tokens,
-        )
+        params: dict[str, Any] = {
+            "model": self.model,
+            "messages": api_messages,
+            "tools": api_tools,
+            "max_tokens": self.max_tokens,
+        }
+        params.update(_reasoning_kwargs(self.reasoning_level))
+        response = await self.client.chat.completions.create(**params)
         message = response.choices[0].message
         calls: list[ToolCall] = []
         for call in message.tool_calls or []:
@@ -122,3 +146,165 @@ class OpenAIProvider:
                             }
                         )
         return result
+
+    async def probe(
+        self,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, tuple[str, str | None]]:
+        """Deterministic capability probe against the OpenAI / compatible API.
+
+        Each probe is one small, minimal, nonce-anchored request:
+        - tool_calling: unique echo(value) tool, model must call it with the
+          nonce → verified.
+        - vision: in-memory generated image with a random short code, model must
+          return the code → verified (recognition errors keep unknown, so we
+          never mistake vision quality for protocol support).
+        - reasoning_control: minimal request with reasoning_effort=low; verified
+          only when the response carries reasoning_effort evidence. A plain HTTP
+          200 gateway without verifiable metadata stays unknown.
+        No raw CoT, no API keys, no user materials are ever returned.
+        """
+        kinds = capabilities or ["tool_calling", "vision", "reasoning_control"]
+        result: dict[str, tuple[str, str | None]] = {}
+        if "tool_calling" in kinds:
+            result["tool_calling"] = await self._probe_tool_calling()
+        if "vision" in kinds:
+            result["vision"] = await self._probe_vision()
+        if "reasoning_control" in kinds:
+            result["reasoning_control"] = await self._probe_reasoning_control()
+        return result
+
+    @staticmethod
+    def _nonce(length: int = 6) -> str:
+        return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+    async def _probe_tool_calling(self) -> tuple[str, str | None]:
+        nonce = self._nonce()
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"调用 echo 工具，参数 value 必须原样返回此短码：{nonce}。"
+                            "不要输出任何其他文字。"
+                        ),
+                    }
+                ],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "description": "Returns the given value unchanged",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"value": {"type": "string"}},
+                                "required": ["value"],
+                            },
+                        },
+                    }
+                ],
+                # reasoning 模型（o1/o3/gpt-5）的 chat.completions 弃用 max_tokens、
+                # 改用 max_completion_tokens；非 reasoning 模型两者皆可。探测统一
+                # 用 max_completion_tokens，避免对 gpt-5/o3 误报「不支持工具调用」。
+                max_completion_tokens=512,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._classify_error("tool_calling", exc)
+        message = response.choices[0].message
+        calls = message.tool_calls or []
+        if not calls:
+            return ("unknown", "no tool call returned")
+        call = calls[0]
+        if call.function.name != "echo":
+            return ("unknown", f"wrong tool: {call.function.name}")
+        try:
+            args = json.loads(call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            return ("unknown", "malformed tool arguments")
+        if args.get("value") != nonce:
+            return ("unknown", "nonce mismatch")
+        return ("verified", None)
+
+    async def _probe_vision(self) -> tuple[str, str | None]:
+        code = self._nonce(4).upper()
+        try:
+            import io as _io
+
+            from PIL import Image, ImageDraw
+        except Exception:  # noqa: BLE001
+            return ("probe_error", "pillow unavailable")
+        img = Image.new("RGB", (64, 64), "white")
+        ImageDraw.Draw(img).text((6, 24), code, fill="black")
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        data = buf.getvalue()
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "图片里显示的 4 位大写短码是什么？只输出短码本身。",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{base64.b64encode(data).decode()}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                max_completion_tokens=32,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._classify_error("vision", exc)
+        text = (response.choices[0].message.content or "").strip()
+        normalized = "".join(ch for ch in text.upper() if ch.isalnum())
+        if normalized == code:
+            return ("verified", None)
+        return ("unknown", "recognised text did not match")
+
+    async def _probe_reasoning_control(self) -> tuple[str, str | None]:
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": "1+1=?"}],
+                # reasoning 模型（o1/o3/gpt-5 等）的 chat.completions 接口弃用
+                # max_tokens、改用 max_completion_tokens；探测只发它，避免 400。
+                max_completion_tokens=512,
+                reasoning_effort="low",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._classify_error("reasoning_control", exc)
+        usage = response.usage
+        # Evidence = the vendor echoed our reasoning_effort or reported
+        # reasoning tokens. A plain 200 from a gateway without metadata is
+        # deliberately NOT verified (kept unknown).
+        effort_echo = getattr(response, "reasoning_effort", None)
+        reasoning_tokens = (usage.completion_tokens_details.reasoning_tokens if usage and usage.completion_tokens_details else 0) or 0
+        if effort_echo is not None or reasoning_tokens > 0:
+            return ("verified", "effort")
+        return ("unknown", "no reasoning metadata returned")
+
+    @staticmethod
+    def _classify_error(capability: str, exc: Exception) -> tuple[str, str | None]:
+        """Auth/rate-limit/network → probe_error; explicit unsupported → unsupported.
+
+        The returned detail is always secret-redacted: OpenAI error bodies can
+        echo the api_key back (401 "Incorrect API key provided: sk-..."), and
+        that text must never reach the UI or SQLite.
+        """
+        text = str(exc).lower()
+        if isinstance(exc, KeyboardInterrupt):  # pragma: no cover
+            raise exc
+        detail = redact_secrets(str(exc))[:200]
+        if "unsupported" in text or "not support" in text or "does not support" in text:
+            return ("unsupported", detail)
+        return ("probe_error", detail)

@@ -40,7 +40,6 @@ async def test_exec_cmd_receives_extra_env(tmp_path) -> None:  # type: ignore[no
     workspace.mkdir()
     registry = ToolRegistry(
         WorkspacePolicy(workspace),
-        frozenset(),
         skill_dir=skill_dir,
         scripts={"echo_env": ("echo_env.py", ())},
         env={"MINERU_TOKEN": "sk-mineru-test"},
@@ -57,7 +56,6 @@ async def test_exec_cmd_omits_extra_env_when_unset(tmp_path) -> None:  # type: i
     workspace.mkdir()
     registry = ToolRegistry(
         WorkspacePolicy(workspace),
-        frozenset(),
         skill_dir=skill_dir,
         scripts={"echo_env": ("echo_env.py", ())},
     )

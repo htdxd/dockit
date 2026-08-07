@@ -37,3 +37,6 @@ ResumeCollection/
 .vscode/
 *.swp
 .DS_Store
+
+# 规划文档（不提交）
+Provider能力探测与Reasoning实现计划.md

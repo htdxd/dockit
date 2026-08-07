@@ -2,9 +2,8 @@
   "id": "docx_pro",
   "name": "专业 DOCX 生成",
   "description": "商用级 Word 文档生成：封面、目录、三级页码、表格、图片、公式、公文版式、可填表单、模板套用，含 WPS 兼容与质量门。",
-  "required_capabilities": ["tool_calling", "json_schema"],
+  "required_capabilities": ["tool_calling"],
   "optional_capabilities": ["vision"],
-  "allowed_actions": [],
   "max_steps": 24,
   "initial_form": {
     "prompt": {

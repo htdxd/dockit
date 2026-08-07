@@ -30,7 +30,7 @@ class _CaptureProvider:
 
 def _request(capabilities: dict) -> TaskRequest:
     return TaskRequest(
-        skill_id="simple_docx",
+        skill_id="docx_pro",
         user_prompt="生成测试文档",
         output_dir=Path("_docxpro_e2e_out"),
         capabilities=capabilities,
@@ -40,19 +40,21 @@ def _request(capabilities: dict) -> TaskRequest:
 def test_capabilities_banner_injected_for_vision() -> None:
     provider = _CaptureProvider()
     asyncio.run(AgentRuntime(provider=provider, emit=lambda _event: None).run(
-        _request({"vision": True, "tool_calling": True, "json_schema": True})
+        _request({"vision": True, "tool_calling": True})
     ))
-    assert "[CAPABILITIES]" in provider.prompt
-    assert "vision: true" in provider.prompt
+    assert provider.prompt.startswith(
+        "[CAPABILITIES]\ntool_calling: true\nvision: true\n\n"
+    )
 
 
 def test_capabilities_banner_injected_for_non_vision() -> None:
     provider = _CaptureProvider()
     asyncio.run(AgentRuntime(provider=provider, emit=lambda _event: None).run(
-        _request({"vision": False, "tool_calling": True, "json_schema": True})
+        _request({"vision": False, "tool_calling": True})
     ))
-    assert "[CAPABILITIES]" in provider.prompt
-    assert "vision: false" in provider.prompt
+    assert provider.prompt.startswith(
+        "[CAPABILITIES]\ntool_calling: true\nvision: false\n\n"
+    )
 
 
 def test_no_banner_when_no_capabilities() -> None:
@@ -60,4 +62,4 @@ def test_no_banner_when_no_capabilities() -> None:
     asyncio.run(AgentRuntime(provider=provider, emit=lambda _event: None).run(
         _request({})
     ))
-    assert "[CAPABILITIES]" not in provider.prompt
+    assert not provider.prompt.startswith("[CAPABILITIES]\n")

@@ -458,15 +458,26 @@ export function mountLayout(root: HTMLElement): void {
             </div>
             <div class="cta-row">
               <button class="btn" id="btn-save-provider">💾 保存配置</button>
-              <button class="btn" id="btn-validate">校验连接</button>
+              <button class="btn" id="btn-probe">🔍 检测模型能力</button>
               <span class="caps">
                 <span class="cap cap-clickable" id="cap-tool-calling" title="点击可手动关闭/开启该模型的工具调用能力">tool_calling <b>✓</b></span>
-                <span class="cap cap-clickable" id="cap-json-schema" title="点击可手动关闭/开启该模型的 JSON Schema 能力">json_schema <b>✓</b></span>
                 <span class="cap cap-clickable cap-vision" id="cap-vision" title="点击可手动点亮/熄灭该模型的视觉能力标签">vision <b>✓</b></span>
               </span>
               <span class="btn-sec danger" id="btn-delete-provider">🗑 删除此供应商</span>
             </div>
-            <div class="sec-note">输入或切换卡片时已自动持久化到本地数据库；点「保存配置」可立即落盘确认。任务开始前检查模型能力，不兼容时明确报错，不静默降级。三个能力标签均可点击手动覆盖；tool_calling / json_schema 默认开启，vision 按模型静态表自动判定。</div>
+            <div class="probe-grid">
+              <div>
+                <label class="fld-l" style="margin:0;">生成质量</label>
+                <select class="inp" id="reasoning-level">
+                  <option value="auto">自动（跟随模型默认）</option>
+                  <option value="fast">快速（浅推理）</option>
+                  <option value="balanced">平衡（推荐）</option>
+                  <option value="deep">深入（重推理）</option>
+                </select>
+              </div>
+              <div id="probe-status" class="probe-status">未检测</div>
+            </div>
+            <div class="sec-note">输入或切换卡片时已自动持久化到本地数据库；点「保存配置」可立即落盘确认。任务开始前检查模型能力，不兼容时明确报错，不静默降级。tool_calling 默认开启、vision 按模型静态表自动判定，标签可点击手动覆盖。生成质量档位仅在模型支持时生效，不支持时自动省略对应参数。「检测模型能力」会向当前 Provider 发送少量测试请求，可能产生极少量 token 费用。</div>
           </div>
           <div class="card">
             <div class="card-title">📂 输出目录</div>

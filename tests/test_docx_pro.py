@@ -202,7 +202,7 @@ async def test_runtime_docx_pro_full_pipeline(tmp_path: Path) -> None:
         skill_id="docx_pro",
         user_prompt="生成标准报告",
         output_dir=tmp_path,
-        capabilities={"vision": True, "tool_calling": True, "json_schema": True},
+        capabilities={"vision": True, "tool_calling": True},
     ))
 
     assert result.status == "completed", result.error

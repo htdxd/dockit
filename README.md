@@ -18,17 +18,24 @@ src/                 Tauri v2 + Vite + TypeScript 前端（无 UI 框架）
 backend/             Python skill-toolbox sidecar（AgentRuntime + Skill 运行时）
   skill_toolbox/
     runtime.py       极简 Agent tool-call loop（受控 workspace、超时、可审计日志）
-    capabilities.py  模型能力解析（vision 静态表 + 用户覆盖）
+    capabilities.py  模型能力解析（vision 静态表 + 用户覆盖 + 真实能力探测）
     skill_defs/      Skill 清单：docx_pro / pdf_docx_routing / ppt-master（上游单独跟踪）
-tests/               pytest（运行时、能力路由、docx_pro 端到端）
+tests/               pytest（运行时、能力路由、能力探测、docx_pro 端到端）
 src-tauri/           Rust 宿主：spawn sidecar、stdin/stdout JSON-lines 协议
 ```
 
 ### 能力感知路由
 
-- Skill manifest 声明 `required_capabilities` / `optional_capabilities`（如 `tool_calling`、`json_schema`、`vision`）。
-- 任务开始前解析模型能力：用户显式覆盖 > 静态模型表 > 安全默认；缺失必需能力时**明确报错，不静默降级**。
+- Skill manifest 声明 `required_capabilities` / `optional_capabilities`（如 `tool_calling`、`vision`）。
+- 任务开始前解析模型能力：用户显式覆盖 > 最近一次同指纹探测结果 > 静态模型表 > 安全默认；缺失必需能力时**明确报错，不静默降级**。
 - 运行时把 `[CAPABILITIES]` 横幅注入 system prompt，Skill 依据横幅路由（如 DOCX 的视觉版式校验 vs 机械质量门）。
+
+### 能力探测与推理控制
+
+- 设置页「检测模型能力」对当前 Provider 发起**真实、最小、确定性**请求：Tool Calling（echo nonce）、Vision（内存生成随机短码图片，模型回读短码）、Reasoning Control（OpenAI `reasoning_effort` / Anthropic `budget_tokens`，仅在响应携带可验证 metadata 时标记 verified）。
+- 探测结果四态：`verified / unsupported / probe_error / unknown`；随 `kind + base_url + model` 指纹缓存于 SQLite（`capability_probe`），三者任一变化即失效。
+- 「生成质量」档位 `auto / fast / balanced / deep` 随任务发送；`auto` 不发送推理参数，其余映射为厂商原生参数，模型不支持时安全省略。
+- 探测与日志不写 API Key、不写 raw CoT、不落盘 thinking block；浏览器演示模式不触发真实探测。
 
 ### docx_pro 生成流程
 

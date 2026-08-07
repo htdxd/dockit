@@ -19,7 +19,7 @@ async def test_tool_call_replaces_unpaired_surrogate_before_write(
         name="write",
         arguments={"path": "work/content.txt", "content": "before\udcafafter"},
     )
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
 
     result = await registry.execute(call)
 
@@ -39,7 +39,6 @@ def _make_script_skill(tmp_path: Path) -> ToolRegistry:
     )
     return ToolRegistry(
         WorkspacePolicy(tmp_path / "workspace"),
-        frozenset(),
         skill_dir=skill_dir,
         scripts={"echo": ("echo.py", ("{a}", "{b}", "literal"))},
     )
@@ -81,7 +80,7 @@ def test_build_cmd_allows_empty_string_value(tmp_path: Path) -> None:
     assert cmd[-3:] == ["", "2", "literal"]
 
 
-def _make_simple_docx(path: Path, paragraphs: list[str]) -> None:
+def _make_docx_fixture(path: Path, paragraphs: list[str]) -> None:
     """Build a minimal valid .docx (document.xml with w:p/w:t)."""
     import zipfile
 
@@ -101,13 +100,13 @@ def _make_simple_docx(path: Path, paragraphs: list[str]) -> None:
 async def test_read_docx_returns_text_view(tmp_path: Path) -> None:
     """read on a .docx material returns an extracted plain-text view."""
     source = tmp_path / "old_resume.docx"
-    _make_simple_docx(source, ["姓 名：张三", "电 话：138-1234", "工作经历", "AI 算法工程师 某公司 2021-至今"])
+    _make_docx_fixture(source, ["姓 名：张三", "电 话：138-1234", "工作经历", "AI 算法工程师 某公司 2021-至今"])
     call = ToolCall(
         id="read-docx",
         name="read",
         arguments={"path": source.name},
     )
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
 
     result = await registry.execute(call)
 
@@ -211,7 +210,7 @@ async def test_read_docx_reports_media_with_portrait_heuristic(tmp_path: Path) -
         name="read",
         arguments={"path": source.name},
     )
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
 
     result = await registry.execute(call)
 
@@ -239,7 +238,7 @@ def test_edit_rejects_json_corruption(tmp_path: Path) -> None:
     target = tmp_path / "work" / "resume_data.json"
     target.parent.mkdir()
     target.write_text('{"fields": {"name": "张三"}}', encoding="utf-8")
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
     call = ToolCall(
         id="edit-json",
         name="edit",
@@ -263,7 +262,7 @@ def test_edit_allows_valid_json_change(tmp_path: Path) -> None:
     target = tmp_path / "work" / "resume_data.json"
     target.parent.mkdir()
     target.write_text('{"fields": {"name": "张三"}}', encoding="utf-8")
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
     call = ToolCall(
         id="edit-json-ok",
         name="edit",
@@ -354,7 +353,7 @@ async def test_read_docx_media_with_jpeg(tmp_path: Path) -> None:
             ("rId5", "media/banner.jpg", _jpeg_bytes(800, 120)),  # 横版条幅
         ],
     )
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
     call = ToolCall(id="read-jpeg-docx", name="read", arguments={"path": source.name})
 
     result = await registry.execute(call)
@@ -477,6 +476,23 @@ def test_ingest_docx_produces_md_tables_and_media(tmp_path: Path) -> None:
     assert manifest_text.count('"source":') == 1
 
 
+def test_redact_secrets_strips_api_keys_from_error_text() -> None:
+    """probe 错误文本的 api_key 脱敏：UI/DB 不得出现 sk-* 明文。"""
+    from skill_toolbox.unicode_utils import redact_secrets
+
+    raw = (
+        "Error code: 401 - Incorrect API key provided: sk-leaktest-abcdef123456. "
+        'body: {"error": {"message": "Invalid api_key: sk-leaktest-abcdef123456"}} '
+        "?key=sk-another-zzz999888777"
+    )
+    out = redact_secrets(raw)
+    assert "sk-leaktest-abcdef123456" not in out
+    assert "sk-another-zzz999888777" not in out
+    assert "REDACTED" in out
+    # 普通文本不受影响
+    assert redact_secrets("connection refused") == "connection refused"
+
+
 def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
     """ingest md → 本地图片引用物化到 work/materials/_media/ 并进 manifest。"""
     from skill_toolbox.tools import INGEST_DIR, ingest_material
@@ -504,7 +520,7 @@ async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypat
 
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF-1.4\nfake pdf bytes")
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
 
     calls = {"n": 0}
 
@@ -550,7 +566,7 @@ async def test_read_md_returns_media_list(tmp_path: Path) -> None:
     (tmp_path / "assets" / "fig.png").write_bytes(_png_bytes(300, 400))
     md = tmp_path / "report.md"
     md.write_text("# 报告\n\n![图](assets/fig.png)", encoding="utf-8")
-    registry = ToolRegistry(WorkspacePolicy(tmp_path), frozenset())
+    registry = ToolRegistry(WorkspacePolicy(tmp_path))
 
     result = await registry.execute(ToolCall(id="r", name="read", arguments={"path": "report.md"}))
 
