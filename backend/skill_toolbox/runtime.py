@@ -140,7 +140,7 @@ class AgentRuntime:
                     f"你上传的材料已暂存到工作区，相对路径如下（用 read 或 exec_cmd 的 "
                     f"source 参数按此相对路径访问，不要猜其他路径）：\n{files_list}"
                 )
-            materials_banner = self._materials_banner(workspace, staged)
+            materials_banner = self._materials_banner(workspace, staged, request.env)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
@@ -380,12 +380,14 @@ class AgentRuntime:
         return staged
 
     def _materials_banner(
-        self, workspace: Path, staged: list[tuple[str, Path]]
+        self, workspace: Path, staged: list[tuple[str, Path]], task_env: dict[str, str]
     ) -> str:
         """生成 [MATERIALS] 横幅：轻扫每个源文件 + ≤1MB 小文件自动萃取。
 
         模型开箱即得材料富内容摘要（图片/表格/公式/代码可读性），大文件
         标注"需 ingest"由模型按需调用。萃取失败不阻塞任务，只在横幅说明。
+        task_env 是任务的子进程环境（含 MINERU_TOKEN，由 sidecar 注入）——
+        横幅里的 pdf 自动萃取需要它，否则 PDF skill 的小文件拿不到 token。
         """
         if not staged:
             return ""
@@ -406,7 +408,7 @@ class AgentRuntime:
             # 小文件自动萃取
             try:
                 entry = ingest_material(
-                    abs_path, workspace / INGEST_DIR, self._task_env(request.skill_id) if hasattr(self, "_task_env") else {}
+                    abs_path, workspace / INGEST_DIR, task_env
                 )
             except Exception as exc:  # noqa: BLE001
                 lines.append(f"- {rel} 萃取失败: {exc}")
@@ -419,7 +421,7 @@ class AgentRuntime:
                 f"{len(media)} 张图" if media else "无图"
             )
             lines.append(
-                f"- {rel}（{kind}）→ {entry.get('md_path')}，{media_desc}"
+                f"- {rel}（{kind}）→ work/materials/{entry.get('md_path')}，{media_desc}"
                 f"；图片元数据见 work/materials/manifest.json，可直接引用 media[].path"
             )
         return "\n".join(lines)

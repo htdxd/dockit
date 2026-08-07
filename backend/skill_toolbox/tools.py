@@ -236,8 +236,12 @@ INGEST_DIR = "work/materials"
 INGEST_MANIFEST = "manifest.json"  # 相对 materials/ 目录（ingest 入口的路径基准不一致，避免拼接错位）
 INGEST_AUTO_BYTES = 1_000_000  # 横幅里 ≤1MB 的小文件自动萃取
 
-# 图片引用在 md 文本中的两种形态：![alt](path) 与 <img src="path">
-_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)|<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE)
+# 图片引用在 md 文本中的两种形态：![alt](path) 与 <img src="path">。
+# inline 引用可带 title（![alt](path "title")），捕获到空白处即可。
+_MD_IMG_RE = re.compile(
+    r"!\[[^\]]*\]\(([^\s)\"]+)(?:\s+[\"'(].*?)?\)|<img[^>]+src=[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
 
 
 def _md_link_targets(md_text: str) -> list[str]:
@@ -258,7 +262,7 @@ def _ingest_docx(source: Path, materials: Path) -> tuple[str, list[Path]]:
     用 lxml 走 w:tbl 表格 → HTML 表格、w:p 文本、r:embed 媒体（复用 docx 的
     提取逻辑），不引第三方依赖（mammoth/pandoc 都不装）。
     """
-    from skill_toolbox.tools import _extract_docx_media  # noqa: F401  # noqa: PLC0415
+    import html as _html
 
     lines: list[str] = []
     media_paths: list[Path] = []
@@ -271,15 +275,33 @@ def _ingest_docx(source: Path, materials: Path) -> tuple[str, list[Path]]:
         root = etree.fromstring(xml)
     except etree.XMLSyntaxError as exc:
         raise ValueError(f".docx document.xml parse failed: {exc}") from None
+
+    def _has_ancestor(el, tag: str) -> bool:
+        node = el.getparent()
+        while node is not None:
+            if node.tag == tag:
+                return True
+            node = node.getparent()
+        return False
+
     media_dir = materials / "_media"
     for p in root.iter():
         if p.tag == W_NS + "tbl":
-            # 表格 → HTML 表格
+            # 只输出最外层表格；嵌套表格（w:tbl 在 w:tc 里）不再单独输出，
+            # 否则内层行会漏进外层并多出一个孤立 <table>。
+            if _has_ancestor(p, W_NS + "tbl"):
+                continue
             rows = []
             for tr in p.iter(W_NS + "tr"):
+                # 只取本表格直接辖下的行；嵌套表格（w:tbl 在 w:tc 里）的行由
+                # 内层自己的 w:tbl 处理（但内层 tbl 因 _has_ancestor 被跳过）。
+                # 这里按直接子关系收集，避免内层行/单元格漏进外层表。
+                if tr.getparent() is not p:
+                    continue
                 cells = [
-                    "".join(t.text or "" for t in tc.iter(W_NS + "t"))
+                    _html.escape("".join(t.text or "" for t in tc.iter(W_NS + "t")))
                     for tc in tr.iter(W_NS + "tc")
+                    if tc.getparent() is tr
                 ]
                 if cells:
                     rows.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
@@ -287,6 +309,9 @@ def _ingest_docx(source: Path, materials: Path) -> tuple[str, list[Path]]:
                 lines.append("<table>" + "".join(rows) + "</table>")
             continue
         if p.tag == W_NS + "p":
+            # 跳过表格内的段落（其文本已由 <table> 承载），避免单元格文字重复
+            if _has_ancestor(p, W_NS + "tbl"):
+                continue
             text = "".join(t.text or "" for t in p.iter(W_NS + "t")).strip()
             if text:
                 lines.append(text)
@@ -405,10 +430,41 @@ def _ingest_pdf(source: Path, materials: Path, extra_env: dict[str, str]) -> tup
         raise RuntimeError("MinerU 未产出 Markdown")
     md_path = md_files[0]
     md_text = md_path.read_text(encoding="utf-8", errors="replace")
-    media_paths: list[Path] = []
-    if md_path.parent.glob("_media/*"):
-        media_paths = list(md_path.parent.glob("_media/*"))
+    # 媒体从 md 实际引用的图片里找（MinerU 输出形如 ![img](media/xxx.png)，
+    # 相对 md 所在目录），物化到 materials/_media/ 统一命名。不要假设有
+    # _media/ 子目录——MinerU 并不产出它。
+    media_paths: list[Path] = _materialize_refs_from_md(md_path, materials / "_media")
     return md_text, media_paths
+
+
+def _materialize_refs_from_md(md_path: Path, dest_dir: Path) -> list[Path]:
+    """把 md 引用的本地图片物化到 dest_dir，返回物化后的路径列表（与源 stem 无耦合）。"""
+    try:
+        md_text = md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for rel in _md_link_targets(md_text):
+        src = (md_path.parent / rel).resolve()
+        try:
+            src.relative_to(md_path.parent.resolve())
+        except ValueError:
+            continue
+        if not src.is_file() or src.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            continue
+        out = dest_dir / src.name
+        if out.name in seen:
+            continue
+        seen.add(out.name)
+        try:
+            if not out.exists():
+                shutil.copy2(src, out)
+            paths.append(out)
+        except OSError:
+            continue
+    return paths
 
 
 def _media_meta(path: Path, root: Path, order: int) -> dict[str, Any]:
@@ -432,6 +488,14 @@ def _media_meta(path: Path, root: Path, order: int) -> dict[str, Any]:
     }
 
 
+def _write_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    """原子写 manifest（temp + replace）：并发 read .pdf 时避免半写损坏。"""
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, manifest_path)
+
+
 def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """萃取单个源文件到 work/materials/，返回描述（供横幅与 read 复用）。
 
@@ -448,9 +512,11 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
             manifest = {"sources": []}
     key = source.resolve()
     existing = next((s for s in manifest["sources"] if Path(s.get("source", "")).resolve() == key), None)
-    if existing and existing.get("md_path") and Path(materials / existing["md_path"]).is_file():
-        existing["cached"] = True
-        return existing
+    if existing and existing.get("md_path"):
+        # md_path 相对 materials/ 目录（<ws>/work/materials/<stem>.md）
+        if Path(materials / existing["md_path"]).is_file():
+            existing["cached"] = True
+            return existing
 
     suffix = source.suffix.lower()
     try:
@@ -465,7 +531,7 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
     except Exception as exc:  # noqa: BLE001 - 萃取失败要落到 manifest 供模型看到错误
         entry = {"source": str(source), "format": suffix.lstrip("."), "ok": False, "error": str(exc)}
         manifest["sources"].append(entry)
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_manifest(manifest_path, manifest)
         raise
 
     # 写 md 文件（统一命名 <stem>.md）
@@ -481,12 +547,12 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
         "source": str(source),
         "format": suffix.lstrip("."),
         "ok": True,
-        "md_path": f"{INGEST_DIR}/{source.stem}.md",
+        "md_path": f"{source.stem}.md",  # 相对 materials/ 目录（幂等校验按此拼接）
         "media": media,
     }
     manifest["sources"] = [s for s in manifest["sources"] if Path(s.get("source", "")).resolve() != key]
     manifest["sources"].append(entry)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_manifest(manifest_path, manifest)
     return entry
 
 
@@ -503,30 +569,11 @@ def _manifest_entries(materials: Path) -> list[dict[str, Any]]:
 
 def _materialize_md_media(md_path: Path, root: Path) -> list[dict[str, Any]]:
     """物化 md 里引用的本地图片到 work/_media/<md名>/，返回媒体清单（与 docx 同模式）。"""
-    try:
-        md_text = md_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    media: list[dict[str, Any]] = []
     dest = root / "work" / "_media" / md_path.stem
-    dest.mkdir(parents=True, exist_ok=True)
-    order = 0
-    for rel in _md_link_targets(md_text):
-        src = (md_path.parent / rel).resolve()
-        try:
-            src.relative_to(md_path.parent.resolve())
-        except ValueError:
-            continue
-        if not src.is_file() or src.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-            continue
-        out = dest / src.name
-        try:
-            if not out.exists():
-                shutil.copy2(src, out)
-            media.append(_media_meta(out, root, order))
-            order += 1
-        except OSError:
-            continue
+    paths = _materialize_refs_from_md(md_path, dest)
+    media: list[dict[str, Any]] = []
+    for order, out in enumerate(paths):
+        media.append(_media_meta(out, root, order))
     return media
 
 
@@ -727,7 +774,7 @@ class ToolRegistry:
             entry = ingest_material(path, self.policy.root / INGEST_DIR, self.extra_env)
             if not entry.get("ok"):
                 raise ValueError(f"pdf 萃取失败: {entry.get('error')}")
-            md_path = self.policy.root / entry["md_path"]
+            md_path = self.policy.root / INGEST_DIR / entry["md_path"]
             md_text = md_path.read_text(encoding="utf-8", errors="replace")
             md_lines = md_text.splitlines()
             offset = int(call.arguments.get("offset", 0))

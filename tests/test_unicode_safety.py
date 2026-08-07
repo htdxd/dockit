@@ -461,7 +461,7 @@ def test_ingest_docx_produces_md_tables_and_media(tmp_path: Path) -> None:
 
     assert entry["ok"] is True
     assert entry["format"] == "docx"
-    md = (tmp_path / entry["md_path"]).read_text(encoding="utf-8")
+    md = (tmp_path / INGEST_DIR / entry["md_path"]).read_text(encoding="utf-8")
     assert "标题" in md
     assert "<table>" in md and "张三" in md and "28" in md
     media = entry["media"]
@@ -493,7 +493,7 @@ def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
     assert entry["format"] == "md"
     assert (mats / "_media" / "fig.png").is_file()
     assert entry["media"][0]["width"] == 600
-    assert (tmp_path / entry["md_path"]).is_file()
+    assert (tmp_path / INGEST_DIR / entry["md_path"]).is_file()
 
 
 @pytest.mark.asyncio
@@ -539,7 +539,7 @@ async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypat
     payload = json.loads(result.content)
     assert payload["format"] == "markdown"
     assert "论文标题" in payload["content"]
-    assert payload["md_path"] == "work/materials/paper.md"
+    assert payload["md_path"] == "paper.md"
     assert calls["n"] == 1  # flash-extract 一次成功，不再回退
 
 
@@ -573,7 +573,7 @@ def test_materials_banner_scans_and_auto_ingests(tmp_path: Path) -> None:
     big_pdf.write_bytes(b"%PDF-1.4" + b"0" * 1_200_000)
     staged = [("sources/notes.md", small_md), ("sources/big.pdf", big_pdf)]
 
-    banner = rt._materials_banner(tmp_path, staged)
+    banner = rt._materials_banner(tmp_path, staged, {})
 
     assert "[MATERIALS]" in banner
     assert "work/materials/notes.md" in banner  # 小文件自动萃取
