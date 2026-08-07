@@ -20,6 +20,9 @@ from skill_toolbox.policy import PolicyViolation, WorkspacePolicy
 
 MAX_TEXT_BYTES = 1_000_000
 MAX_IMAGE_BYTES = 12_000_000
+# .docx 是 zip 容器，read 只解 document.xml 与媒体清单，不整包载入内存，
+# 所以允许带照片的简历（几 MB）被读取；文本类文件仍按 1MB 限制。
+MAX_DOCX_BYTES = 64 * 1024 * 1024
 TEXT_SUFFIXES = {
     ".txt",
     ".md",
@@ -42,6 +45,150 @@ TEXT_SUFFIXES = {
     ".log",
 }
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def _image_size(path: Path) -> tuple[int, int] | None:
+    """读取图片像素尺寸（纯标准库：JPEG SOF 段 / PNG IHDR），失败返回 None。"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            import struct
+
+            w, h = struct.unpack(">II", data[16:24])
+            return (w, h) if w and h else None
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                    h, w = struct.unpack(">HH", data[i + 5 : i + 9])
+                    return (w, h) if w and h else None
+                seg_len = struct.unpack(">H", data[i + 2 : i + 4])[0]
+                i += 2 + seg_len
+        return None
+    except (struct.error, IndexError):
+        return None
+
+
+def _relative_to_cwd(path: Path, root: Path | None = None) -> str:
+    """返回相对 workspace 根的路径（子进程 cwd 即 workspace），无法相对化时用绝对路径。
+
+    root 显式传入（如 policy.root）时以它为准，避免依赖 cwd 与根目录恰好一致。
+    """
+    base = (root or Path.cwd()).resolve()
+    try:
+        return str(path.resolve().relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def _extract_docx_media(docx_path: Path, dest_dir: Path, root: Path) -> list[dict[str, Any]]:
+    """从 .docx 提取内嵌媒体清单并把图片物化到 dest_dir，返回元数据列表。
+
+    简历旧文档常内嵌人像照，但照片字节封在 zip 里，模型既看不到也无法引用。
+    这里按 document.xml 中 r:embed 首次出现顺序排序媒体（人像通常靠前），
+    物化到工作区 work/_media/<docx名>/ 下，模型可 read 或作为 fields.photo 路径。
+    portrait_likely 是给无视觉模型的启发式：近方形/竖版且非极小（简历人像
+    通常 1:1 裁剪），帮助它不用看图也能挑出人像。root 为 workspace 根，
+    用于把产物路径相对化。
+    """
+    try:
+        with zipfile.ZipFile(docx_path) as z:
+            all_names = z.namelist()
+            names = set(all_names)
+            document_xml = z.read("word/document.xml") if "word/document.xml" in names else b""
+            rels_xml = z.read("word/_rels/document.xml.rels") if "word/_rels/document.xml.rels" in names else b""
+            # 保持 namelist 归档顺序（zip 内媒体通常按写入顺序排），别用 set 迭代，
+            # 否则同名 tie-break 时排序不稳定。
+            media_members = [
+                n for n in all_names
+                if n.startswith("word/media/") and not n.endswith("/")
+            ]
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Not a readable .docx: {exc}") from None
+
+    # rId → 媒体目标（zip 内完整路径），来自 document.xml.rels。Target 是相对
+    # word/ 目录的（如 media/photo.png），归一化成 word/media/photo.png 才能
+    # 与 namelist 的 member 直接比对。
+    target_by_rid: dict[str, str] = {}
+    if rels_xml:
+        try:
+            rel_root = etree.fromstring(rels_xml)
+            for rel in rel_root:
+                rid = rel.get("Id")
+                target = (rel.get("Target") or "").lstrip("/")
+                if rid and target.startswith("media/"):
+                    target_by_rid[rid] = f"word/{target}" if not target.startswith("word/") else target
+        except etree.XMLSyntaxError:
+            pass
+
+    # document.xml 中 a:blip 的 r:embed 属性首次出现顺序（r:embed 是带命名空间的属性）
+    embed_order: dict[str, int] = {}
+    if document_xml:
+        try:
+            doc_root = etree.fromstring(document_xml)
+            idx = 0
+            for el in doc_root.iter():
+                rid = el.get(R_NS + "embed")
+                if rid:
+                    embed_order.setdefault(rid, idx)
+                    idx += 1
+        except etree.XMLSyntaxError:
+            pass
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    for member in media_members:
+        try:
+            with zipfile.ZipFile(docx_path) as z:
+                raw = z.read(member)
+        except (KeyError, zipfile.BadZipFile):
+            continue
+        if not raw:
+            continue
+        out_path = dest_dir / Path(member).name
+        try:
+            out_path.write_bytes(raw)
+        except OSError:
+            continue
+        width = height = None
+        dims = _image_size(out_path)
+        if dims:
+            width, height = dims
+        rid = next((r for r, tgt in target_by_rid.items() if tgt == member), None)
+        aspect = (width / height) if width and height else None
+        portrait_likely = bool(
+            aspect is not None
+            and 0.75 <= aspect <= 1.35
+            and (width or 0) >= 80
+            and (height or 0) >= 80
+        )
+        # a:blip 的 r:embed 是属性不是文本节点；这里从根遍历补查 embed 属性，
+        # 与上面的 embed_order 解析保持一致（iter 属性名即带命名空间的展开名）。
+        entries.append({
+            "name": Path(member).name,
+            # 工作区相对路径（模型可直接 read / 写进 fields.photo）；无法相对化
+            # 时回退绝对路径。
+            "path": _relative_to_cwd(out_path, root),
+            "size": len(raw),
+            "width": width,
+            "height": height,
+            "aspect": round(aspect, 2) if aspect else None,
+            "portrait_likely": portrait_likely,
+            "order": embed_order.get(rid, 10**6),
+        })
+
+    entries.sort(key=lambda e: (e["order"], -e["size"]))
+    for entry in entries:
+        entry.pop("order", None)
+    return entries
 
 
 def _extract_docx_text(path: Path) -> str:
@@ -228,14 +375,29 @@ class ToolRegistry:
             )
             return self._result(call, True, f"Read image: {path.name}", [image])
         if suffix == ".docx":
-            if path.stat().st_size > MAX_TEXT_BYTES:
-                raise ValueError("docx exceeds the 1 MB read limit")
+            if path.stat().st_size > MAX_DOCX_BYTES:
+                raise ValueError("docx exceeds the 64 MB read limit")
             content = _extract_docx_text(path)
+            # 物化内嵌媒体到 work/_media/<docx名>/，返回元数据（含人像启发式）。
+            # 仅当 docx 在工作区内（材料/产物）才物化；只读 skill 目录跳过。
+            media: list[dict[str, Any]] = []
+            if path.is_relative_to(self.policy.root):
+                try:
+                    media = _extract_docx_media(
+                        path, self.policy.root / "work" / "_media" / path.stem, self.policy.root
+                    )
+                except (ValueError, OSError):
+                    media = []
             return self._result(
                 call,
                 True,
                 json.dumps(
-                    {"content": content, "format": "docx-text", "lines": content.count("\n") + 1},
+                    {
+                        "content": content,
+                        "format": "docx-text",
+                        "lines": content.count("\n") + 1,
+                        "media": media,
+                    },
                     ensure_ascii=False,
                 ),
             )
@@ -284,6 +446,16 @@ class ToolRegistry:
         updated = content.replace(
             old_text, new_text, -1 if call.arguments.get("replace_all") else 1
         )
+        # JSON 文件在 edit 后校验：模型常用 edit 改 resume_data.json，改坏会让
+        # 下游 fill 报 JSON 错再自愈，浪费整轮。这里直接拒绝写入并提示用 write。
+        if path.suffix.lower() == ".json":
+            try:
+                json.loads(updated)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"edit 会破坏 JSON 结构（第 {exc.lineno} 行：{exc.msg}），未写入。"
+                    "请改用 write 整文件重写，或修正 old_text/new_text 后再 edit。"
+                ) from None
         temp = path.with_suffix(path.suffix + ".tmp")
         temp.write_text(updated, encoding="utf-8")
         temp.replace(path)

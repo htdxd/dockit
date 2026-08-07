@@ -39,12 +39,19 @@
 - 内容**量化、具体**：职责/成就用「做了什么 + 怎么做 + 结果数据」，避免空话。
 - 分号或换行分隔条目；文本中的 `\n` 即换行。
 - **line 字段（phone/email/name/intent/address 等）只填值、不要带模板已有的标签**：如 `phone` 只写 `138-0000-8000`，不要写 `手机：138-…`——fill 会自动把值拼到模板锚点（「手机：」）后。带了标签会导致「手机：手机：」重复。
-- **照片**：若模板 manifest 含 `mode: "photo"` 字段，且用户在材料中上传了证件照/照片（`sources/` 下的 jpg/png），将照片路径写入 `fields.photo`（如 `sources/photo.jpg`）；无照片则省略该字段（模板保留原示例照片）。照片会自动等比嵌入原照片位，不改变模板照片框尺寸。
+- **照片（重要）**：模板 manifest 含 `mode: "photo"` 字段时按以下优先级取照片：
+  1. **用户单独上传**：`sources/` 下的 jpg/png 直接作为照片，`fields.photo = sources/<文件名>`。
+  2. **参考旧简历 docx 里的照片**：`read` 旧简历 docx 会返回 `media` 清单（每项含 `path`/`width`/`height`/`aspect`/`portrait_likely`，**列表已按文档内引用顺序排好**）。选 `portrait_likely=true` 且**列表中最靠前**的那个（无视觉模型无法看图时**就用这个启发式自动选，不要向用户确认**），`fields.photo = <media.path>`（该路径已在 work/_media/ 下，可直接引用）。
+     - 有 `vision` 能力时：先 `read` 该候选图确认是真人像，不是再换下一个候选。
+     - 多个候选都 `portrait_likely` 时：**只选一张**（引用顺序最靠前），其余候选路径写入交付说明，方便用户手动换。
+     - 若旧简历里没有任何 `portrait_likely` 的图，视为无照片。
+  3. **以上都没有**：用 `ask_user_questions` 一次问清三选一：① 用户提供照片（告知路径或重新上传）；② 移除照片位（`fields.photo = "__remove__"`，fill 会删掉模板示例照片）；③ 保留模板示例照片（不写 photo 字段）。
+  - 照片会自动等比嵌入原照片位，不改变模板照片框尺寸；照片源文件必须真实存在，不存在时保留模板原照片并在 `warnings` 说明。
 
 ## 工作流
 
 1. **读模板**：`read` `templates/<模板id>/manifest.json`（相对 skill 目录的路径，如 `templates/t001/manifest.json`），确认字段清单与 `mode`（line=单值行，block=内容块）。**若 `read` 或 `fill_resume` 报模板目录缺 `template.docx`/`manifest.json`（如 `FileNotFoundError`），说明该模板未入库，不要再重试同一个模板——立即在 `templates/` 下列出的模板里另选一个可用的，或换 `ask_user_questions` 让用户重新选择。**
-2. **读材料**：`read` `sources/` 下的所有文件。文本（.txt/.md）直读；**旧简历/参考文档是 `.docx` 时直接用 `read` 读（返回纯文本视图），不要调 `extract_docx` 或把它当图片读**；图片用 `read` 读。
+2. **读材料**：`read` `sources/` 下的所有文件。文本（.txt/.md）直读；**旧简历/参考文档是 `.docx` 时直接用 `read` 读（返回纯文本视图 + `media` 照片清单），不要调 `extract_docx` 或把它当图片读**；图片用 `read` 读。
 3. **抽取组织**：按上面的 schema 与简历写作规范（`references/resume-guide.md`）整理字段 → `write` `work/resume_data.json`。
 4. **填充**：`exec_cmd` action=`fill_resume`，`args.template=<模板id>`（如 `t001`）、`args.data=work/resume_data.json`、`args.output=artifacts/resume.docx`。**产物必须写 `artifacts/`（含文件名），不要写 `work/`**——fill 报错先看 stderr：数据文件没写对（FileNotFoundError）就先用 `write` 写好 JSON 再重跑；不要改 output 路径重试同一数据。
 5. **检查输出**：读 fill 返回的 JSON——

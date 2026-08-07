@@ -39,6 +39,7 @@ WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 WPS = "{http://schemas.microsoft.com/office/word/2010/wordprocessingShape}"
 WPG = "{http://schemas.microsoft.com/office/word/2010/wordprocessingGroup}"
+R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 EMU_PER_PT = 12700
 LINE_FACTOR = 1.3   # 行距系数（估算用）
 LATIN_FACTOR = 0.55  # 英文字符平均宽度系数
@@ -81,12 +82,41 @@ def load_docx_xml(path: Path):
         return etree.fromstring(z.read("word/document.xml"))
 
 
-def save_docx_xml(root, src_path: Path, out_path: Path, photos: list | None = None) -> None:
+def remove_photo_drawing(root, rId: str) -> bool:
+    """按 rId 移除照片 drawing（用户未提供照片、选择留空时清掉模板示例头像）。
+
+    r:embed 是 <a:blip> 上的属性（不是元素），所以要对所有元素查 .get(R+"embed")，
+    命中后向上找最近的 drawing 祖先整块移除。
+    """
+    for el in root.iter():
+        if el.get(R + "embed") != rId:
+            continue
+        node = el
+        drawing = None
+        while node is not None:
+            if node.tag.endswith("drawing"):
+                drawing = node
+                break
+            node = node.getparent()
+        if drawing is not None and drawing.getparent() is not None:
+            drawing.getparent().remove(drawing)
+            return True
+    return False
+
+
+def save_docx_xml(
+    root,
+    src_path: Path,
+    out_path: Path,
+    photos: list | None = None,
+    skip_media: set | None = None,
+) -> None:
     """写回: 复制原 docx 全部内容，仅替换 word/document.xml（避免 zip 内重复条目）。
 
     photos: [{rId, old_media, user_image: Path}] —— 替换照片位：
       跳过旧 media 条目，写入用户图片（新文件名保留用户扩展名），
       并把 document.xml.rels 中对应 rId 的 Target 指向新文件。
+    skip_media: 需要丢弃的旧 media 成员（如照片被 __remove__ 移除）。
     """
     import zipfile
     import re
@@ -112,6 +142,8 @@ def save_docx_xml(root, src_path: Path, out_path: Path, photos: list | None = No
             photo = next((p for p in photos if p["old_media"] == name), None)
             if photo is not None:
                 continue  # 旧照片字节不复制
+            if skip_media and name in skip_media:
+                continue  # 照片被 __remove__ 移除，丢弃旧媒体
             if name == "word/_rels/document.xml.rels" and photos:
                 rels = zin.read(name).decode("utf-8")
                 for p in photos:
@@ -358,11 +390,23 @@ def main() -> None:
     overflow: list[dict] = []
     warnings: list[str] = []
     photos: list[dict] = []
+    skip_media: set[str] = set()
 
-    # 照片嵌入：values["photo"] = 用户图片路径（相对 workspace 根 / 绝对路径）
+    # 照片处理：values["photo"] = 用户图片路径；特殊值 "__remove__" 表示移除照片位。
     for pf in photo_fields:
         val = values.get("photo") or values.get(pf["id"]) or values.get(pf["key"])
         if not val or not str(val).strip():
+            continue
+        loc = pf["locations"][0]
+        rId = loc.get("rId", "rId4")
+        media = loc.get("media", "word/media/image1.jpeg")
+        if str(val).strip() == "__remove__":
+            # 用户选择不要照片：移除模板照片 drawing + 丢弃旧媒体字节
+            if remove_photo_drawing(root, rId):
+                skip_media.add(media)
+                replaced.append({"id": "photo", "key": "photo", "count": 1, "new_text": "（已移除示例照片）"})
+            else:
+                warnings.append("photo: 未找到照片位 drawing，未能移除")
             continue
         user_img = Path(str(val))
         if not user_img.is_absolute():
@@ -370,10 +414,9 @@ def main() -> None:
         if not user_img.is_file():
             warnings.append(f"photo: 图片不存在 {user_img}，保留模板原照片")
             continue
-        loc = pf["locations"][0]
         photos.append({
-            "rId": loc.get("rId", "rId4"),
-            "old_media": loc.get("media", "word/media/image1.jpeg"),
+            "rId": rId,
+            "old_media": media,
             "user_image": user_img,
         })
         replaced.append({"id": "photo", "key": "photo", "count": 1, "new_text": f"照片 {user_img.name}"})
@@ -424,7 +467,7 @@ def main() -> None:
                     "hint": "内容可能超出文本框，需精简或换行适配（L2 版式重排二期支持自动扩框）",
                 })
 
-    save_docx_xml(root, template, out_path, photos=photos)
+    save_docx_xml(root, template, out_path, photos=photos, skip_media=skip_media)
 
     print(json.dumps({
         "ok": True,
