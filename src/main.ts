@@ -619,14 +619,19 @@ function renderProbeStatus(report: CapabilityProbeReport | null): void {
   host.classList.toggle("probe-err", report.tool_calling.status === "unsupported");
 }
 
-/** 探测指纹：kind + base_url + model（镜像后端 capabilities.probe_fingerprint，
- *  前后端一致，用于校验探测结果是否仍适用于当前供应商）。 */
+/** 探测指纹：kind + base_url + 生效模型（镜像后端 capabilities.probe_fingerprint，
+ *  前后端一致，用于校验探测结果是否仍适用于当前供应商）。
+ *  手动输入模型（model === "__custom"）时须用 model_custom 参与指纹计算：
+ *  发送端（modelName()）与后端都按「生效模型」算指纹，落库端若直接用原始
+ *  "__custom" 会得到不同指纹，导致探测结果被误判为「配置已变更」而丢弃。 */
 function probeFingerprint(p: {
   kind: string;
   base_url?: string | null;
   model: string;
+  model_custom?: string;
 }): string {
-  return JSON.stringify([p.kind, (p.base_url ?? "").replace(/\/+$/, ""), p.model]);
+  const model = p.model === "__custom" || !p.model ? (p.model_custom ?? "") : p.model;
+  return JSON.stringify([p.kind, (p.base_url ?? "").replace(/\/+$/, ""), model]);
 }
 
 /** 把探测报告持久化到当前供应商 —— 仅当 kind/base_url/model 未变（指纹一致）时
@@ -640,8 +645,25 @@ function persistProbeReport(
   if (requestFingerprint !== undefined && requestFingerprint !== currentFingerprint) {
     renderProbeStatus(null);
     toast("模型配置已变更，探测结果已丢弃", "warn");
+    // TEMP DEBUG: 记录指纹供定位
+    try {
+      localStorage.setItem("dockit.probeDebug", JSON.stringify({
+        t: Date.now(),
+        mismatch: true,
+        currentFingerprint,
+        requestFingerprint,
+        current: { kind: provider.kind, base_url: provider.base_url, model: provider.model, model_custom: provider.model_custom, id: provider.id },
+        active_provider: globalSettings.active_provider,
+        providers_len: providers.length,
+      }));
+    } catch { /* ignore */ }
     return;
   }
+  try {
+    localStorage.setItem("dockit.probeDebug", JSON.stringify({
+      t: Date.now(), mismatch: false, currentFingerprint, requestFingerprint,
+    }));
+  } catch { /* ignore */ }
   const idx = providers.findIndex((p) => p.id === provider.id);
   if (idx < 0) return;
   const patch = { ...provider, capability_probe: JSON.stringify(report) };

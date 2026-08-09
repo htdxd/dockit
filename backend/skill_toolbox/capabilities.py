@@ -146,6 +146,7 @@ def probe_fingerprint(config: ProviderConfig) -> str:
     renaming the provider or editing the API key does not."""
     return json.dumps(
         [config.kind, (config.base_url or "").rstrip("/"), config.model],
+        separators=(",", ":"),
         ensure_ascii=False,
         sort_keys=True,
     )

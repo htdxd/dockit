@@ -420,7 +420,7 @@ async def test_probe_response_carries_fingerprint() -> None:
     probed = [e["event"] for e in events if e["event"].get("type") == "capabilities_probed"]
     assert len(probed) == 1
     fp = probed[0].get("fingerprint")
-    assert fp == '["openai", "https://api.example.com/v1", "gpt-4o"]'
+    assert fp == '["openai","https://api.example.com/v1","gpt-4o"]'
 
 
 @pytest.mark.asyncio

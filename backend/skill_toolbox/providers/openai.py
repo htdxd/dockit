@@ -35,6 +35,16 @@ def _reasoning_kwargs(level: ReasoningLevel) -> dict[str, Any]:
     return {"reasoning_effort": effort}
 
 
+def _probe_reasoning_max_tokens(model: str) -> int:
+    """Return a completion cap compatible with an effort-based probe.
+
+    Qwen gateways may map ``reasoning_effort=low`` to an 8192-token thinking
+    budget and require the completion cap to be greater than that budget.
+    Other OpenAI-compatible providers can use a smaller probe cap.
+    """
+    return 16384 if "qwen" in (model or "").lower() else 1024
+
+
 class OpenAIProvider:
     def __init__(self, config: ProviderConfig) -> None:
         kwargs: dict[str, Any] = {
@@ -236,8 +246,9 @@ class OpenAIProvider:
             from PIL import Image, ImageDraw
         except Exception:  # noqa: BLE001
             return ("probe_error", "pillow unavailable")
-        img = Image.new("RGB", (64, 64), "white")
-        ImageDraw.Draw(img).text((6, 24), code, fill="black")
+        small = Image.new("RGB", (64, 64), "white")
+        ImageDraw.Draw(small).text((6, 24), code, fill="black")
+        img = small.resize((256, 256), Image.Resampling.NEAREST)
         buf = _io.BytesIO()
         img.save(buf, format="PNG")
         data = buf.getvalue()
@@ -255,13 +266,14 @@ class OpenAIProvider:
                             {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": f"data:image/png;base64,{base64.b64encode(data).decode()}"
+                                    "url": f"data:image/png;base64,{base64.b64encode(data).decode()}",
+                                    "detail": "high",
                                 },
                             },
                         ],
                     }
                 ],
-                max_completion_tokens=32,
+                max_completion_tokens=1024,
             )
         except Exception as exc:  # noqa: BLE001
             return self._classify_error("vision", exc)
@@ -272,13 +284,14 @@ class OpenAIProvider:
         return ("unknown", "recognised text did not match")
 
     async def _probe_reasoning_control(self) -> tuple[str, str | None]:
+        max_completion_tokens = _probe_reasoning_max_tokens(self.model)
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "1+1=?"}],
                 # reasoning 模型（o1/o3/gpt-5 等）的 chat.completions 接口弃用
                 # max_tokens、改用 max_completion_tokens；探测只发它，避免 400。
-                max_completion_tokens=512,
+                max_completion_tokens=max_completion_tokens,
                 reasoning_effort="low",
             )
         except Exception as exc:  # noqa: BLE001

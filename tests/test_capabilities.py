@@ -225,6 +225,13 @@ def test_probe_fingerprint_invalidates_on_kind_base_or_model_change() -> None:
     assert probe_fingerprint(base) != probe_fingerprint(other2)
 
 
+def test_probe_fingerprint_matches_frontend_json_stringify_format() -> None:
+    config = _config("gpt-4o")
+    config.base_url = "https://api.example.com/v1///"
+    # Frontend probeFingerprint() uses JSON.stringify (compact separators).
+    assert probe_fingerprint(config) == '["openai","https://api.example.com/v1","gpt-4o"]'
+
+
 def test_reasoning_level_is_not_a_skill_gate() -> None:
     caps = resolve_capabilities(_config("deepseek-chat", reasoning_level="deep"))
     # reasoning_control 是内部能力，不出现在任务门槛横幅
