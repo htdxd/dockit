@@ -49,6 +49,36 @@
   3. **以上都没有**：用 `ask_user_questions` 一次问清三选一：① 用户提供照片（告知路径或重新上传）；② 移除照片位（`fields.photo = "__remove__"`，fill 会删掉模板示例照片）；③ 保留模板示例照片（不写 photo 字段）。
   - 照片会自动等比嵌入原照片位，不改变模板照片框尺寸；照片源文件必须真实存在，不存在时保留模板原照片并在 `warnings` 说明。
 
+## 统一材料协议（先读摘要 → 写 ContentPlan → 再填模板）
+
+任务开始时系统注入 `[MATERIALS]` 横幅：列出每个上传材料的共享 IR 路径
+（`work/materials/<id>/document.json` 与顺序阅读投影 `content.md`）。按以下
+顺序推进，**禁止跳过规划直接填充**：
+
+1. **读材料摘要**：`read` `[MATERIALS]` 列出的 `content.md`（材料为旧简历
+   docx/pdf 时仍按第 2 节方式读取媒体清单）。需要精确结构再读 `document.json`。
+2. **写 ContentPlan**：先 `write` 合法 JSON 到 `work/plans/content-plan.json`：
+   ```json
+   {
+     "schema_version": "1",
+     "task_type": "resume",
+     "mode": "vision | conservative",
+     "selections": [{"source_id": "<block或asset id>", "purpose": "用于哪个字段", "target": "<模板 component/slot id>", "transform": "preserve|summarize"}],
+     "exclusions": [{"source_id": "<id>", "reason": "irrelevant|duplicate|low_confidence|unsupported|user_rejected"}],
+     "questions_asked": false
+   }
+   ```
+   - `mode` 由 `[CAPABILITIES]` 横幅的 `vision` 决定；`vision: false` → `conservative`。
+   - 照片/结构图等候选：`vision: true` 时 `read` 确认后选择；`vision: false` 时
+     只按高置信度规则（用户单独上传、明确图注、原位置关系、人像启发式）自动
+     选，仍不确定时一次 `ask_user_questions` 批量询问或跳过，**不猜图意**。
+   - 每个被读取且有迁移价值的资源必须出现在 `selections` 或 `exclusions`。
+3. **按 ContentPlan 填模板**：进入第 4-7 步的 fill_resume 流程。
+4. **机械门 → （vision）渲染复核 → finish_task**。
+
+无 Vision 模式：只使用模板白名单字段与高置信度资源；产物交付说明标注
+「未进行视觉版式检查」。有 Vision 时渲染后逐页核验并可在有界范围内修复。
+
 ## 工作流
 
 1. **读模板**：`read` `templates/<模板id>/manifest.json`（相对 skill 目录的路径，如 `templates/t001/manifest.json`），确认字段清单与 `mode`（line=单值行，block=内容块）。**若 `read` 或 `fill_resume` 报模板目录缺 `template.docx`/`manifest.json`（如 `FileNotFoundError`），说明该模板未入库，不要再重试同一个模板——立即在 `templates/` 下列出的模板里另选一个可用的，或换 `ask_user_questions` 让用户重新选择。**

@@ -1,13 +1,12 @@
+import asyncio
+import json
+import re
 from pathlib import Path
 
 import pytest
 from skill_toolbox.models import ToolCall
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.tools import ToolRegistry
-
-import asyncio
-import json
-import re
 
 
 @pytest.mark.asyncio
@@ -201,7 +200,6 @@ def _make_photo_docx(path: Path, photo_wh: tuple[int, int], logo_wh: tuple[int, 
 async def test_read_docx_reports_media_with_portrait_heuristic(tmp_path: Path) -> None:
     """read .docx returns a media list with portrait_likely so a non-vision
     model can pick the headshot without looking at the image."""
-    from skill_toolbox.tools import _extract_docx_media
 
     source = tmp_path / "old_resume.docx"
     _make_photo_docx(source, (220, 260), (600, 40))
@@ -315,6 +313,7 @@ def test_fill_resume_remove_photo(tmp_path: Path) -> None:
         errors="replace",
         timeout=120,
         cwd=str(workspace),
+        check=False,
     )
     assert completed.returncode == 0, completed.stderr
     payload = _json.loads(completed.stdout)
@@ -393,7 +392,7 @@ def test_fill_resume_replaces_photo_and_rewrites_rels(tmp_path: Path) -> None:
     completed = subprocess.run(
         [sys.executable, str(script), str(tpl_dir), str(data_path), str(out_path)],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=120, cwd=str(workspace),
+        timeout=120, cwd=str(workspace), check=False,
     )
     assert completed.returncode == 0, completed.stderr
 
@@ -515,8 +514,6 @@ def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypatch) -> None:
     """read .pdf → 自动 MinerU 萃取（mock 命令）→ 返回 md 文本 + media 清单。"""
-    from skill_toolbox.tools import ToolRegistry as _TR, _mineru_command
-    import subprocess as _sp
 
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF-1.4\nfake pdf bytes")
@@ -577,21 +574,34 @@ async def test_read_md_returns_media_list(tmp_path: Path) -> None:
     assert (tmp_path / payload["media"][0]["path"]).is_file()
 
 
-def test_materials_banner_scans_and_auto_ingests(tmp_path: Path) -> None:
-    """[MATERIALS] 横幅：小 md 自动萃取列 md 路径；大 pdf 引导 ingest；不支持的格式跳过。"""
-    from skill_toolbox.runtime import AgentRuntime
+def test_materials_banner_summarizes_preprocessed_catalog(tmp_path: Path) -> None:
+    """[MATERIALS] 横幅：md 列出 IR/投影路径；pdf 占位引导 ingest；失败列错误码。
+
+    阶段 3 起横幅只读预处理结果，不再在横幅内自动 ingest（实施计划 §12.1）。
+    """
+    from skill_toolbox.materials import MaterialError, MaterialService
     from skill_toolbox.providers.mock import ScriptedProvider
+    from skill_toolbox.runtime import AgentRuntime
 
     rt = AgentRuntime(ScriptedProvider([]), lambda e: None)
+    service = MaterialService(tmp_path)
     small_md = tmp_path / "notes.md"
     small_md.write_text("# 笔记", encoding="utf-8")
-    big_pdf = tmp_path / "big.pdf"
-    big_pdf.write_bytes(b"%PDF-1.4" + b"0" * 1_200_000)
-    staged = [("sources/notes.md", small_md), ("sources/big.pdf", big_pdf)]
+    service.prepare_material(small_md)
+    catalog = service.catalog()
 
-    banner = rt._materials_banner(tmp_path, staged, {})
-
+    banner = rt._materials_banner(catalog, [])
     assert "[MATERIALS]" in banner
-    assert "work/materials/notes.md" in banner  # 小文件自动萃取
-    assert "sources/big.pdf" in banner
-    assert "ingest" in banner  # 大文件引导 ingest
+    assert "notes.md" in banner
+    assert "content.md" in banner
+    assert "document.json" in banner
+
+    # 解析失败 → 稳定错误码进横幅
+    bad = tmp_path / "bad.xyz"
+    bad.write_text("x", encoding="utf-8")
+    try:
+        service.prepare_material(bad)
+    except MaterialError as exc:
+        errors = [(bad.name, exc.code, str(exc))]
+    banner = rt._materials_banner(catalog, errors)
+    assert "MATERIAL_UNSUPPORTED" in banner

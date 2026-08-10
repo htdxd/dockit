@@ -243,22 +243,8 @@ class MaterialCatalog:
     def relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.workspace.resolve()))
 
-    def summary(self) -> str:
-        """[MATERIALS] 横幅短摘要：不展开完整 IR（实施计划 §12.1）。"""
-        lines: list[str] = ["[MATERIALS]"]
-        for entry in self.manifest.get("materials", []):
-            material_id = entry["material_id"]
-            ir = self.irs.get(material_id)
-            if ir is None:
-                lines.append(f"- {entry['original_name']}（解析失败: {entry.get('error')}）")
-                continue
-            assets = len(ir.assets)
-            lines.append(
-                f"- {entry['original_name']} ({ir.source_format}, "
-                f"{len(ir.blocks)} 块, {assets} 资源) → work/materials/{ir.material_id}/document.json，"
-                f"兼容投影 work/materials/{ir.material_id}/content.md"
-            )
-        return "\n".join(lines)
+    def ir_for(self, material_id: str) -> DocumentIR | None:
+        return self.irs.get(material_id)
 
 
 class MaterialService:

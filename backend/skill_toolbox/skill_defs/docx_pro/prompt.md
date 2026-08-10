@@ -55,17 +55,42 @@
 
 若 `"available": false`，**保持纯 python-docx 路线**，不得谎报能力。交付说明中注明所用引擎。
 
-## 5.5 富内容利用（上传材料 → 产物）
+## 0.5 统一材料协议（先读摘要 → 写 ContentPlan → 再生成）
 
-任务开始时会注入 `[MATERIALS]` 横幅：列出每个上传材料的萃取结果（`work/materials/manifest.json` + 各 `<stem>.md`）。**优先把材料里的富内容搬进产物，而不是自己凭空编**：
+任务开始时系统注入 `[MATERIALS]` 横幅：列出每个上传材料的共享 IR 路径
+（`work/materials/<id>/document.json` 与顺序阅读投影 `content.md`）。必须按
+以下顺序推进，**禁止跳过规划直接生成**：
 
-1. **先读 `work/materials/manifest.json`**：每个源文件一条，`media[]` 含 `path`（工作区相对，可直接用作 `images[].source`）、`width/height/aspect/portrait_likely`。
-2. **图片**：材料里的图片（pdf 由 MinerU 抽出、docx/md 已物化到 `work/materials/_media/` 或 `work/_media/`）→ 写进规格 `images: [{source: <media.path>, width_mm, caption}]`。无视觉模型按 `width/height/aspect` 判断哪张适合插图（横图作 banner、竖图作侧图），**不要凭空造图**。
-3. **表格**：材料里的表格（ingest 已转成 HTML `<table>` 或 md 管道表）→ 规格 `tables[]`。直接复制数据，不臆造数值。
-4. **公式**：材料里的 `$...$` / LaTeX → 规格 `formulas: [{latex}]`（OMML/PNG 由生成器处理）。
-5. **代码**：材料里的代码围栏 → 规格 `paragraphs[].style="code"`。
-6. **照片（人像场景）**：简历/证件类材料若含人像（`portrait_likely=true`），无视觉模型按元数据自动选一张作为封面/内页插图，不询问用户。
-7. **材料无对应内容时**：宁缺毋滥，不要为凑数而编造图表数据。
+1. **读材料摘要**：用 `read` 读取 `[MATERIALS]` 横幅中列出的 `content.md`（长文档
+   用 offset/limit 分页）；需要精确结构（表格合并、图片 bbox）再读对应
+   `document.json`。
+2. **写 ContentPlan**：先 `write` 一个合法 JSON 到 `work/plans/content-plan.json`，
+   结构如下（所有选择/舍弃必须留痕，不能静默丢弃高价值资源）：
+   ```json
+   {
+     "schema_version": "1",
+     "task_type": "docx",
+     "mode": "vision | conservative",
+     "selections": [{"source_id": "<block或asset id>", "purpose": "用途", "target": "section/段落位", "transform": "preserve|summarize|crop|table|formula"}],
+     "exclusions": [{"source_id": "<id>", "reason": "irrelevant|duplicate|low_confidence|unsupported|user_rejected"}],
+     "questions_asked": false
+   }
+   ```
+   - `mode` 由 `[CAPABILITIES]` 横幅的 `vision` 决定：`vision: true` → `vision`；
+     `vision: false` → `conservative`（无视觉模式）。
+   - 图片等候选资源：`vision: true` 时 `read` 候选图确认后决定；`vision: false`
+     时只按文件名/图注/相邻正文高置信度复用，歧义资源**不猜**——一次
+     `ask_user_questions` 批量询问或舍弃。
+   - 每个被读取且有迁移价值的资源必须出现在 `selections` 或 `exclusions`。
+3. **按 ContentPlan 生成**：调用本 prompt 第 1-4 节的 action 流程，把选中的
+   图片/表格/公式放入对应 section 与段落位置。
+4. **机械门 → （vision）视觉门 → finish_task**：`postcheck_docx` 未通过前不得
+   `finish_task`。
+
+无 Vision 模式（`vision: false`）：
+- 只用高置信度资源（用户单独上传、明确图注、稳定相邻关系）；
+- 采用单栏、居中、保持比例的保守布局，禁止自由裁剪/浮动图；
+- 交付说明必须标注「未进行视觉版式检查」，不得声称完成视觉验证。
 
 ## 6. 硬性规则（每条都必须在生成中落实）
 

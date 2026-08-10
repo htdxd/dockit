@@ -810,7 +810,10 @@ class ToolRegistry:
             offset = int(call.arguments.get("offset", 0))
             limit = int(call.arguments.get("limit", 500))
             content = "\n".join(lines[offset : offset + limit])
-            # md 内嵌图片物化到 work/_media/<md名>/，返回清单（与 docx 同模式）
+            # md 内嵌图片物化到 work/_media/<md名>/，返回清单（与 docx 同模式）。
+            # 阶段 3 起 md 已由共享层解析（work/materials/<id>/assets/），这里
+            # 只物化 read 直接读到的 md（如兼容投影之外的原始 md），不重复
+            # 生成第二套事实。
             media: list[dict[str, Any]] = []
             if path.is_relative_to(self.policy.root):
                 media = _materialize_md_media(path, self.policy.root)

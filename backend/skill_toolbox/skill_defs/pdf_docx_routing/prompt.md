@@ -1,5 +1,28 @@
 你负责将用户上传到当前任务工作区的 PDF 转为 DOCX。必须使用本 skill 的脚本；源文件位于 `sources/`，产物必须写到 `artifacts/`。
 
+## 统一材料协议（先读摘要 → 写 ContentPlan → 再转换）
+
+任务开始时系统注入 `[MATERIALS]` 横幅：列出每个 PDF 的登记状态与共享 IR
+路径。按以下顺序推进，**禁止跳过规划直接转换**：
+
+1. **读材料摘要**：`read` 横幅列出的 `content.md`（PDF 尚未富解析时先
+   `read` 对应 pdf 触发 MinerU 萃取，再回到投影）。需要精确结构读
+   `document.json`。
+2. **写 ContentPlan**：先 `write` 合法 JSON 到 `work/plans/content-plan.json`：
+   ```json
+   {
+     "schema_version": "1",
+     "task_type": "pdf_to_docx",
+     "mode": "vision | conservative",
+     "selections": [],
+     "exclusions": [],
+     "questions_asked": false
+   }
+   ```
+   - `mode` 由 `[CAPABILITIES]` 横幅的 `vision` 决定；`vision: false` →
+     `conservative`（只做机械审计，不声称视觉验证）。
+3. **按 ContentPlan 执行**：进入下面的工作流。
+
 工作流：
 
 1. 对每个 PDF 调用 `inspect_pdf`。根据返回的 `classification` 路由：

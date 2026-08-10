@@ -9,17 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from skill_toolbox.materials import MaterialCatalog, MaterialError, MaterialService
 from skill_toolbox.models import ConversationMessage, ToolCall, ToolResult
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.skills import load_skill
 from skill_toolbox.tool_specs import TOOL_SPECS
-from skill_toolbox.tools import (
-    INGEST_AUTO_BYTES,
-    INGEST_DIR,
-    ToolRegistry,
-    ingest_material,
-)
+from skill_toolbox.tools import ToolRegistry
 
 EventEmitter = Callable[[dict[str, Any]], None]
 DebugLogger = Callable[[dict[str, Any]], None]
@@ -130,6 +126,28 @@ class AgentRuntime:
                     "note": "Materials are available to the model under the 'sources/' "
                             "relative path; this is the only correct way to read them.",
                 })
+            # 阶段 3：进入 Agent loop 前同步预处理材料（md/txt 原生解析为
+            # DocumentIR；pdf/docx/pptx 登记占位，旧 ingest/read 路径继续服务）。
+            # 横幅不再自动 ingest（实施计划 §12.1：横幅只读预处理结果短摘要）。
+            material_service = MaterialService(workspace, request.env)
+            material_errors: list[tuple[str, str, str]] = []
+            for rel, abs_path in staged:
+                self.emit({"type": "material_progress", "path": rel, "phase": "parsing"})
+                try:
+                    material_service.prepare_material(abs_path)
+                except MaterialError as exc:
+                    material_errors.append((rel, exc.code, str(exc)))
+                    self.emit(
+                        {
+                            "type": "material_progress",
+                            "path": rel,
+                            "phase": "failed",
+                            "error": exc.code,
+                        }
+                    )
+                    continue
+                self.emit({"type": "material_progress", "path": rel, "phase": "done"})
+            catalog = material_service.catalog()
             policy = WorkspacePolicy(workspace, read_roots=(skill.dir,))
             tools = ToolRegistry(
                 policy,
@@ -147,7 +165,7 @@ class AgentRuntime:
                     f"你上传的材料已暂存到工作区，相对路径如下（用 read 或 exec_cmd 的 "
                     f"source 参数按此相对路径访问，不要猜其他路径）：\n{files_list}"
                 )
-            materials_banner = self._materials_banner(workspace, staged, request.env)
+            materials_banner = self._materials_banner(catalog, material_errors)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
@@ -424,49 +442,37 @@ class AgentRuntime:
         return staged
 
     def _materials_banner(
-        self, workspace: Path, staged: list[tuple[str, Path]], task_env: dict[str, str]
+        self,
+        catalog: MaterialCatalog,
+        material_errors: list[tuple[str, str, str]],
     ) -> str:
-        """生成 [MATERIALS] 横幅：轻扫每个源文件 + ≤1MB 小文件自动萃取。
+        """生成 [MATERIALS] 横幅：只读预处理结果短摘要，不执行 ingest。
 
-        模型开箱即得材料富内容摘要（图片/表格/公式/代码可读性），大文件
-        标注"需 ingest"由模型按需调用。萃取失败不阻塞任务，只在横幅说明。
-        task_env 是任务的子进程环境（含 MINERU_TOKEN，由 sidecar 注入）——
-        横幅里的 pdf 自动萃取需要它，否则 PDF skill 的小文件拿不到 token。
+        阶段 3 起横幅不再自动萃取（实施计划 §12.1）。md/txt 已解析为
+        DocumentIR（列出 document.json/content.md/资源数）；pdf/docx/pptx
+        登记占位，引导模型用 read/ingest 获取富内容；解析失败列出稳定错误码。
         """
-        if not staged:
+        if not catalog.manifest["materials"] and not material_errors:
             return ""
         lines: list[str] = ["[MATERIALS]"]
-        for rel, abs_path in staged:
-            suffix = abs_path.suffix.lower()
-            size = abs_path.stat().st_size
-            kind = "pdf" if suffix == ".pdf" else ("docx" if suffix == ".docx" else "markdown" if suffix in {".md", ".markdown", ".txt"} else "other")
-            # 轻扫：类型/大小
-            if suffix not in {".pdf", ".docx", ".md", ".markdown", ".txt"}:
-                lines.append(f"- {rel} ({size} bytes, {suffix or 'unknown'}) 无法萃取，按需直接 read/exec_cmd")
+        for entry in catalog.manifest["materials"]:
+            material_id = entry["material_id"]
+            ir = catalog.irs.get(material_id)
+            if ir is None:
+                lines.append(f"- {entry['original_names'][0]}（解析失败）")
                 continue
-            if size > INGEST_AUTO_BYTES:
+            if not ir.blocks and ir.warnings and "尚未接入共享层" in " ".join(ir.warnings):
                 lines.append(
-                    f"- {rel} ({size} bytes, {kind}) 较大：read 时会自动萃取；或手动调 ingest(path) 获取富内容"
+                    f"- {entry['original_names'][0]}（{ir.source_format}）→ 工作区已登记；"
+                    f"用 read/ingest 获取富内容（含图片/表格/公式）"
                 )
                 continue
-            # 小文件自动萃取
-            try:
-                entry = ingest_material(
-                    abs_path, workspace / INGEST_DIR, task_env
-                )
-            except Exception as exc:  # noqa: BLE001
-                lines.append(f"- {rel} 萃取失败: {exc}")
-                continue
-            if not entry.get("ok"):
-                lines.append(f"- {rel} 萃取失败: {entry.get('error')}")
-                continue
-            media = entry.get("media", [])
-            media_desc = (
-                f"{len(media)} 张图" if media else "无图"
-            )
             lines.append(
-                f"- {rel}（{kind}）→ work/materials/{entry.get('md_path')}，{media_desc}"
-                f"；图片元数据见 work/materials/manifest.json，可直接引用 media[].path"
+                f"- {entry['original_names'][0]}（{ir.source_format}, {len(ir.blocks)} 块, "
+                f"{len(ir.assets)} 资源）→ work/materials/{material_id[:16]}/document.json，"
+                f"顺序阅读 work/materials/{material_id[:16]}/content.md"
             )
+        for rel, code, message in material_errors:
+            lines.append(f"- {rel} 材料处理失败（{code}）: {message}")
         return "\n".join(lines)
 
