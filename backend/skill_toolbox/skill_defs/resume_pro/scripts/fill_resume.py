@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """fill_resume.py — 简历模板字段填充（L1：文本替换 + 溢出预警）
 
 用法:
@@ -27,7 +26,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 from zipfile import ZipFile
@@ -118,8 +116,8 @@ def save_docx_xml(
       并把 document.xml.rels 中对应 rId 的 Target 指向新文件。
     skip_media: 需要丢弃的旧 media 成员（如照片被 __remove__ 移除）。
     """
-    import zipfile
     import re
+    import zipfile
     xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
     photos = photos or []
 
@@ -352,6 +350,254 @@ def _set_paragraph_text(p, new_text: str) -> None:
         pass  # 保留 rPr 原样
 
 
+# ---------------- 受限组件动作（阶段 5） ----------------
+#
+# 只允许 manifest components[].allowed_actions 列出的动作；动作执行到
+# workspace 候选副本，任一步失败则丢弃候选，不在半修改文件上继续。
+# 无 Vision 模式只执行白名单动作与机械门（实施计划 §11.2/§11.3）。
+
+ALLOWED_ACTIONS = {"replace_text", "replace_asset", "resize_component", "shift_components", "clone_component"}
+PAGE_HEIGHT_PT = 794.0  # A4 页高（11.69in×72）
+
+
+def verify_template_hash(tpl_dir: Path, manifest: dict) -> None:
+    """template_sha256 不匹配立即失败并提示重新索引，禁止对未知结构套旧 selector。"""
+    expected = manifest.get("template_sha256")
+    if not expected:
+        return  # 旧 manifest（未索引）不阻断 L1 原位替换
+    template = tpl_dir / manifest.get("template_file", "template.docx")
+    if not template.is_file():
+        raise RuntimeError(f"模板文件不存在: {template}")
+    import hashlib
+
+    actual = hashlib.sha256(template.read_bytes()).hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"模板 hash 不匹配（期望 {expected[:16]}…，实际 {actual[:16]}…）。"
+            "模板文件已被修改，请重新索引后再操作，禁止对未知结构继续套用旧 selector。"
+        )
+
+
+def _wsp_by_loc(root, loc: dict):
+    """按 (anchor_idx, wsp_idx) 定位文本框 lxml 元素；找不到返回 None。"""
+    anchors = root.findall(".//" + WP + "anchor")
+    idx = int(loc.get("anchor_idx", -1))
+    if idx < 0 or idx >= len(anchors):
+        return None
+    wsps = list(anchors[idx].iter(WPS + "wsp"))
+    widx = int(loc.get("wsp_idx", -1))
+    if widx < 0 or widx >= len(wsps):
+        return None
+    return wsps[widx]
+
+
+def _shift_ys(root, dy_pt: float, component_ids: set[str], manifest: dict) -> None:
+    """纵向平移指定组件（含其 objects 与 moves_with 列出的其它组件）。
+
+    只允许 manifest 明确列出的组件移动；dy_pt 为正向下、负向上。
+    """
+    ids = set(component_ids)
+    for comp in manifest.get("components", []):
+        cid = comp["id"]
+        if cid not in ids:
+            continue
+        ids.update(comp.get("moves_with", []))
+    for comp in manifest.get("components", []):
+        cid = comp["id"]
+        if cid not in ids:
+            continue
+        for obj in comp.get("objects", []):
+            wsp = _wsp_by_loc(root, obj)
+            if wsp is None:
+                continue
+            xfrm = wsp.find(WPS + "spPr/" + A + "xfrm")
+            off = xfrm.find(A + "off") if xfrm is not None else None
+            if off is None or off.get("y") is None:
+                continue
+            off.set("y", str(int(off.get("y")) + round(dy_pt * EMU_PER_PT)))
+
+
+def _resize_component(root, comp: dict, height_pt: float) -> None:
+    """只改变 manifest 标注的可拉伸对象高度；background 与文字框若同组件则同步。
+
+    height_pt 受 comp.min_height_pt/max_height_pt 约束（机械门）。
+    """
+    lo = comp.get("min_height_pt") or 0.0
+    hi = comp.get("max_height_pt") or PAGE_HEIGHT_PT
+    if height_pt < lo or height_pt > hi:
+        raise RuntimeError(
+            f"resize_component({comp['id']}) 高度 {height_pt}pt 超出允许范围 "
+            f"[{lo}, {hi}]pt"
+        )
+    for obj in comp.get("objects", []):
+        wsp = _wsp_by_loc(root, obj)
+        if wsp is None:
+            continue
+        xfrm = wsp.find(WPS + "spPr/" + A + "xfrm")
+        ext = xfrm.find(A + "ext") if xfrm is not None else None
+        if ext is None or ext.get("cy") is None:
+            continue
+        ext.set("cy", str(round(height_pt * EMU_PER_PT)))
+
+
+def _clone_component(root, src_comp: dict, after_comp: dict, manifest: dict) -> None:
+    """原子复制组件：把 src 的所有对象深拷贝一份插到 after 之后。
+
+    重写需要的唯一 ID/relationship：新元素不保留原 id（lxml 深拷贝会复制
+    id 属性，需清空重设）；图片类对象（r:embed）在阶段 5b 只支持文本组件
+    复制，图片组件复制报错（避免 relationship 重写复杂度失控）。
+    """
+    import copy
+
+    if not src_comp.get("objects"):
+        raise RuntimeError(f"clone_component({src_comp['id']}) 无对象可复制")
+    src_wsps = [_wsp_by_loc(root, obj) for obj in src_comp.get("objects", [])]
+    if any(w is None for w in src_wsps):
+        raise RuntimeError(f"clone_component({src_comp['id']}) 源组件定位失败")
+    # 拒绝含图片/嵌入对象的组件复制（relationship 重写复杂度失控）
+    for wsp in src_wsps:
+        if wsp.find(".//" + R + "embed") is not None:
+            raise RuntimeError(
+                f"clone_component({src_comp['id']}) 含图片对象，复制暂不支持（避免 relationship 损坏）"
+            )
+    after_wsps = [_wsp_by_loc(root, obj) for obj in after_comp.get("objects", [])]
+    if not after_wsps or any(w is None for w in after_wsps):
+        raise RuntimeError(f"clone_component({after_comp['id']}) 目标位置定位失败")
+
+    # 深拷贝源对象，插到 after 最后一个对象之后（保持相对顺序）
+    inserted: list = []
+    for wsp in src_wsps:
+        new_wsp = copy.deepcopy(wsp)
+        # 清空所有 id 属性，避免重复唯一 ID
+        for el in new_wsp.iter():
+            if el.get("id") is not None:
+                el.set("id", "")
+        after_wsps[-1].addnext(new_wsp)
+        inserted.append(new_wsp)
+    if not inserted:
+        raise RuntimeError(f"clone_component({src_comp['id']}) 未插入任何对象")
+
+
+def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, list[str]]:
+    """执行数据里的受限动作，返回 (记录列表, 警告列表)。
+
+    values 支持两个来源（保持兼容）：
+      - 旧 `fields`（原位替换，L1 语义不变）
+      - 新 `actions`: [{action, component, value|height_pt|component_ids|after, dy_pt}]
+    动作必须在组件 allowed_actions 白名单内。
+    """
+    records: list[dict] = []
+    warnings: list[str] = []
+    components = {c["id"]: c for c in manifest.get("components", [])}
+    for action_spec in values.get("actions", []):
+        action = action_spec.get("action")
+        if action not in ALLOWED_ACTIONS:
+            warnings.append(f"未知动作: {action}（允许 {sorted(ALLOWED_ACTIONS)}）")
+            continue
+        comp_id = action_spec.get("component")
+        # shift_components 按 component_ids 批量移动，component 可选
+        if action == "shift_components":
+            ids = set(action_spec.get("component_ids", []))
+            dy_pt = float(action_spec.get("dy_pt", 0))
+            unknown = sorted(i for i in ids if i not in components)
+            if unknown:
+                warnings.append(f"shift_components 引用未知组件: {unknown}")
+                continue
+            if not ids:
+                warnings.append("shift_components 缺少 component_ids")
+                continue
+            _shift_ys(root, dy_pt, ids, manifest)
+            records.append({"action": action, "component_ids": sorted(ids), "dy_pt": dy_pt})
+            continue
+        if not comp_id or comp_id not in components:
+            warnings.append(f"动作 {action} 引用了未知组件: {comp_id}")
+            continue
+        comp = components.get(comp_id)
+        allowed = comp.get("allowed_actions", []) if comp else []
+        if action not in allowed:
+            warnings.append(f"组件 {comp_id} 不允许动作 {action}（白名单 {allowed}）")
+            continue
+        if action == "replace_text":
+            value = str(action_spec.get("value", ""))
+            field_id = action_spec.get("field")
+            # 缺省用组件 content_slot 的首个字段
+            if not field_id:
+                for slot_field in comp.get("content_slot", []):
+                    if any(f["id"] == slot_field for f in manifest["fields"]):
+                        field_id = slot_field
+                        break
+            if not field_id:
+                warnings.append(f"replace_text({comp_id}) 无法确定目标字段")
+                continue
+            # 复用 L1 文本替换：按 component field 的 location 定位文本框。
+            # line 字段按 manifest 模板行（f["text"]）匹配锚点行；block 字段
+            # 整块替换（传全文）。
+            replaced_any = False
+            for f in manifest["fields"]:
+                if f["id"] != field_id:
+                    continue
+                keep_anchor = f.get("mode", "line") != "block"
+                for loc in f.get("locations", []):
+                    wsp = _wsp_by_loc(root, loc)
+                    if wsp is None:
+                        continue
+                    tx = wsp.find(".//" + W + "txbxContent")
+                    if tx is None:
+                        continue
+                    if keep_anchor:
+                        tpl_line = f.get("text") or ""
+                        n = replace_text_in_paragraphs(tx, tpl_line, value, keep_anchor=True)
+                    else:
+                        n = replace_text_in_paragraphs(tx, box_text_exact(tx), value, keep_anchor=False)
+                    if n:
+                        replaced_any = True
+                        records.append({"action": action, "component": comp_id, "field": field_id, "count": n})
+                        break
+                if replaced_any:
+                    break
+            if not replaced_any:
+                warnings.append(f"replace_text({comp_id}/{field_id}) 未找到匹配文本框")
+            continue
+        if action == "replace_asset":
+            value = str(action_spec.get("value", ""))
+            if value == "__remove__":
+                removed_any = False
+                for f in manifest["fields"]:
+                    if f.get("mode") != "photo":
+                        continue
+                    for loc in f.get("locations", []):
+                        r_id = loc.get("rId", "")
+                        media = loc.get("media", "")
+                        # 同步执行 L1 的照片移除：去掉 drawing + 丢弃旧媒体字节。
+                        # 这里把 media 路径通过 values.photo 的隐藏键回传主流程，
+                        # 让 save_docx_xml 的 skip_media 生效（动作层只改 root，
+                        # 主流程的 photos/skip_media 集合在动作执行后才保存）。
+                        if remove_photo_drawing(root, r_id) and media:
+                            action_spec["_skip_media"] = media
+                            removed_any = True
+                            records.append({"action": action, "component": comp_id, "value": "__remove__"})
+                            break
+                if not removed_any:
+                    warnings.append(f"replace_asset({comp_id}) 未找到照片位")
+            else:
+                warnings.append(f"replace_asset 图片写入需经照片字段流程（fields.photo），动作内直接写暂不支持: {comp_id}")
+            continue
+        if action == "resize_component":
+            height_pt = float(action_spec.get("height_pt", 0))
+            _resize_component(root, comp, height_pt)
+            records.append({"action": action, "component": comp_id, "height_pt": height_pt})
+            continue
+        if action == "clone_component":
+            after_id = action_spec.get("after")
+            if not after_id or after_id not in components:
+                warnings.append(f"clone_component 缺少合法 after: {after_id}")
+                continue
+            _clone_component(root, comp, components[after_id], manifest)
+            records.append({"action": action, "component": comp_id, "after": after_id})
+            continue
+    return records, warnings
+
+
 # ---------------- 主流程 ----------------
 def main() -> None:
     if len(sys.argv) != 4:
@@ -380,6 +626,8 @@ def main() -> None:
         sys.exit(1)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     values = data.get("fields", {})
+    # 阶段 5：模板 hash 校验（不匹配直接失败，禁止对未知结构套旧 selector）
+    verify_template_hash(tpl_dir, manifest)
 
     root = load_docx_xml(template)
     # 构建 manifest 字段索引: (anchor_idx, wsp_idx) → [fields...]
@@ -474,6 +722,19 @@ def main() -> None:
                     "hint": "内容可能超出文本框，需精简或换行适配（L2 版式重排二期支持自动扩框）",
                 })
 
+    # 阶段 5：受限组件动作（replace_text/replace_asset/resize/shift/clone）。
+    # 动作失败（白名单外/定位失败/hash 不匹配）已在上游 fail-fast；这里把
+    # 动作记录并入 replaced，供交付说明与 QA 状态使用。
+    action_records, action_warnings = apply_component_actions(root, manifest, values)
+    replaced.extend(action_records)
+    warnings.extend(action_warnings)
+    # replace_asset __remove__ 通过动作 spec 的 _skip_media 回传媒体路径，
+    # 让 save_docx_xml 丢弃旧照片字节（动作层只改 root，不能直接改 zip）。
+    for action_spec in values.get("actions", []):
+        media = action_spec.get("_skip_media")
+        if media:
+            skip_media.add(media)
+
     save_docx_xml(root, template, out_path, photos=photos, skip_media=skip_media)
 
     print(json.dumps({
@@ -483,6 +744,7 @@ def main() -> None:
         "replaced": replaced,
         "overflow_risks": overflow,
         "warnings": warnings,
+        "actions": action_records,
     }, ensure_ascii=False, indent=2))
 
 

@@ -184,5 +184,263 @@
       ]
     }
   ],
-  "notes": "分区标题（个人信息/教育背景/自我评价/技能证书/校园经历/实习经历）保留原样不替换。"
+  "notes": "分区标题（个人信息/教育背景/自我评价/技能证书/校园经历/实习经历）保留原样不替换。",
+  "template_sha256": "330569f6a477df9d8b86f9fdba6397cf3be36585259e54e5589df82ef82e9401",
+  "components": [
+    {
+      "id": "header_left",
+      "field_ids": [
+        "name",
+        "phone",
+        "email",
+        "address"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 0,
+          "wsp_idx": 2
+        }
+      ],
+      "bbox_pt": [
+        205.5,
+        98.0
+      ],
+      "content_slot": [
+        "name",
+        "phone",
+        "email",
+        "address"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 78.4,
+      "max_height_pt": 147.0
+    },
+    {
+      "id": "header_right",
+      "field_ids": [
+        "birth",
+        "politics"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 0,
+          "wsp_idx": 3
+        }
+      ],
+      "bbox_pt": [
+        206.9,
+        98.0
+      ],
+      "content_slot": [
+        "birth",
+        "politics"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 78.4,
+      "max_height_pt": 147.0
+    },
+    {
+      "id": "education",
+      "field_ids": [
+        "education"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 2,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        532.5,
+        80.0
+      ],
+      "content_slot": [
+        "education"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 64.0,
+      "max_height_pt": 120.0
+    },
+    {
+      "id": "skill",
+      "field_ids": [
+        "skill"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 4,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        532.5,
+        62.0
+      ],
+      "content_slot": [
+        "skill"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 49.6,
+      "max_height_pt": 93.0
+    },
+    {
+      "id": "work",
+      "field_ids": [
+        "work"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        532.5,
+        98.0
+      ],
+      "content_slot": [
+        "work"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 78.4,
+      "max_height_pt": 147.0
+    },
+    {
+      "id": "work_1",
+      "field_ids": [
+        "work_1"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 6,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        532.5,
+        157.2
+      ],
+      "content_slot": [
+        "work_1"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 125.8,
+      "max_height_pt": 235.8
+    },
+    {
+      "id": "summary",
+      "field_ids": [
+        "summary"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 3,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        532.5,
+        44.0
+      ],
+      "content_slot": [
+        "summary"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 35.2,
+      "max_height_pt": 66.0
+    },
+    {
+      "id": "photo",
+      "field_ids": [
+        "photo"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 1,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        85,
+        111
+      ],
+      "content_slot": [
+        "photo"
+      ],
+      "allowed_actions": [
+        "replace_asset"
+      ],
+      "moves_with": [],
+      "min_height_pt": 88.8,
+      "max_height_pt": 166.5
+    }
+  ],
+  "slot_components": {
+    "header_left": [
+      "name",
+      "phone",
+      "email",
+      "address"
+    ],
+    "header_right": [
+      "birth",
+      "politics"
+    ],
+    "education": [
+      "education"
+    ],
+    "skill": [
+      "skill"
+    ],
+    "work": [
+      "work"
+    ],
+    "work_1": [
+      "work_1"
+    ],
+    "summary": [
+      "summary"
+    ],
+    "photo": [
+      "photo"
+    ]
+  }
 }

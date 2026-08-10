@@ -169,5 +169,260 @@
       ]
     }
   ],
-  "notes": "分区标题（职业技能/工作经验/教育背景/自我评价/基本信息）与装饰文本（我一直在努力！/PERSONAL RESUME）保留原样不替换；姓名框内 '年 龄/学 历' 行保留原文。"
+  "notes": "分区标题（职业技能/工作经验/教育背景/自我评价/基本信息）与装饰文本（我一直在努力！/PERSONAL RESUME）保留原样不替换；姓名框内 '年 龄/学 历' 行保留原文。",
+  "template_sha256": "11f49b40d9c41edf9be19908ae592d105b442f60c4fbb060d192d21dcf980c02",
+  "components": [
+    {
+      "id": "name",
+      "field_ids": [
+        "name",
+        "intent"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 12,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        176.8,
+        99.5
+      ],
+      "content_slot": [
+        "name",
+        "intent"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 79.6,
+      "max_height_pt": 149.2
+    },
+    {
+      "id": "phone",
+      "field_ids": [
+        "phone",
+        "email",
+        "address"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 10,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        179.4,
+        99.5
+      ],
+      "content_slot": [
+        "phone",
+        "email",
+        "address"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 79.6,
+      "max_height_pt": 149.2
+    },
+    {
+      "id": "education",
+      "field_ids": [
+        "education"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 7,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        506.8,
+        79.0
+      ],
+      "content_slot": [
+        "education"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 63.2,
+      "max_height_pt": 118.5
+    },
+    {
+      "id": "work",
+      "field_ids": [
+        "work"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 3,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        506.8,
+        98.0
+      ],
+      "content_slot": [
+        "work"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 78.4,
+      "max_height_pt": 147.0
+    },
+    {
+      "id": "work_1",
+      "field_ids": [
+        "work_1"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        506.8,
+        133.9
+      ],
+      "content_slot": [
+        "work_1"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 107.1,
+      "max_height_pt": 200.9
+    },
+    {
+      "id": "summary",
+      "field_ids": [
+        "summary"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 9,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        493.8,
+        62.0
+      ],
+      "content_slot": [
+        "summary"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 49.6,
+      "max_height_pt": 93.0
+    },
+    {
+      "id": "language",
+      "field_ids": [
+        "language"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 2,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        506.8,
+        62.0
+      ],
+      "content_slot": [
+        "language"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 49.6,
+      "max_height_pt": 93.0
+    },
+    {
+      "id": "photo",
+      "field_ids": [
+        "photo"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 0,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        107,
+        107
+      ],
+      "content_slot": [
+        "photo"
+      ],
+      "allowed_actions": [
+        "replace_asset"
+      ],
+      "moves_with": [],
+      "min_height_pt": 85.6,
+      "max_height_pt": 160.5
+    }
+  ],
+  "slot_components": {
+    "name": [
+      "name",
+      "intent"
+    ],
+    "phone": [
+      "phone",
+      "email",
+      "address"
+    ],
+    "education": [
+      "education"
+    ],
+    "work": [
+      "work"
+    ],
+    "work_1": [
+      "work_1"
+    ],
+    "summary": [
+      "summary"
+    ],
+    "language": [
+      "language"
+    ],
+    "photo": [
+      "photo"
+    ]
+  }
 }

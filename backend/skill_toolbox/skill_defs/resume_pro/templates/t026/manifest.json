@@ -184,5 +184,260 @@
       ]
     }
   ],
-  "notes": "黑色双栏模板：左栏联系/基本资料/技能（技能条不替换），右栏内容块；姓名位不明未标注（模板头图无独立姓名框）。"
+  "notes": "黑色双栏模板：左栏联系/基本资料/技能（技能条不替换），右栏内容块；姓名位不明未标注（模板头图无独立姓名框）。",
+  "template_sha256": "c70154b650b2cba63efaa4910843f7268f471d810696e2336ac5e8c73fc71fc5",
+  "components": [
+    {
+      "id": "contact",
+      "field_ids": [
+        "phone",
+        "email",
+        "address"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 45,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        168.5,
+        86.4
+      ],
+      "content_slot": [
+        "phone",
+        "email",
+        "address"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 69.1,
+      "max_height_pt": 129.6
+    },
+    {
+      "id": "extra",
+      "field_ids": [
+        "birth",
+        "politics"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 46,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        168.5,
+        174.7
+      ],
+      "content_slot": [
+        "birth",
+        "politics"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 139.8,
+      "max_height_pt": 262.0
+    },
+    {
+      "id": "intent",
+      "field_ids": [
+        "intent"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 49,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        168.5,
+        86.4
+      ],
+      "content_slot": [
+        "intent"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 69.1,
+      "max_height_pt": 129.6
+    },
+    {
+      "id": "summary",
+      "field_ids": [
+        "summary"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 4,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        360.0,
+        99.4
+      ],
+      "content_slot": [
+        "summary"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 79.5,
+      "max_height_pt": 149.1
+    },
+    {
+      "id": "work",
+      "field_ids": [
+        "work"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 8,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        372.7,
+        71.2
+      ],
+      "content_slot": [
+        "work"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 57.0,
+      "max_height_pt": 106.8
+    },
+    {
+      "id": "project",
+      "field_ids": [
+        "project"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 18,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        350.4,
+        77.1
+      ],
+      "content_slot": [
+        "project"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 61.7,
+      "max_height_pt": 115.6
+    },
+    {
+      "id": "education",
+      "field_ids": [
+        "education"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 25,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        377.8,
+        83.5
+      ],
+      "content_slot": [
+        "education"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 66.8,
+      "max_height_pt": 125.2
+    },
+    {
+      "id": "photo",
+      "field_ids": [
+        "photo"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 51,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        108,
+        144
+      ],
+      "content_slot": [
+        "photo"
+      ],
+      "allowed_actions": [
+        "replace_asset"
+      ],
+      "moves_with": [],
+      "min_height_pt": 115.2,
+      "max_height_pt": 216.0
+    }
+  ],
+  "slot_components": {
+    "contact": [
+      "phone",
+      "email",
+      "address"
+    ],
+    "extra": [
+      "birth",
+      "politics"
+    ],
+    "intent": [
+      "intent"
+    ],
+    "summary": [
+      "summary"
+    ],
+    "work": [
+      "work"
+    ],
+    "project": [
+      "project"
+    ],
+    "education": [
+      "education"
+    ],
+    "photo": [
+      "photo"
+    ]
+  }
 }

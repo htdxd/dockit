@@ -145,5 +145,251 @@
       ]
     }
   ],
-  "notes": "左侧标题（技能特长/奖项荣誉/自我评价/工作经历/教育背景/求职意向）保留原样；contact 为信息条带整行替换；intent 为多列表格行不适合简单替换，已从字段移除（保留模板原文）。"
+  "notes": "左侧标题（技能特长/奖项荣誉/自我评价/工作经历/教育背景/求职意向）保留原样；contact 为信息条带整行替换；intent 为多列表格行不适合简单替换，已从字段移除（保留模板原文）。",
+  "template_sha256": "232b2b1f6fb05dab7429d2910fc9bb727976f1b215c2e914677e58d5f06885a2",
+  "components": [
+    {
+      "id": "name",
+      "field_ids": [
+        "name"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 2,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        209.3,
+        47.4
+      ],
+      "content_slot": [
+        "name"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 37.9,
+      "max_height_pt": 71.1
+    },
+    {
+      "id": "contact",
+      "field_ids": [
+        "contact"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 3,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        408.8,
+        25.9
+      ],
+      "content_slot": [
+        "contact"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "shift_components"
+      ],
+      "moves_with": [],
+      "min_height_pt": 20.7,
+      "max_height_pt": 38.8
+    },
+    {
+      "id": "skill",
+      "field_ids": [
+        "skill"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 5,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        449.2,
+        67.7
+      ],
+      "content_slot": [
+        "skill"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 54.2,
+      "max_height_pt": 101.6
+    },
+    {
+      "id": "certificate",
+      "field_ids": [
+        "certificate"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 8,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        449.3,
+        80.1
+      ],
+      "content_slot": [
+        "certificate"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 64.1,
+      "max_height_pt": 120.1
+    },
+    {
+      "id": "summary",
+      "field_ids": [
+        "summary"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 15,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        449.3,
+        62.1
+      ],
+      "content_slot": [
+        "summary"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 49.7,
+      "max_height_pt": 93.2
+    },
+    {
+      "id": "work",
+      "field_ids": [
+        "work"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 17,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        449.3,
+        116.2
+      ],
+      "content_slot": [
+        "work"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 93.0,
+      "max_height_pt": 174.3
+    },
+    {
+      "id": "education",
+      "field_ids": [
+        "education"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 18,
+          "wsp_idx": 1
+        }
+      ],
+      "bbox_pt": [
+        449.3,
+        62.1
+      ],
+      "content_slot": [
+        "education"
+      ],
+      "allowed_actions": [
+        "replace_text",
+        "resize_component",
+        "shift_components",
+        "clone_component"
+      ],
+      "moves_with": [],
+      "min_height_pt": 49.7,
+      "max_height_pt": 93.2
+    },
+    {
+      "id": "photo",
+      "field_ids": [
+        "photo"
+      ],
+      "objects": [
+        {
+          "anchor_idx": 0,
+          "wsp_idx": 0
+        }
+      ],
+      "bbox_pt": [
+        90,
+        90
+      ],
+      "content_slot": [
+        "photo"
+      ],
+      "allowed_actions": [
+        "replace_asset"
+      ],
+      "moves_with": [],
+      "min_height_pt": 72.0,
+      "max_height_pt": 135.0
+    }
+  ],
+  "slot_components": {
+    "name": [
+      "name"
+    ],
+    "contact": [
+      "contact"
+    ],
+    "skill": [
+      "skill"
+    ],
+    "certificate": [
+      "certificate"
+    ],
+    "summary": [
+      "summary"
+    ],
+    "work": [
+      "work"
+    ],
+    "education": [
+      "education"
+    ],
+    "photo": [
+      "photo"
+    ]
+  }
 }
