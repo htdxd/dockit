@@ -120,6 +120,15 @@ TOOL_SPECS = [
         ["questions"],
     ),
     _function(
+        "task_failed",
+        "Abort the task with an explicit failure reason. Use when a required "
+        "external step (e.g. MinerU conversion or rendering) failed and cannot "
+        "be recovered — never call finish_task with a fake or missing artifact. "
+        "This must be the ONLY tool call in its turn.",
+        {"error": {"type": "string", "description": "User-facing failure reason"}},
+        ["error"],
+    ),
+    _function(
         "finish_task",
         "Finish the task. Pass relative paths of verified artifact files (must "
         "exist in the workspace). They will be copied to the output directory. "

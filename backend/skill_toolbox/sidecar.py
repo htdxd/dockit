@@ -21,6 +21,7 @@ from skill_toolbox.providers import create_provider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest, UserInputBroker
 from skill_toolbox.skills import load_skill
+from skill_toolbox.tools import resolve_mineru_cli
 from skill_toolbox.unicode_utils import redact_secrets, sanitize_data
 
 Emitter = Callable[[dict[str, Any]], None]
@@ -29,6 +30,36 @@ DEBUG_LOG_DIR = ".skill-toolbox-logs"
 MODELS_TIMEOUT_SECONDS = 15
 # 能力探测整体超时：三次最小请求（tool/vision/reasoning）串行执行。
 PROBE_TIMEOUT_SECONDS = 60.0
+
+# 稳定错误码（实施计划 §9.1）。前端按码渲染可行动提示；原始 stderr 只进
+# 调试日志，不进事件正文。
+TASK_ERROR_CODES = {
+    "MINERU_CLI_MISSING",
+    "MINERU_TOKEN_MISSING",
+    "MINERU_PARSE_FAILED",
+    "MODEL_TOOL_CALLING_REQUIRED",
+    "MATERIAL_UNSUPPORTED",
+    "MATERIAL_CORRUPT",
+}
+
+# MinerU preflight 只做"入口可解析"这一离线判定；token 是否有效由
+# extract 调用本身（带 token 时）暴露，不发起额外网络请求。
+def _mineru_preflight() -> None:
+    """校验 MinerU CLI 可执行入口可解析。失败抛 RuntimeError，带稳定错误码。"""
+    try:
+        resolve_mineru_cli()
+    except RuntimeError as exc:
+        raise RuntimeError(f"[MINERU_CLI_MISSING] {exc}") from None
+
+
+def _capability_failure(skill_id: str, missing: list[str], model: str) -> str:
+    code = "MODEL_TOOL_CALLING_REQUIRED" if missing else ""
+    detail = (
+        f"Skill '{skill_id}' requires capability '{missing[0]}' but the "
+        f"configured model ({model or 'unknown'}) does not provide it. "
+        "Switch to a capable model in Settings or choose a different skill."
+    )
+    return f"[{code}] {detail}"
 
 
 def _EMPTY_REPORT(checked_at: float = 0.0) -> CapabilityProbeReport:
@@ -128,6 +159,14 @@ class SidecarService:
             return {"MINERU_TOKEN": self._mineru_key}
         return {}
 
+    def mineru_ready(self) -> bool:
+        """MinerU CLI 入口是否可解析（供前端 preflight 状态显示）。"""
+        try:
+            _mineru_preflight()
+            return True
+        except RuntimeError:
+            return False
+
     async def handle(self, message: dict[str, Any]) -> None:
         request_id = str(message.get("id", ""))
         message_type = message.get("type")
@@ -185,17 +224,15 @@ class SidecarService:
         if missing:
             self._emit(
                 request_id,
-                {
-                    "type": "task_failed",
-                    "error": (
-                        f"Skill '{skill.id}' requires capability "
-                        f"'{missing[0]}' but the configured model "
-                        f"({config.model or 'unknown'}) does not provide it. "
-                        "Switch to a capable model in Settings or choose a "
-                        "different skill."
-                    ),
-                },
+                {"type": "task_failed", "error": _capability_failure(skill.id, missing, config.model)},
             )
+            return
+        # MinerU 全局 preflight（实施计划 §3.1/§9.1）：四个功能都是 MinerU
+        # 强依赖，CLI 不可用直接在 Agent loop 前失败，不进入运行时。
+        try:
+            _mineru_preflight()
+        except RuntimeError as exc:
+            self._emit(request_id, {"type": "task_failed", "error": str(exc)})
             return
         provider = self.provider_factory(config)
         broker = UserInputBroker()

@@ -353,11 +353,12 @@ def _ingest_markdown(source: Path, materials: Path) -> tuple[str, list[Path]]:
     return md_text, media_paths
 
 
-def _mineru_command() -> list[str]:
+def resolve_mineru_cli() -> list[str]:
     """解析 mineru-open-api 可执行入口，返回 argv 前缀（不含子命令）。
 
     Windows 上 npm 全局装的 mineru-open-api 是 .cmd 包装器，CreateProcess
     不能直接跑 .cmd → 优先 node + 包内 JS 入口，退化为 cmd.exe /c。
+    Sidecar 的 MinerU preflight 与材料 ingest 共用这一解析，保证同一判定。
     """
     cli = shutil.which("mineru-open-api")
     if not cli:
@@ -375,6 +376,11 @@ def _mineru_command() -> list[str]:
     return [str(cli_path)]
 
 
+def _mineru_command() -> list[str]:
+    """ingest 内部使用的 mineru 前缀（语义同上）。"""
+    return resolve_mineru_cli()
+
+
 def _run_mineru(source: Path, out_dir: Path, extra_env: dict[str, str]) -> None:
     """MinerU 萃取：优先 flash-extract（免 token），超限/失败回退 extract。
 
@@ -386,7 +392,7 @@ def _run_mineru(source: Path, out_dir: Path, extra_env: dict[str, str]) -> None:
     try:
         completed = subprocess.run(
             base + ["flash-extract", str(source), "-o", str(out_dir)],
-            capture_output=True, timeout=300,
+            capture_output=True, timeout=300, check=False,
         )
         md_files = list(out_dir.glob("*.md"))
         if completed.returncode == 0 and md_files:
@@ -406,7 +412,7 @@ def _run_mineru(source: Path, out_dir: Path, extra_env: dict[str, str]) -> None:
     ]
     try:
         completed = subprocess.run(cmd, capture_output=True, timeout=1860,
-                                   env={**os.environ, **extra_env})
+                                   env={**os.environ, **extra_env}, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"MinerU extract 调用失败: {exc}") from None
     md_files = list(out_dir.glob("*.md"))
@@ -510,11 +516,10 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
             manifest = {"sources": []}
     key = source.resolve()
     existing = next((s for s in manifest["sources"] if Path(s.get("source", "")).resolve() == key), None)
-    if existing and existing.get("md_path"):
-        # md_path 相对 materials/ 目录（<ws>/work/materials/<stem>.md）
-        if Path(materials / existing["md_path"]).is_file():
-            existing["cached"] = True
-            return existing
+    # md_path 相对 materials/ 目录（<ws>/work/materials/<stem>.md）
+    if existing and existing.get("md_path") and Path(materials / existing["md_path"]).is_file():
+        existing["cached"] = True
+        return existing
 
     suffix = source.suffix.lower()
     try:
@@ -526,7 +531,7 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
             md_text, media_paths = _ingest_markdown(source, materials)
         else:
             raise ValueError(f"ingest 不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt）")
-    except Exception as exc:  # noqa: BLE001 - 萃取失败要落到 manifest 供模型看到错误
+    except Exception as exc:
         entry = {"source": str(source), "format": suffix.lstrip("."), "ok": False, "error": str(exc)}
         manifest["sources"].append(entry)
         _write_manifest(manifest_path, manifest)
@@ -582,12 +587,21 @@ class ToolRegistry:
         skill_dir: Path = Path("."),
         scripts: dict[str, tuple[str, tuple[str, ...]]] | None = None,
         env: dict[str, str] | None = None,
+        script_timeouts: dict[str, float] | None = None,
     ) -> None:
         self.policy = policy
         self.skill_dir = skill_dir
         self.scripts = scripts or {}
         # Extra env vars merged into exec_cmd subprocesses (e.g. MINERU_TOKEN).
         self.extra_env = env or {}
+        # 每个 action 的显式超时（manifest script spec 的 timeout_seconds）。
+        # 未声明的 action 沿用 communicate 默认 300s（外层 runtime 仍按默认
+        # 短超时提前终止）。MinerU/Office 长任务靠声明值覆盖。
+        self.script_timeouts = script_timeouts or {}
+
+    def action_timeout(self, action: str) -> float:
+        """声明过的 action 超时；未声明返回 0（由 runtime 走默认短超时）。"""
+        return self.script_timeouts.get(action, 0.0)
 
     async def execute(self, call: ToolCall) -> ToolResult:
         try:
@@ -620,8 +634,12 @@ class ToolRegistry:
                 env={**os.environ, **self.extra_env},
                 close_fds=True,
             )
+            # 脚本内部可能自设超时（MinerU 1800s 等）；communicate 用声明值，
+            # 避免此处提前杀掉合法长任务。未声明的沿用默认 300s（此时外层
+            # runtime 短超时才是真正生效的界限）。
+            timeout = self.action_timeout(str(call.arguments.get("action", ""))) or 300
             try:
-                stdout_b, stderr_b = proc_holder["proc"].communicate(timeout=300)
+                stdout_b, stderr_b = proc_holder["proc"].communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self._kill(proc_holder["proc"])
                 return self._result(call, False, f"Script timed out: {call.arguments.get('action')}")

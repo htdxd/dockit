@@ -13,19 +13,44 @@
   "scripts": {
     "inspect_pdf": {
       "entry": "inspect_pdf.py",
-      "argv": ["{source}"]
+      "argv": [
+        "{source}"
+      ],
+      "timeout_seconds": 60
     },
     "convert_pdf": {
       "entry": "convert_pdf.py",
-      "argv": ["{source}", "{output}", "{model}", "{ocr}", "{formula}", "{table}", "{language}"]
+      "argv": [
+        "{source}",
+        "{output}",
+        "{model}",
+        "{ocr}",
+        "{formula}",
+        "{table}",
+        "{language}"
+      ],
+      "timeout_seconds": 1830
     },
     "audit_docx": {
       "entry": "audit_docx.py",
-      "argv": ["{source}"]
+      "argv": [
+        "{source}"
+      ],
+      "timeout_seconds": 60
     },
     "render_docx": {
       "entry": "render_docx.py",
-      "argv": ["{source}", "{output_dir}"]
+      "argv": [
+        "{source}",
+        "{output_dir}"
+      ],
+      "timeout_seconds": 240
     }
-  }
+  },
+  "required_capabilities": [
+    "tool_calling"
+  ],
+  "optional_capabilities": [
+    "vision"
+  ]
 }

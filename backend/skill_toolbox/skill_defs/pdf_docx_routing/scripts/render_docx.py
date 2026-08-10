@@ -52,6 +52,15 @@ def main() -> None:
         output_dir = workspace_path(sys.argv[2], must_exist=False)
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = output_dir / f"{source.stem}.pdf"
+    # 每个文档使用独立 PNG 前缀（<stem>-page-），渲染前清理该文档自身旧
+    # 输出，禁止跨文档残留（实施计划 §10.3）。并发渲染多个 DOCX 时各自的
+    # page-*.png 前缀不再互相覆盖。
+    page_prefix = f"{source.stem}-page"
+    for stale in output_dir.glob(f"{page_prefix}-*.png"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
     script = (
         "$ErrorActionPreference='Stop';"
@@ -72,16 +81,16 @@ def main() -> None:
     pdftoppm = shutil.which("pdftoppm")
     if pdftoppm:
         rendered_rc, _, rendered_stderr = run_capture(
-            [pdftoppm, "-png", "-r", "120", str(pdf_path), str(output_dir / "page")], 180
+            [pdftoppm, "-png", "-r", "120", str(pdf_path), str(output_dir / page_prefix)], 180
         )
         if rendered_rc:
             raise RuntimeError(rendered_stderr[-2000:])
 
     cwd = Path.cwd().resolve()
-    # 图片输出为工作区相对路径（如 artifacts/page-1.png），模型可直接 read。
+    # 图片输出为工作区相对路径（如 artifacts/report-page-1.png），模型可直接 read。
     images = sorted(
         str((output_dir / p.name).resolve().relative_to(cwd))
-        for p in output_dir.glob("page-*.png")
+        for p in output_dir.glob(f"{page_prefix}-*.png")
     )
     print(json.dumps({
         "pdf": str(pdf_path.resolve().relative_to(cwd)),

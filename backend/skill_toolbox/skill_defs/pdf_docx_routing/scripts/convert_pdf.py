@@ -90,7 +90,15 @@ def main() -> None:
             hint = "（提示：请到设置页「第三方服务」填写 MinerU API Token）"
         raise RuntimeError(detail + hint)
 
-    generated = docx_files[0]
+    # 多 PDF 同任务时，输出目录是本次调用专属的 material/artifact 子目录
+    # （由 render_docx 与 runtime 隔离保证）；这里仍必须选择"本次调用明确
+    # 返回"的 DOCX：优先取与源文件同 stem 的产物（MinerU 单文件转换约定），
+    # 找不到再退回目录中修改时间最新的 docx。禁止 glob 共享目录里第一个
+    # .docx 就交付（实施计划 §10.3）。
+    stem = source.stem
+    generated = next((f for f in docx_files if f.stem == stem), None)
+    if generated is None:
+        generated = max(docx_files, key=lambda f: f.stat().st_mtime)
     if generated.resolve() != output.resolve():
         generated.replace(output)
     print(json.dumps({"output": str(output.relative_to(Path.cwd())), "model": model}, ensure_ascii=False))

@@ -14,7 +14,12 @@ from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.skills import load_skill
 from skill_toolbox.tool_specs import TOOL_SPECS
-from skill_toolbox.tools import INGEST_AUTO_BYTES, INGEST_DIR, ToolRegistry, ingest_material
+from skill_toolbox.tools import (
+    INGEST_AUTO_BYTES,
+    INGEST_DIR,
+    ToolRegistry,
+    ingest_material,
+)
 
 EventEmitter = Callable[[dict[str, Any]], None]
 DebugLogger = Callable[[dict[str, Any]], None]
@@ -22,6 +27,8 @@ MAX_PROGRESS_TEXT_CHARS = 2_000
 MAX_LOG_ARG_CHARS = 2_000
 MAX_LOG_RESULT_CHARS = 4_000
 MAX_LOG_TEXT_CHARS = 2_000
+# 外层超时 = 声明的 action 超时 + 清理余量（给子进程退出留时间）。
+ACTION_TIMEOUT_CLEANUP = 30
 
 
 def _truncate(value: Any, limit: int) -> str:
@@ -129,6 +136,7 @@ class AgentRuntime:
                 skill_dir=skill.dir,
                 scripts=skill.scripts,
                 env=request.env,
+                script_timeouts=skill.script_timeouts,
             )
             messages: list[ConversationMessage] = []
             user_text = request.user_prompt or "按默认内容生成测试文档"
@@ -239,6 +247,19 @@ class AgentRuntime:
                         }
                     )
                     return TaskResult(status="completed", artifacts=published)
+                abort = next(
+                    (call for call in turn.tool_calls if call.name == "task_failed"),
+                    None,
+                )
+                if abort is not None and len(turn.tool_calls) == 1:
+                    # 模型显式放弃：失败必须走 task_failed，禁止用 finish_task
+                    # 伪造说明型 artifact（实施计划 §9.5 / §10.3）。
+                    error = str(abort.arguments.get("error", "")).strip()
+                    self.emit({"type": "tool_started", "tool": abort.name})
+                    self.emit(
+                        {"type": "tool_finished", "tool": abort.name, "success": True}
+                    )
+                    return self._failed(error or "Task aborted by the model")
                 results = await self._execute_calls(turn.tool_calls, tools)
                 messages.append(ConversationMessage(role="tool", tool_results=results))
             return self._failed(f"Task exceeded the {skill.max_steps}-step limit")
@@ -255,6 +276,21 @@ class AgentRuntime:
             results.append(await self._execute_call(call, tools))
         return results
 
+    def _timeout_for(self, call: ToolCall, tools: ToolRegistry) -> float:
+        """单次工具调用的外层超时。
+
+        普通工具沿用默认短超时；exec_cmd 若在 manifest script spec 声明了
+        `timeout_seconds`（MinerU/Office 长任务），外层必须覆盖脚本内部超时
+        再加清理余量，否则外层 90s 会提前终止内部 1800s 的 MinerU
+        （实施计划 §9.5）。未声明的 action 返回默认值。
+        """
+        if call.name == "exec_cmd":
+            action = str(call.arguments.get("action", ""))
+            declared = tools.action_timeout(action)
+            if declared > 0:
+                return max(self.tool_timeout_seconds, declared + ACTION_TIMEOUT_CLEANUP)
+        return self.tool_timeout_seconds
+
     async def _execute_call(self, call: ToolCall, tools: ToolRegistry) -> ToolResult:
         self.emit({"type": "tool_started", "tool": call.name})
         self.debug({
@@ -266,6 +302,10 @@ class AgentRuntime:
         if call.name == "finish_task":
             result = self._tool_result(
                 call, False, "finish_task must be the only tool call in its model turn"
+            )
+        elif call.name == "task_failed":
+            result = self._tool_result(
+                call, False, "task_failed must be the only tool call in its model turn"
             )
         elif call.name == "ask_user_questions":
             if self.input_broker is None:
@@ -280,19 +320,19 @@ class AgentRuntime:
         else:
             try:
                 result = await asyncio.wait_for(
-                    tools.execute(call), timeout=self.tool_timeout_seconds
+                    tools.execute(call), timeout=self._timeout_for(call, tools)
                 )
             except TimeoutError:
                 result = self._tool_result(
                     call,
                     False,
-                    f"Tool timed out after {self.tool_timeout_seconds:g} seconds",
+                    f"Tool timed out after {self._timeout_for(call, tools):g} seconds",
                 )
                 self.emit(
                     {
                         "type": "tool_timeout",
                         "tool": call.name,
-                        "timeout_seconds": self.tool_timeout_seconds,
+                        "timeout_seconds": self._timeout_for(call, tools),
                     }
                 )
                 self.debug({
@@ -300,7 +340,7 @@ class AgentRuntime:
                     "tool_call_id": call.id,
                     "tool": call.name,
                     "success": False,
-                    "error": f"timed out after {self.tool_timeout_seconds:g}s",
+                    "error": f"timed out after {self._timeout_for(call, tools):g}s",
                 })
                 return result
             except Exception as exc:  # noqa: BLE001 - keep one bad tool from killing the task
@@ -337,8 +377,13 @@ class AgentRuntime:
             tool_call_id=call.id, name=call.name, success=success, content=content
         )
 
+    @staticmethod
+    def _failed_event(error: str) -> dict[str, str]:
+        """稳定错误码 / 结构化失败事件（见实施计划 §9.1）。"""
+        return {"type": "task_failed", "error": error}
+
     def _failed(self, error: str) -> TaskResult:
-        self.emit({"type": "task_failed", "error": error})
+        self.emit(self._failed_event(error))
         return TaskResult(status="failed", error=error)
 
     def _publish(
