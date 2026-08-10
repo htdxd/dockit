@@ -31,6 +31,7 @@ def main() -> None:
     extracted = run_text(["pdftotext", "-f", "1", "-l", "1", str(source), "-"])
     font_rows = [line for line in fonts.splitlines()[2:] if line.strip()]
     text_chars = len(extracted.strip())
+    page_count = _count_pages(source)
 
     if not font_rows and text_chars < 40:
         classification = "scanned"
@@ -44,7 +45,39 @@ def main() -> None:
         "classification": classification,
         "font_rows": len(font_rows),
         "first_page_text_characters": text_chars,
+        "page_count": page_count,
+        "sample_pages": _sample_pages(page_count),
     }, ensure_ascii=False))
+
+
+def _count_pages(path: Path) -> int | None:
+    """尝试用 pdfinfo 获取总页数；失败返回 None（保持简单，不逐页解析）。"""
+    try:
+        proc = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=30)
+        out = proc.stdout.decode("utf-8", errors="replace")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    for line in out.splitlines():
+        if line.startswith("Pages:"):
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _sample_pages(page_count: int | None) -> list[int]:
+    """固定最多 3 页样本：首、中、末（实施计划 §10.3 固定抽样）。
+
+    不能只凭第一页决定整份文档；长文档抽样首/中/末，短文档取全部。
+    """
+    if not page_count or page_count <= 0:
+        return [1]
+    if page_count <= 3:
+        return list(range(1, page_count + 1))
+    middle = page_count // 2
+    sample = [1, middle, page_count]
+    return sorted({p for p in sample if 1 <= p <= page_count})
 
 
 if __name__ == "__main__":

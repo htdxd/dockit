@@ -83,7 +83,9 @@
      `ask_user_questions` 批量询问或舍弃。
    - 每个被读取且有迁移价值的资源必须出现在 `selections` 或 `exclusions`。
 3. **按 ContentPlan 生成**：调用本 prompt 第 1-4 节的 action 流程，把选中的
-   图片/表格/公式放入对应 section 与段落位置。
+   图片、表格、公式以**顺序 block** 写入规格 `work/spec.json` 的 `blocks[]`
+   （见 `references/spec-schema.md`「顺序 block 规格」），使资源出现在指定
+   section/段落之间（如"第 2 段后插图"），而不是只能放文档尾部。
 4. **机械门 → （vision）视觉门 → finish_task**：`postcheck_docx` 未通过前不得
    `finish_task`。
 

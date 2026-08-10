@@ -25,7 +25,9 @@
 
 工作流：
 
-1. 对每个 PDF 调用 `inspect_pdf`。根据返回的 `classification` 路由：
+1. 对每个 PDF 调用 `inspect_pdf`。返回含 `classification`、`page_count` 与
+   `sample_pages`（固定最多 3 页：首/中/末，用于抽查渲染页）。根据
+   `classification` 路由：
    - `scanned`：`model=vlm`、`ocr=true`、`formula=true`、`table=true`。
    - `native_structured`：`model=pipeline`、`ocr=false`、`formula=false`、`table=true`。
    - `mixed_or_uncertain`：优先使用 `vlm`；仅在文本层明显缺失时启用 OCR。无法判断语言时询问用户；中文或中英混排用 `ch`，英文用 `en`。

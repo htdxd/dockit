@@ -17,15 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.enum.section import WD_SECTION
-from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, Twips
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from docx_pro_engine import (  # noqa: E402
+from docx_pro_engine import (
     GONGWEN_FONTS,
     add_footer_page_field,
     add_formula,
@@ -138,12 +135,49 @@ def _add_body_paragraph(document: Document, paragraph_spec: dict[str, Any], pale
         _set_run_color(run, paragraph_spec["color"])
 
 
+def _add_resource_blocks(
+    document: Document, spec: dict[str, Any], palette: dict[str, str]
+) -> None:
+    """顺序 block 规格（阶段 4）：把 tables/images/formulas 的全局尾部数组
+    改为可出现在 section/段落之间的顺序块。
+
+    兼容旧尾部数组（sections + tables/images/formulas 全局追加）：若 spec 无
+    `blocks`，仍按旧语义先 section 内容、再全局尾部资源。新规格：
+      blocks: [
+        {"type": "heading"|"paragraph"|"table"|"image"|"formula", ...}
+      ]
+    图片/表格/公式可在任意位置插入（如"某段落后插一张图"），由本函数按
+    顺序 dispatch 到现有 engine helper，不新建第二套 DOCX 引擎。
+    """
+    from docx_pro_engine import add_caption
+
+    for block_spec in spec.get("blocks", []):
+        block_type = block_spec.get("type", "")
+        if block_type == "heading":
+            _add_heading(document, block_spec.get("text", ""), int(block_spec.get("level", 1)))
+        elif block_type == "paragraph":
+            _add_body_paragraph(document, block_spec, palette)
+        elif block_type == "table":
+            add_table(document, block_spec, palette)
+            if block_spec.get("caption"):
+                add_caption(document, block_spec["caption"])
+        elif block_type == "image":
+            add_image(document, block_spec, Path.cwd(), block_spec.get("caption", ""))
+        elif block_type == "formula":
+            add_formula(document, block_spec.get("latex", ""), block_spec.get("caption", ""))
+        else:
+            raise ValueError(f"Unknown block type: {block_type}")
+
+
 def _build_simple(document: Document, spec: dict[str, Any]) -> None:
     """complexity=simple: title + body only, no cover/TOC/pagination."""
     _style_body(document)
     title = document.add_heading(spec.get("title", "文档"), level=0)
     for run in title.runs:
         set_run_fonts(run, "Microsoft YaHei", "Calibri")
+    if spec.get("blocks"):
+        _add_resource_blocks(document, spec, _scene_palette(spec))
+        return
     for section_spec in spec.get("sections", []):
         _add_heading(document, section_spec.get("heading", ""), int(section_spec.get("level", 1)))
         for paragraph_spec in section_spec.get("paragraphs", []):
@@ -177,6 +211,9 @@ def _build_standard(document: Document, spec: dict[str, Any]) -> None:
     set_section_pgnum_start(body_section, start=1, fmt="decimal")
     add_footer_page_field(document, body_section, fmt="arabic")
 
+    if spec.get("blocks"):
+        _add_resource_blocks(document, spec, palette)
+        return
     for section_spec in spec.get("sections", []):
         _add_heading(document, section_spec.get("heading", ""), int(section_spec.get("level", 1)))
         for paragraph_spec in section_spec.get("paragraphs", []):
