@@ -22,6 +22,8 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +102,7 @@ def _ref_targets(md_text: str) -> list[str]:
 
 
 def _parse_markdown_blocks(
-    md_text: str, page: int | None = None
+    md_text: str, page: int | None = None, markdown_image_pattern: str = "!["
 ) -> list[dict[str, Any]]:
     """把 Markdown 顺序投影为最小 Block 列表（heading/paragraph/list/table/code/image）。
 
@@ -166,7 +168,7 @@ def _parse_markdown_blocks(
             order += 1
             i += 1
             continue
-        if stripped.startswith(("|", "|--", "|---")) and "|" in stripped:
+        if stripped.startswith("|") and "|" in stripped:
             # 管道表格：收集连续表行
             table_lines = [lines[i]]
             i += 1
@@ -362,8 +364,10 @@ class MaterialService:
         sha256 = sha256_file(staged)
         if suffix in {".md", ".markdown", ".txt"}:
             ir = self._parse_native_text(staged, source, suffix)
+        elif suffix == ".pptx":
+            ir = self._parse_native_pptx(staged, source, material_id, sha256)
         else:
-            # pdf/docx/pptx 富解析在阶段 3/4/6 接入；当前登记 warning 占位，
+            # pdf/docx 富解析在阶段 3/4 接入；当前登记 warning 占位，
             # 由旧 ingest 路径（tools.py）继续服务，避免双路径同时解析。
             ir = self._register(
                 material_id,
@@ -372,10 +376,100 @@ class MaterialService:
                 sha256,
                 [],
                 [],
-                [f"{suffix} 富解析尚未接入共享层（阶段 3/4/6），继续走旧 ingest 路径"],
+                [f"{suffix} 富解析尚未接入共享层（阶段 3/4），继续走旧 ingest 路径"],
             )
         self._write_manifest()
         return ir
+
+    def _parse_native_pptx(
+        self, staged: Path, original: Path, material_id: str, sha256: str
+    ) -> DocumentIR:
+        """PPTX → 共享 DocumentIR：复用 ppt-master 成熟的 ppt_to_md parser
+        （实施计划 §10.1：不再为 PPT 另跑一套 source_to_md 产生第二套事实）。
+
+        parser 以 subprocess 调用（避免在 Runtime 进程内 import python-pptx
+        与其私有 API）；输出 md + 关联媒体物化到本材料 assets/。
+        """
+        warnings: list[str] = []
+        parser = Path(__file__).parent / "skill_defs" / "ppt-master" / "scripts" / "source_to_md" / "ppt_to_md.py"
+        if not parser.is_file():
+            return self._register(
+                material_id,
+                original,
+                "pptx",
+                sha256,
+                [],
+                [],
+                [f"ppt-master parser 缺失: {parser}"],
+            )
+        out_root = self.workspace / "work" / "materials" / material_id[:16]
+        out_root.mkdir(parents=True, exist_ok=True)
+        md_target = out_root / "parser.md"
+        md_target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(parser), str(staged), "-o", str(md_target)],
+                capture_output=True,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return self._register(
+                material_id,
+                original,
+                "pptx",
+                sha256,
+                [],
+                [],
+                [f"ppt_to_md parser 调用失败: {exc}"],
+            )
+        if completed.returncode or not md_target.is_file():
+            warnings.append(f"ppt_to_md parser 失败（rc={completed.returncode}）")
+            return self._register(material_id, original, "pptx", sha256, [], [], warnings)
+
+        try:
+            md_text = md_target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            warnings.append(f"parser.md 读取失败: {exc}")
+            return self._register(material_id, original, "pptx", sha256, [], [], warnings)
+
+        # 物化 parser 引用的媒体（<stem>_files/ 目录）到本材料 assets/
+        assets: list[Asset] = []
+        parser_media_root = md_target.parent / f"{md_target.stem}_files"
+        assets_dir = out_root / "assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        asset_by_ref: dict[str, str] = {}
+        if parser_media_root.is_dir():
+            for media_file in sorted(parser_media_root.iterdir()):
+                if media_file.suffix.lower() not in _REF_SAFE_SUFFIXES:
+                    continue
+                asset = _materialize_asset_into(self.workspace, material_id, media_file)
+                assets.append(asset)
+                asset_by_ref[media_file.name] = asset.id
+
+        blocks: list[Block] = []
+        for order, raw in enumerate(_parse_markdown_blocks(md_text)):
+            block_type = raw["type"]
+            asset_ids: list[str] = []
+            if block_type == "image":
+                for ref in raw.get("asset_refs", []):
+                    ref_name = Path(ref).name
+                    asset_id = asset_by_ref.get(ref_name)
+                    if asset_id:
+                        asset_ids.append(asset_id)
+            blocks.append(
+                Block(
+                    id=f"b{order}",
+                    type=block_type,
+                    order=order,
+                    text=raw.get("text", ""),
+                    level=raw.get("level") if block_type == "heading" else None,
+                    page=raw.get("page"),
+                    asset_ids=asset_ids,
+                    source_locator=f"pptx:{original.name}#b{order}",
+                )
+            )
+        return self._register(material_id, original, "pptx", sha256, blocks, assets, warnings)
 
     def _parse_native_text(
         self, staged: Path, original: Path, suffix: str
@@ -501,6 +595,55 @@ def _mime_for(path: Path) -> str:
         ".svg": "image/svg+xml",
     }
     return mime.get(ext, "application/octet-stream")
+
+
+def material_id_dir(workspace: Path, material_id: str) -> Path:
+    """材料 IR 根目录（work/materials/<id16>/）；统一命名，避免各处拼接。"""
+    return workspace / COMPAT_MATERIALS_DIR / material_id[:16]
+
+
+def _materialize_asset_into(
+    workspace: Path, material_id: str, src: Path, out_name: str | None = None
+) -> Asset:
+    """把媒体物化到材料 assets/ 并登记 Asset（内容 hash 派生 id）。
+
+    asset_id 由材料 ID + 来源 locator + 内容 hash 派生，不能只用原始文件名
+    （实施计划 §7）。返回登记后的 Asset。
+    """
+    material_root = material_id_dir(workspace, material_id)
+    assets_dir = material_root / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    out = assets_dir / (out_name or src.name)
+    if not out.exists():
+        shutil.copy2(src, out)
+    content_hash = sha256_file(out)
+    asset_id = f"asset-{material_id[:8]}-{content_hash[:12]}"
+    return Asset(
+        id=asset_id,
+        path=_relative_to(workspace, out),
+        mime_type=_mime_for(out),
+        sha256=content_hash,
+        width=_image_width(out),
+        height=_image_height(out),
+    )
+
+
+def _relative_to(workspace: Path, path: Path) -> str:
+    return str(path.resolve().relative_to(workspace.resolve()))
+
+
+def _image_width(path: Path) -> int | None:
+    from skill_toolbox.tools import _image_size
+
+    dims = _image_size(path)
+    return dims[0] if dims else None
+
+
+def _image_height(path: Path) -> int | None:
+    from skill_toolbox.tools import _image_size
+
+    dims = _image_size(path)
+    return dims[1] if dims else None
 
 
 def project_content_md(ir: DocumentIR) -> str:
