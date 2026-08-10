@@ -20,7 +20,7 @@ def workspace_path(value: str, must_exist: bool) -> Path:
 def run_capture(command: list[str], timeout: int) -> tuple[int, str, str]:
     # bytes 捕获 + UTF-8 容错解码：中文 Windows 默认 GBK，text=True 会在
     # 子进程输出 UTF-8（含中文文件名）时触发 UnicodeDecodeError。
-    completed = subprocess.run(command, capture_output=True, timeout=timeout)
+    completed = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
     return (
         completed.returncode or 0,
         completed.stdout.decode("utf-8", errors="replace"),

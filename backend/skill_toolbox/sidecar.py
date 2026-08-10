@@ -193,6 +193,11 @@ class SidecarService:
             elif message_type == "clear_mineru_key":
                 self._mineru_key = None
                 self._emit(request_id, {"type": "mineru_key_cleared"})
+            elif message_type == "mineru_status":
+                self._emit(
+                    request_id,
+                    {"type": "mineru_status", "ok": self.mineru_ready()},
+                )
             elif message_type == "fetch_models":
                 await self._fetch_models(request_id, payload)
             elif message_type == "list_artifacts":

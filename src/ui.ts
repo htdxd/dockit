@@ -497,10 +497,13 @@ export function mountLayout(root: HTMLElement): void {
                 <input class="inp mono" id="mineru-key" type="password" placeholder="粘贴 MinerU API Token" autocomplete="off">
               </div>
             </div>
-            <div class="sec-note">用于 PDF → DOCX 的文档解析（扫描件 OCR / 公式识别）。请在
+            <div class="sec-note">MinerU 是本产品四个功能（PPT / 简历 / DOCX / PDF 转 DOCX）的<b>强依赖</b>：
+              任务开始前会校验 CLI 与 Token，不可用时任务直接失败并给出恢复指引，不会静默降级。
+              用于 PDF → DOCX 的文档解析（扫描件 OCR / 公式识别）。请在
               <a href="https://mineru.net/apiManage/token" target="_blank" rel="noopener">https://mineru.net/apiManage/token</a>
               登录并创建 Token，复制到此处。
             </div>
+            <div id="mineru-status" class="probe-status">MinerU 状态检查中…</div>
           </div>
         </div>
       </section>
@@ -669,15 +672,54 @@ function renderRunView(tool: string, state: TaskState): void {
     <div class="card">
       <div class="card-title">🚀 当前任务</div>
       <div class="taskline"><span>📄</span><span class="t-title">${escapeHtml(title)}</span><span class="tid">${tid}</span><span class="rowtag ${rowtagCls}"><span class="pulse-dot"></span> ${statusLabel}</span></div>
+      ${renderVisionWarning(state)}
+      ${renderMaterialProgress(state)}
       <div class="steps" style="margin-top:12px;">${stepsHtml}</div>
       <div class="bar"><i class="anim" style="width:${width}%"></i></div>
       <div class="bar-meta"><span class="cur">${escapeHtml(last) || "正在解析输入材料…"}</span><span class="mono">${elapsed ? `~${elapsed}s` : ""}</span></div>
       <div class="cta-row"><button class="btn-sec" data-action="cancel" ${cancellable ? "" : "disabled"}>✕ 取消任务</button></div>
     </div>
+    ${renderQAStatus(state)}
     <div id="task-error" class="task-error ${state.error ? "" : "hidden"}">
       <code>${escapeHtml(state.error)}</code>
       <button class="btn-sec" data-action="copy-error">复制错误</button>
     </div>`;
+}
+
+/** 无 Vision 提示（§12.3）：开始按钮附近已展示，任务中再补一条状态栏提醒 */
+function renderVisionWarning(state: TaskState): string {
+  if (state.visionWarning) {
+    return `<div class="vision-warn">⚠️ ${escapeHtml(state.visionWarning)}</div>`;
+  }
+  return "";
+}
+
+/** 材料预处理进度（§12.1 事件：parsing/done/failed + 稳定错误码） */
+function renderMaterialProgress(state: TaskState): string {
+  if (!state.materialProgress.length) return "";
+  const rows = state.materialProgress
+    .map((p) => {
+      const icon = p.phase === "done" ? "✅" : p.phase === "failed" ? "❌" : "⏳";
+      const detail = p.phase === "failed" && p.error ? `（${escapeHtml(p.error)}）` : "";
+      return `<div class="mprogress">${icon} <span class="mono">${escapeHtml(p.path)}</span> ${escapeHtml(p.phase)}${detail}</div>`;
+    })
+    .join("");
+  return `<div class="materials-progress" style="margin-top:10px;">${rows}</div>`;
+}
+
+/** 双 QA 状态（§12.3）：机械检查与视觉检查分开呈现，不能合并 */
+function renderQAStatus(state: TaskState): string {
+  const qa = state.qa;
+  if (!qa.mechanical && qa.visual === "not_run") return "";
+  const mech = qa.mechanical === "passed" ? "✅ 通过" : qa.mechanical === "failed" ? "❌ 失败" : "未执行";
+  const vis =
+    qa.visual === "passed" ? "✅ 通过" : qa.visual === "failed" ? "❌ 失败" : "未执行";
+  return `<div class="qa-row card" style="margin-top:10px;">
+    <div class="card-title">🧪 质量检查</div>
+    <div class="qa-item">结构与机械检查：${mech}${qa.mechanical_issues.length ? `（${qa.mechanical_issues.length} 项）` : ""}</div>
+    <div class="qa-item">视觉版式检查：${vis}${qa.visual === "not_run" ? " — 当前模型不支持图像理解，未执行视觉验证" : ""}</div>
+    ${qa.used_assets || qa.skipped_assets ? `<div class="qa-item">已采用资源 ${qa.used_assets} 个 · 低置信度舍弃 ${qa.skipped_assets} 个</div>` : ""}
+  </div>`;
 }
 
 function renderArtView(tool: string, state: TaskState): void {

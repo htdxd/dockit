@@ -1,4 +1,4 @@
-import type { BackendEvent, TaskState } from "./types";
+import type { BackendEvent, QAState, TaskState } from "./types";
 
 export const initialTaskState: TaskState = {
   status: "idle",
@@ -8,7 +8,22 @@ export const initialTaskState: TaskState = {
   error: "",
   debug: [],
   debugLogPath: "",
+  materialProgress: [],
+  qa: emptyQA(),
+  visionWarning: "",
 };
+
+export function emptyQA(): QAState {
+  return {
+    mechanical: "",
+    mechanical_issues: [],
+    visual: "not_run",
+    visual_issues: [],
+    repair_rounds: 0,
+    used_assets: 0,
+    skipped_assets: 0,
+  };
+}
 
 function append(state: TaskState, message: string): TaskState {
   return { ...state, progress: [...state.progress, message] };
@@ -18,7 +33,7 @@ export function reduceTaskEvent(state: TaskState, event: BackendEvent): TaskStat
   switch (event.type) {
     case "task_started":
       return append(
-        { ...initialTaskState, status: "running" },
+        { ...initialTaskState, status: "running", visionWarning: state.visionWarning },
         "任务已启动",
       );
     case "debug_log": {
@@ -44,6 +59,19 @@ export function reduceTaskEvent(state: TaskState, event: BackendEvent): TaskStat
       return append(state, `${String(event.tool)}：执行异常`);
     case "questions_requested":
       return { ...state, status: "waiting", questions: (event.questions as TaskState["questions"]) ?? [] };
+    case "material_progress": {
+      const item = {
+        path: String(event.path ?? ""),
+        phase: String(event.phase ?? ""),
+        ...(event.error ? { error: String(event.error) } : {}),
+      };
+      const rest = state.materialProgress.filter((p) => p.path !== item.path);
+      return { ...state, materialProgress: [...rest, item] };
+    }
+    case "qa_status": {
+      const qa = event.qa as Partial<QAState> | undefined;
+      return { ...state, qa: { ...emptyQA(), ...(qa ?? {}) } };
+    }
     case "task_completed":
       return {
         ...append(state, "产物已生成"),

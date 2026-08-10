@@ -39,7 +39,18 @@ src-tauri/           Rust 宿主：spawn sidecar、stdin/stdout JSON-lines 协�
 
 ### docx_pro 生成流程
 
-`build_docx`（封面配方 / CJK 版式 / WPS 兼容 / OMML 公式）→ `inject_toc`（TOC 域 + updateFields）→ `postcheck_docx`（15 条业务质量门，含表格跨页、CJK 缩进、占位符泄漏）→（vision 模型）`render_pages` 渲染 PNG 逐页核验。复杂档位支持填报表单（SDT + 文档保护）、公文 GB/T 9704、模板套用，OfficeCLI 可用时可委托原生图表/水印/邮件合并。
+`build_docx`（封面配方 / CJK 版式 / WPS 兼容 / OMML 公式）→ `inject_toc`（TOC 域 + updateFields）→ `postcheck_docx`（15 条业务质量门，含表格跨页、CJK 缩进、占位符泄漏）→（vision 模型）`render_pages` 渲染 PNG 逐页核验。复杂档位支持填报表单（SDT + 文档保护）、公文 GB/T 9704、模板套用，OfficeCLI 可用时可委托原生图表/水印/邮件合并。规格支持**顺序 block**（`blocks[]`），图片/表格/公式可插入指定 section/段落之间。
+
+### 共享材料理解（统一 IR）
+
+四个功能（PPT / 简历 / DOCX / PDF 转 DOCX）共用同一套材料事实：
+
+- **MaterialService 预处理**：任务进入 Agent loop 前完成 hash 暂存（`sources/<id16>/`）、格式路由与 DocumentIR 解析（md/txt 原生；PPTX 复用 ppt-master parser；PDF/DOCX 富解析继续走 read/ingest）；同 hash 只解析一次。
+- **DocumentIR**（`work/materials/<id16>/document.json`）：版本化 block/asset 模型，图片块保留资产位置引用；`content.md` 由 IR 单向投影，供 Agent 顺序阅读。
+- **ContentPlan 纪律**：四个 Prompt 都要求先读材料摘要 → 写 `work/plans/content-plan.json`（selections/exclusions 留痕）→ 再生成。
+- **双模式**：`vision=true` 智能读取候选图并渲染复核；`vision=false` 保守模式（高置信度资源 + 单次批量提问 + 机械门），QA 明确标注「视觉检查未执行」。
+- **MinerU 强依赖**：启动前全局 preflight（CLI/Token），不可用直接以稳定错误码失败，不静默降级。
+- **简历组件能力**：5 套精选模板 manifest 带 `template_sha256` + components/白名单动作（replace_text/replace_asset/resize/shift/clone），hash 不匹配即失败。
 
 ## 开发
 
@@ -57,7 +68,7 @@ npm run tauri dev
 
 ## 模型接入
 
-OpenAI / Anthropic / OpenAI-compatible 网关均可：在设置页填写 `base_url`、`api_key`、模型名，任务开始前校验能力。PDF 解析等第三方服务（MinerU）的 Token 在设置页「第三方服务」中配置。
+OpenAI / Anthropic / OpenAI-compatible 网关均可：在设置页填写 `base_url`、`api_key`、模型名，任务开始前校验能力。MinerU 是四个功能的强依赖，Token 在设置页「第三方服务」配置，设置页显示 CLI 可解析状态。
 
 ## 许可证
 

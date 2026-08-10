@@ -79,7 +79,7 @@ def main() -> None:
     # 用 bytes 捕获输出：中文 Windows 的默认编码是 GBK，text=True 会让
     # subprocess 的 _readerthread 用 GBK 解码 MinerU 的 UTF-8 输出并崩溃
     # （UnicodeDecodeError），导致 stderr 为 None、后续切片报 TypeError。
-    completed = subprocess.run(command, capture_output=True, timeout=1860)
+    completed = subprocess.run(command, capture_output=True, timeout=1860, check=False)
     stdout = completed.stdout.decode("utf-8", errors="replace")
     stderr = completed.stderr.decode("utf-8", errors="replace")
     docx_files = sorted(output.parent.glob("*.docx"))

@@ -598,6 +598,7 @@ function renderProbeStatus(report: CapabilityProbeReport | null): void {
   if (!report) {
     host.textContent = "未检测";
     host.classList.remove("probe-ok", "probe-warn", "probe-err");
+    renderMineruStatus();
     return;
   }
   const labels: Array<[string, CapabilityProbeResult]> = [
@@ -617,6 +618,17 @@ function renderProbeStatus(report: CapabilityProbeReport | null): void {
   host.classList.toggle("probe-ok", report.tool_calling.status === "verified");
   host.classList.toggle("probe-warn", report.tool_calling.status === "unknown" || report.tool_calling.status === "probe_error");
   host.classList.toggle("probe-err", report.tool_calling.status === "unsupported");
+  renderMineruStatus();
+}
+
+/** MinerU 强依赖状态（§12.3）：设置页第三方服务显示 CLI 可解析性。
+ *  CLI 入口由后端 resolve_mineru_cli 判定（与任务 preflight 同源）；
+ *  结果经 backend-event 的 mineru_status 分支落地，这里只负责发请求。 */
+function renderMineruStatus(): void {
+  const host = document.getElementById("mineru-status");
+  if (!host) return;
+  host.textContent = "MinerU 状态检查中…";
+  void send({ id: "mineru-status-check", type: "mineru_status", payload: {} });
 }
 
 /** 探测指纹：kind + base_url + 生效模型（镜像后端 capabilities.probe_fingerprint，
@@ -817,6 +829,10 @@ async function send(message: Record<string, unknown>): Promise<void> {
   await invoke("send_backend_message", { message });
 }
 
+/** 等待某条请求对应的回包事件（用于 mineru_status 这类查询式消息）。
+ *  简化实现：mineru_status 事件由 renderMineruStatus 的专用分支消费，
+ *  这里只发请求，结果经事件循环到达（见 listen 的 mineru_status 分支）。 */
+
 function validateSettings(): string {
   const kind = element<HTMLSelectElement>("#provider-kind").value;
   const apiKey = element<HTMLInputElement>("#api-key").value.trim();
@@ -916,7 +932,19 @@ document.querySelectorAll<HTMLButtonElement>("[data-start]").forEach((btn) => {
     saveGlobalFields();
     taskId = crypto.randomUUID();
     setTaskMeta({ tool, title: built.title, taskId });
-    setState({ ...initialTaskState, status: "running", progress: ["正在启动本地 Runtime"] });
+    // 阶段 7：无 Vision 提示（§12.3）。静态表判断仅供 UI 提示，后端为准。
+    const visionOverride = capabilityOverride("vision");
+    const visionOn =
+      visionOverride === true ||
+      (visionOverride === null && isVisionModel(modelName()));
+    setState({
+      ...initialTaskState,
+      status: "running",
+      progress: ["正在启动本地 Runtime"],
+      visionWarning: visionOn
+        ? ""
+        : "当前模型不支持图像理解。系统仍会解析文字、表格和公式，并仅复用高置信度图片；复杂图片选择和视觉版式检查将被跳过。建议使用支持 Vision 的模型以获得更好的排版质量。",
+    });
     goSub(tool, "run");
     flashSubtab(tool, "run");
     toast("任务已开始，正在解析材料…", "info");
@@ -929,7 +957,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-start]").forEach((btn) => {
           model: modelName(),
           api_key: element<HTMLInputElement>("#api-key").value.trim(),
           base_url: element<HTMLInputElement>("#base-url").value.trim() || null,
-          vision: capabilityOverride("vision"),
+          vision: visionOverride,
           tool_calling: capabilityOverride("tool_calling"),
           reasoning_level: element<HTMLSelectElement>("#reasoning-level").value,
           capability_probe: activeProvider().capability_probe,
@@ -1084,6 +1112,26 @@ if ("__TAURI_INTERNALS__" in window) {
         persistProbeReport(event.report, effectiveFingerprint);
         toast("能力探测完成（Tool Calling / Vision / 推理控制）", "ok");
       }
+      return;
+    }
+    if (payload.id === PROBE_REQUEST_ID && payload.event.type === "capabilities_probed") {
+      // 已在上方独立分支处理，这里防重复分发
+      return;
+    }
+    if (payload.id === "mineru-status-check" && payload.event.type === "mineru_status") {
+      const host = document.getElementById("mineru-status");
+      const ok = Boolean((payload.event as { ok?: boolean }).ok);
+      if (host) {
+        host.textContent = ok
+          ? "MinerU CLI 可用 ✓"
+          : "MinerU CLI 未安装 —— 请先 npm install -g mineru-open-api（任务开始前会校验，未装会直接失败）";
+        host.classList.toggle("probe-ok", ok);
+        host.classList.toggle("probe-err", !ok);
+      }
+      return;
+    }
+    if (payload.id === ARTIFACTS_REQUEST_ID && payload.event.type === "artifacts_listed") {
+      // 产物扫描结果由 1023 行专门分支处理
       return;
     }
     if (payload.id !== taskId) return;

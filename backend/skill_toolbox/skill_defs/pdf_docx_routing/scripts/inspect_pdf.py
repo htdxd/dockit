@@ -19,7 +19,7 @@ def run_text(command: list[str]) -> str:
     # text=True 在中文 Windows 上用 GBK 解码 poppler 的 UTF-8 输出会抛
     # UnicodeDecodeError；改为 bytes 捕获 + UTF-8 容错解码。
     try:
-        proc = subprocess.run(command, capture_output=True, timeout=30)
+        proc = subprocess.run(command, capture_output=True, timeout=30, check=False)
         return proc.stdout.decode("utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ""
@@ -53,7 +53,7 @@ def main() -> None:
 def _count_pages(path: Path) -> int | None:
     """尝试用 pdfinfo 获取总页数；失败返回 None（保持简单，不逐页解析）。"""
     try:
-        proc = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=30)
+        proc = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=30, check=False)
         out = proc.stdout.decode("utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
