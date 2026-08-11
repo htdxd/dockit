@@ -6,11 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+INTERNAL_ABSOLUTE_FLAG = "--internal-absolute-paths"
 
-def workspace_path(value: str, must_exist: bool) -> Path:
+
+def workspace_path(value: str, must_exist: bool, *, allow_absolute: bool = False) -> Path:
     root = Path.cwd().resolve()
     path = (root / value).resolve()
-    path.relative_to(root)
+    if not allow_absolute:
+        path.relative_to(root)
     if must_exist and not path.is_file():
         raise FileNotFoundError(value)
     return path
@@ -49,9 +52,15 @@ def mineru_command() -> list[str]:
 
 
 def main() -> None:
-    source = workspace_path(sys.argv[1], must_exist=True)
-    output = workspace_path(sys.argv[2], must_exist=False)
-    args = sys.argv[3:]
+    raw_args = sys.argv[1:]
+    allow_absolute = bool(raw_args and raw_args[-1] == INTERNAL_ABSOLUTE_FLAG)
+    if allow_absolute:
+        raw_args = raw_args[:-1]
+    if len(raw_args) < 2:
+        raise ValueError("convert_pdf 缺少 source/output 参数")
+    source = workspace_path(raw_args[0], must_exist=True, allow_absolute=allow_absolute)
+    output = workspace_path(raw_args[1], must_exist=False, allow_absolute=allow_absolute)
+    args = raw_args[2:]
     # manifest argv 契约：model/ocr/formula/table/language 五项，默认处理全文。
     # 早期契约曾含 {pages} 作为第 6 项（已移除）；若仍收到 6 项视为旧式调用，
     # 丢弃末尾 pages 即可，不要把它传给 MinerU。
@@ -101,7 +110,12 @@ def main() -> None:
         generated = max(docx_files, key=lambda f: f.stat().st_mtime)
     if generated.resolve() != output.resolve():
         generated.replace(output)
-    print(json.dumps({"output": str(output.relative_to(Path.cwd())), "model": model}, ensure_ascii=False))
+    # output 可能不在 cwd 下（共享解析用临时 workspace）；能相对化才相对化
+    try:
+        out_rel = str(output.relative_to(Path.cwd()))
+    except ValueError:
+        out_rel = str(output)
+    print(json.dumps({"output": out_rel, "model": model}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

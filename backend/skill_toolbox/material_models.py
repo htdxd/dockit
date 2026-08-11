@@ -26,6 +26,7 @@ ExclusionReason = Literal[
     "irrelevant", "duplicate", "low_confidence", "unsupported", "user_rejected"
 ]
 QAStatus = Literal["passed", "failed", "not_run"]
+MechanicalStatus = Literal["passed", "failed"]
 
 SCHEMA_VERSION = "1"
 
@@ -195,7 +196,7 @@ class QAReport(BaseModel):
     写任务日志并作为前端状态来源；不作为独立用户产物发布（实施计划 §8.3）。
     """
 
-    mechanical: QAStatus = "failed"
+    mechanical: MechanicalStatus = "failed"
     mechanical_issues: list[str] = Field(default_factory=list)
     visual: QAStatus = "not_run"
     visual_issues: list[str] = Field(default_factory=list)

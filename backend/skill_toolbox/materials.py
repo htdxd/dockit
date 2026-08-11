@@ -4,13 +4,14 @@
 业务相关性/排版产物是 Material Planner 的职责。Skill 只获得只读
 catalog/tool view，不拥有解析缓存。
 
-本阶段实现（阶段 2）：
+本阶段实现（阶段 2/3/4/6）：
 - 每个任务独立 workspace；源文件只读副本进 sources/<material_id>/original.<ext>
 - 同 hash 材料只保留一份；同名/同 stem 文件互不覆盖
 - Markdown/TXT 解析前复制安全相对引用资源，拒绝 `..` 越界与远程 URL
 - 由 DocumentIR 单向生成现有 work/materials/<stem>.md 兼容投影
-- PDF/DOCX/PPTX 的富解析在阶段 3/4/6 接入；本模块先提供统一路由骨架与
-  原生 markdown 路径，MinerU/原生 docx 解析保持 tools.py 现有实现
+- md/txt 原生解析；pptx 复用 ppt-master parser；pdf 复用 pdf_docx_routing 的
+  convert_pdf（MinerU 强依赖，失败即明确错误）；docx 富结构解析待阶段 4
+  （当前以文本视图可用，旧 ingest/read 路径继续服务）
 
 路径约定：manifest 与所有暴露路径必须是 workspace 相对路径；禁止写入
 临时绝对路径。
@@ -20,12 +21,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import threading
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+from lxml import etree
 
 from skill_toolbox.material_models import (
     SCHEMA_VERSION,
@@ -34,6 +40,15 @@ from skill_toolbox.material_models import (
     DocumentIR,
     SourceFormat,
 )
+from skill_toolbox.subprocess_utils import (
+    child_env,
+    process_group_kwargs,
+    terminate_process_tree,
+)
+
+# 稳定错误码：这些码表示"选定 MinerU 路由后转换失败"，按计划 §3.1 必须
+# 任务失败（fail-fast），不能登记成可继续的 warning。
+MINERU_FATAL_CODES = {"MINERU_CLI_MISSING", "MINERU_TOKEN_MISSING", "MINERU_PARSE_FAILED"}
 
 # 相对资源引用（Markdown 图片 / 相对链接）。inline 可带 title，
 # 捕获到空白处即可；保留 ![]() 与 <img src="">
@@ -49,8 +64,21 @@ _REF_SAFE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 # Skill 仍按此读取；该投影由新 IR 单向生成，不能反向解析覆盖 document.json）。
 COMPAT_MATERIALS_DIR = "work/materials"
 
-# 支持的源格式（阶段 2 已接：md/txt 原生；pdf/docx/pptx 在后续阶段接入）。
-SUPPORTED_SUFFIXES = {".pdf", ".docx", ".md", ".markdown", ".txt", ".pptx"}
+# 支持的源格式（md/txt/pptx/pdf 已接入共享解析；docx 走旧路径/阶段 4）。
+SUPPORTED_SUFFIXES = {
+    ".pdf",
+    ".docx",
+    ".md",
+    ".markdown",
+    ".txt",
+    ".pptx",
+    *_REF_SAFE_SUFFIXES,
+}
+
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+M_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 
 class MaterialError(RuntimeError):
@@ -88,6 +116,22 @@ def material_id_for(source: Path) -> str:
     足够区分测试材料）。
     """
     return f"{sha256_file(source)}{source.suffix.lower()}"
+
+
+def _material_scope(material_id: str) -> str:
+    """短目录/对象 scope 必须包含完整 material_id（含 source suffix）。"""
+    return hashlib.sha256(material_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _block_id(material_id: str, order: int) -> str:
+    return f"block-{_material_scope(material_id)}-{order}"
+
+
+def _asset_id(material_id: str, locator: str, content_hash: str) -> str:
+    digest = hashlib.sha256(
+        f"{material_id}:{locator}:{content_hash}".encode()
+    ).hexdigest()[:12]
+    return f"asset-{_material_scope(material_id)}-{digest}"
 
 
 def _ref_targets(md_text: str) -> list[str]:
@@ -223,6 +267,140 @@ def _parse_markdown_blocks(
     return blocks
 
 
+def _docx_relationships(archive: zipfile.ZipFile, part_name: str) -> dict[str, str]:
+    part = PurePosixPath(part_name)
+    rels_name = str(part.parent / "_rels" / f"{part.name}.rels")
+    try:
+        root = etree.fromstring(archive.read(rels_name))
+    except (KeyError, etree.XMLSyntaxError):
+        return {}
+    relationships: dict[str, str] = {}
+    for rel in root.iter(PKG_REL_NS + "Relationship"):
+        if rel.get("TargetMode") == "External":
+            continue
+        rel_id = rel.get("Id")
+        target = rel.get("Target")
+        if rel_id and target:
+            relationships[rel_id] = posixpath.normpath(
+                posixpath.join(str(part.parent), target)
+            )
+    return relationships
+
+
+def _docx_content_items(root: etree._Element) -> list[etree._Element]:
+    body = root.find(W_NS + "body")
+    container = body if body is not None else root
+    items: list[etree._Element] = []
+    for child in container:
+        if child.tag in {W_NS + "p", W_NS + "tbl"}:
+            items.append(child)
+        elif child.tag == W_NS + "sdt":
+            items.extend(
+                node
+                for node in child.iter()
+                if node.tag in {W_NS + "p", W_NS + "tbl"}
+                and not any(
+                    ancestor.tag in {W_NS + "p", W_NS + "tbl"}
+                    for ancestor in node.iterancestors()
+                    if ancestor is not child
+                )
+            )
+    return items
+
+
+def _docx_text(element: etree._Element) -> str:
+    return "".join(
+        node.text or ""
+        for node in element.iter()
+        if node.tag in {W_NS + "t", M_NS + "t"}
+    ).strip()
+
+
+def _docx_heading_level(paragraph: etree._Element) -> int | None:
+    props = paragraph.find(W_NS + "pPr")
+    if props is None:
+        return None
+    outline = props.find(W_NS + "outlineLvl")
+    if outline is not None and outline.get(W_NS + "val", "").isdigit():
+        return min(int(outline.get(W_NS + "val")) + 1, 6)
+    style = props.find(W_NS + "pStyle")
+    style_id = style.get(W_NS + "val", "") if style is not None else ""
+    match = re.search(r"(?:heading|标题)\s*([1-6])$", style_id, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _docx_is_list(paragraph: etree._Element) -> bool:
+    props = paragraph.find(W_NS + "pPr")
+    if props is None:
+        return False
+    if props.find(W_NS + "numPr") is not None:
+        return True
+    style = props.find(W_NS + "pStyle")
+    style_id = style.get(W_NS + "val", "") if style is not None else ""
+    return bool(re.search(r"(?:list|bullet|number|列表)", style_id, re.IGNORECASE))
+
+
+def _docx_table_markdown(table: etree._Element) -> str:
+    rows: list[list[str]] = []
+    for row in table.findall("./" + W_NS + "tr"):
+        cells = [
+            _docx_text(cell).replace("|", "\\|").replace("\n", "<br>")
+            for cell in row.findall("./" + W_NS + "tc")
+        ]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    padded = [row + [""] * (width - len(row)) for row in rows]
+    lines = ["| " + " | ".join(padded[0]) + " |"]
+    lines.append("| " + " | ".join(["---"] * width) + " |")
+    lines.extend("| " + " | ".join(row) + " |" for row in padded[1:])
+    return "\n".join(lines)
+
+
+def _docx_assets(
+    archive: zipfile.ZipFile, workspace: Path, material_id: str
+) -> tuple[list[Asset], dict[str, Asset]]:
+    assets_dir = material_id_dir(workspace, material_id) / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    assets: list[Asset] = []
+    by_member: dict[str, Asset] = {}
+    for member in sorted(
+        name for name in archive.namelist() if name.startswith("word/media/")
+    ):
+        out = assets_dir / PurePosixPath(member).name
+        out.write_bytes(archive.read(member))
+        content_hash = sha256_file(out)
+        asset = Asset(
+            id=_asset_id(material_id, member, content_hash),
+            path=_relative_to(workspace, out),
+            mime_type=_mime_for(out),
+            sha256=content_hash,
+            width=_image_width(out),
+            height=_image_height(out),
+            source_locator=f"docx:{member}",
+        )
+        assets.append(asset)
+        by_member[member] = asset
+    return assets, by_member
+
+
+def _docx_embedded_asset_ids(
+    element: etree._Element,
+    relationships: dict[str, str],
+    assets: dict[str, Asset],
+) -> list[str]:
+    result: list[str] = []
+    for node in element.iter():
+        rel_id = node.get(R_NS + "embed")
+        target = relationships.get(rel_id or "")
+        asset = assets.get(target or "")
+        if asset and asset.id not in result:
+            result.append(asset.id)
+    return result
+
+
 class MaterialCatalog:
     """任务内材料事实的只读视图。
 
@@ -256,12 +434,85 @@ class MaterialService:
     多个原始名称）。解析完成后才进入 Agent loop。
     """
 
-    def __init__(self, workspace: Path, extra_env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        extra_env: dict[str, str] | None = None,
+        mineru_token: str | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.extra_env = extra_env or {}
+        # MinerU API Token（Sidecar 受限凭据）。只传给 PDF adapter 子进程，
+        # 不进入 Agent 可见路径（实施计划 §3.1）。
+        self._mineru_token = mineru_token
+        # 任务内活动子进程（ppt parser / MinerU convert）。预处理经
+        # asyncio.to_thread 执行时取消无法中断线程，Runtime 在 CancelledError
+        # 时调 terminate_all() 杀掉直接子进程，避免残留（实施计划 §9.5）。
+        self._active_procs: list[subprocess.Popen[bytes]] = []
+        self._proc_lock = threading.Lock()
+        self._cancelled = threading.Event()
         self._irs: dict[str, DocumentIR] = {}
         self._manifest: dict[str, Any] = {"materials": [], "schema_version": SCHEMA_VERSION}
         self._compat: dict[str, str] = {}
+
+    def _run_subprocess(
+        self, command: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        """带注册/注销的同步 subprocess.run：供 to_thread 线程内调用，
+        取消时可从 Runtime 侧 terminate_all() 杀掉直接子进程。"""
+        if self._cancelled.is_set():
+            raise RuntimeError("material parsing was cancelled")
+        use_mineru_token = bool(kwargs.pop("use_mineru_token", False))
+        env = child_env(
+            {key: value for key, value in self.extra_env.items() if key != "MINERU_TOKEN"}
+        )
+        if use_mineru_token:
+            token = self._mineru_token or self.extra_env.get("MINERU_TOKEN")
+            if token:
+                env["MINERU_TOKEN"] = token
+        timeout = kwargs.pop("timeout", None)
+        capture = kwargs.pop("capture_output", True)
+        check = kwargs.pop("check", False)
+        if capture:
+            kwargs.setdefault("stdout", subprocess.PIPE)
+            kwargs.setdefault("stderr", subprocess.PIPE)
+        kwargs.setdefault("env", env)
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+        for key, value in process_group_kwargs().items():
+            kwargs.setdefault(key, value)
+        proc = subprocess.Popen(command, **kwargs)
+        with self._proc_lock:
+            self._active_procs.append(proc)
+        if self._cancelled.is_set():
+            terminate_process_tree(proc)
+            raise RuntimeError("material parsing was cancelled")
+        try:
+            if timeout is None:
+                out, err = proc.communicate()
+            else:
+                try:
+                    out, err = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    terminate_process_tree(proc)
+                    raise
+            rc = proc.returncode or 0
+            if check and rc != 0:
+                raise subprocess.CalledProcessError(rc, proc.args, out, err)
+            return subprocess.CompletedProcess(proc.args, rc, out, err)
+        finally:
+            with self._proc_lock:
+                if proc in self._active_procs:
+                    self._active_procs.remove(proc)
+
+    def terminate_all(self) -> None:
+        """取消/超时时终止所有活动子进程（MinerU、ppt parser 等）。"""
+        self._cancelled.set()
+        with self._proc_lock:
+            active = list(self._active_procs)
+        for proc in active:
+            terminate_process_tree(proc)
+        with self._proc_lock:
+            self._active_procs.clear()
 
     def _rel(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.workspace))
@@ -318,7 +569,7 @@ class MaterialService:
         目录名统一用材料 ID 前 16 位（manifest 记录完整 hash；前 16 位足够
         区分任务内材料，前缀冲突时扩展长度——实施计划 §7）。
         """
-        materials_root = self.workspace / COMPAT_MATERIALS_DIR / ir.material_id[:16]
+        materials_root = material_id_dir(self.workspace, ir.material_id)
         materials_root.mkdir(parents=True, exist_ok=True)
         doc_path = materials_root / "document.json"
         tmp = doc_path.with_suffix(".json.tmp")
@@ -342,7 +593,7 @@ class MaterialService:
         if suffix not in SUPPORTED_SUFFIXES:
             raise MaterialError(
                 "MATERIAL_UNSUPPORTED",
-                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/pptx）",
+                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/pptx/常见图片）",
             )
         material_id = material_id_for(source)
         if material_id in self._irs:
@@ -356,7 +607,7 @@ class MaterialService:
                     break
             return self._irs[material_id]
 
-        source_dir = self.workspace / "sources" / material_id[:16]
+        source_dir = self.workspace / "sources" / _material_scope(material_id)
         source_dir.mkdir(parents=True, exist_ok=True)
         staged = source_dir / f"original{suffix}"
         shutil.copy2(source, staged)
@@ -366,20 +617,40 @@ class MaterialService:
             ir = self._parse_native_text(staged, source, suffix)
         elif suffix == ".pptx":
             ir = self._parse_native_pptx(staged, source, material_id, sha256)
+        elif suffix == ".pdf":
+            ir = self._parse_native_pdf(staged, source, material_id, sha256)
+        elif suffix == ".docx":
+            ir = self._parse_native_docx(staged, source, material_id, sha256)
+        elif suffix in _REF_SAFE_SUFFIXES:
+            ir = self._parse_native_image(staged, source, material_id, sha256)
         else:
-            # pdf/docx 富解析在阶段 3/4 接入；当前登记 warning 占位，
-            # 由旧 ingest 路径（tools.py）继续服务，避免双路径同时解析。
-            ir = self._register(
-                material_id,
-                source,
-                _format_for(suffix),
-                sha256,
-                [],
-                [],
-                [f"{suffix} 富解析尚未接入共享层（阶段 3/4），继续走旧 ingest 路径"],
+            raise MaterialError(
+                "MATERIAL_UNSUPPORTED",
+                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/pptx/常见图片）",
             )
         self._write_manifest()
         return ir
+
+    def _parse_native_image(
+        self, staged: Path, original: Path, material_id: str, sha256: str
+    ) -> DocumentIR:
+        asset = _materialize_asset_into(
+            self.workspace, material_id, staged, f"original{staged.suffix.lower()}"
+        ).model_copy(
+            update={
+                "source_locator": f"image:{original.name}",
+                "surrounding_text": original.stem,
+            }
+        )
+        return self._register(
+            material_id,
+            original,
+            "image",
+            sha256,
+            [],
+            [asset],
+            [],
+        )
 
     def _parse_native_pptx(
         self, staged: Path, original: Path, material_id: str, sha256: str
@@ -393,45 +664,32 @@ class MaterialService:
         warnings: list[str] = []
         parser = Path(__file__).parent / "skill_defs" / "ppt-master" / "scripts" / "source_to_md" / "ppt_to_md.py"
         if not parser.is_file():
-            return self._register(
-                material_id,
-                original,
-                "pptx",
-                sha256,
-                [],
-                [],
-                [f"ppt-master parser 缺失: {parser}"],
+            raise MaterialError(
+                "MATERIAL_CORRUPT", f"ppt-master parser 缺失: {parser}"
             )
-        out_root = self.workspace / "work" / "materials" / material_id[:16]
+        out_root = material_id_dir(self.workspace, material_id)
         out_root.mkdir(parents=True, exist_ok=True)
         md_target = out_root / "parser.md"
         md_target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            completed = subprocess.run(
+            completed = self._run_subprocess(
                 [sys.executable, str(parser), str(staged), "-o", str(md_target)],
-                capture_output=True,
                 timeout=300,
-                check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return self._register(
-                material_id,
-                original,
-                "pptx",
-                sha256,
-                [],
-                [],
-                [f"ppt_to_md parser 调用失败: {exc}"],
+            raise MaterialError(
+                "MATERIAL_CORRUPT", f"ppt_to_md parser 调用失败: {exc}"
             )
         if completed.returncode or not md_target.is_file():
-            warnings.append(f"ppt_to_md parser 失败（rc={completed.returncode}）")
-            return self._register(material_id, original, "pptx", sha256, [], [], warnings)
+            raise MaterialError(
+                "MATERIAL_CORRUPT",
+                f"ppt_to_md parser 失败（rc={completed.returncode}）",
+            )
 
         try:
             md_text = md_target.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            warnings.append(f"parser.md 读取失败: {exc}")
-            return self._register(material_id, original, "pptx", sha256, [], [], warnings)
+            raise MaterialError("MATERIAL_CORRUPT", f"parser.md 读取失败: {exc}") from None
 
         # 物化 parser 引用的媒体（<stem>_files/ 目录）到本材料 assets/
         assets: list[Asset] = []
@@ -459,7 +717,7 @@ class MaterialService:
                         asset_ids.append(asset_id)
             blocks.append(
                 Block(
-                    id=f"b{order}",
+                    id=_block_id(material_id, order),
                     type=block_type,
                     order=order,
                     text=raw.get("text", ""),
@@ -471,6 +729,192 @@ class MaterialService:
             )
         return self._register(material_id, original, "pptx", sha256, blocks, assets, warnings)
 
+    def _parse_native_pdf(
+        self, staged: Path, original: Path, material_id: str, sha256: str
+    ) -> DocumentIR:
+        """PDF → 共享 DocumentIR：复用 pdf_docx_routing 的 convert_pdf 脚本
+        （MinerU）。输出 docx 交给 _parse_native_docx 复用同一份结构解析。
+
+        PDF 是 MinerU 强依赖（实施计划 §3.1）：MinerU CLI 不可用、Token 缺失
+        或转换失败时抛 MaterialError（稳定错误码），由 Runtime 记为解析失败并
+        fail-fast（任务直接失败），不降级、不登记成可继续的 warning。
+        """
+        parser = (
+            Path(__file__).parent
+            / "skill_defs"
+            / "pdf_docx_routing"
+            / "scripts"
+            / "convert_pdf.py"
+        )
+        if not parser.is_file():
+            raise MaterialError(
+                "MINERU_PARSE_FAILED", "convert_pdf 脚本缺失，PDF 富解析不可用"
+            )
+        out_root = material_id_dir(self.workspace, material_id)
+        out_root.mkdir(parents=True, exist_ok=True)
+        md_dir = out_root / "native"
+        md_dir.mkdir(parents=True, exist_ok=True)
+        converted = md_dir / f"{safe_stem(original.stem)}.docx"
+        try:
+            completed = self._run_subprocess(
+                [
+                    sys.executable,
+                    str(parser),
+                    str(staged),
+                    str(converted),
+                    "auto",  # model 由脚本自身探测（同 convert_pdf 契约）
+                    "true",
+                    "true",
+                    "true",
+                    "ch",
+                    "--internal-absolute-paths",
+                ],
+                timeout=1860,
+                use_mineru_token=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise MaterialError(
+                "MINERU_PARSE_FAILED", f"PDF 转换超时（{exc}）"
+            ) from None
+        except OSError as exc:
+            raise MaterialError("MINERU_PARSE_FAILED", f"PDF 转换调用失败（{exc}）") from None
+        if completed.returncode or not converted.is_file():
+            detail = completed.stderr.decode("utf-8", errors="replace")[-2000:]
+            code = "MINERU_PARSE_FAILED"
+            if any(k in detail.lower() for k in ("token", "auth", "401")):
+                code = "MINERU_TOKEN_MISSING"
+            raise MaterialError(code, detail or "MinerU 转换失败")
+        # 复用 docx 结构解析（MinerU 产出的 docx 同样是 OOXML 包）；
+        # source_format 保留 pdf（不写成 docx，IR 记录真实来源格式）。
+        ir = self._parse_native_docx(converted, original, material_id, sha256, "pdf")
+        entry = next(
+            item
+            for item in self._manifest["materials"]
+            if item["material_id"] == material_id
+        )
+        entry["prepared_docx"] = self._rel(converted)
+        return ir
+
+    def _parse_native_docx(
+        self,
+        staged: Path,
+        original: Path,
+        material_id: str,
+        sha256: str,
+        format_for: SourceFormat | None = None,
+    ) -> DocumentIR:
+        """Parse ordered OOXML blocks and link every drawing to an Asset."""
+        warnings: list[str] = []
+        blocks: list[Block] = []
+        if not staged.is_file():
+            raise MaterialError("MATERIAL_CORRUPT", "DOCX 文件不可读")
+        try:
+            archive = zipfile.ZipFile(staged)
+        except zipfile.BadZipFile as exc:
+            raise MaterialError("MATERIAL_CORRUPT", f"DOCX 解析失败: {exc}") from None
+        with archive:
+            assets, asset_by_member = _docx_assets(
+                archive, self.workspace, material_id
+            )
+            parts = ["word/document.xml"]
+            parts.extend(
+                sorted(
+                    name
+                    for name in archive.namelist()
+                    if re.fullmatch(r"word/(?:header|footer)\d+\.xml", name)
+                )
+            )
+            order = 0
+            locator_prefix = "pdf-mineru" if format_for == "pdf" else "docx"
+            for part_name in parts:
+                try:
+                    root = etree.fromstring(archive.read(part_name))
+                except (KeyError, etree.XMLSyntaxError) as exc:
+                    warnings.append(f"{part_name} 无法解析: {exc}")
+                    continue
+                relationships = _docx_relationships(archive, part_name)
+                for item_index, item in enumerate(_docx_content_items(root)):
+                    locator = f"{locator_prefix}:{part_name}#item[{item_index}]"
+                    asset_ids = _docx_embedded_asset_ids(
+                        item, relationships, asset_by_member
+                    )
+                    if item.tag == W_NS + "tbl":
+                        block_id = _block_id(material_id, order)
+                        blocks.append(
+                            Block(
+                                id=block_id,
+                                type="table",
+                                order=order,
+                                text=_docx_table_markdown(item),
+                                asset_ids=asset_ids,
+                                source_locator=locator,
+                            )
+                        )
+                        order += 1
+                        if item.find(".//" + W_NS + "gridSpan") is not None or item.find(
+                            ".//" + W_NS + "vMerge"
+                        ) is not None:
+                            warnings.append(f"{locator} 含合并单元格，原生关系保留在 OOXML")
+                        for asset_id in asset_ids:
+                            blocks.append(
+                                Block(
+                                    id=_block_id(material_id, order),
+                                    type="image",
+                                    order=order,
+                                    parent_id=block_id,
+                                    asset_ids=[asset_id],
+                                    source_locator=f"{locator}/image[{asset_id}]",
+                                )
+                            )
+                            order += 1
+                        continue
+
+                    text = _docx_text(item)
+                    formula_text = "".join(
+                        node.text or "" for node in item.iter(M_NS + "t")
+                    ).strip()
+                    if formula_text:
+                        block_type = "formula"
+                        text = formula_text
+                        warnings.append(f"{locator} 的 OMML 公式以线性文本投影")
+                    elif asset_ids:
+                        block_type = "image"
+                    elif _docx_heading_level(item) is not None:
+                        block_type = "heading"
+                    elif _docx_is_list(item):
+                        block_type = "list"
+                    else:
+                        block_type = "paragraph"
+                    if not text and not asset_ids:
+                        continue
+                    level = _docx_heading_level(item) if block_type == "heading" else None
+                    blocks.append(
+                        Block(
+                            id=_block_id(material_id, order),
+                            type=block_type,
+                            order=order,
+                            text=text,
+                            level=level,
+                            caption=text if block_type == "image" and text else None,
+                            asset_ids=asset_ids,
+                            source_locator=locator,
+                        )
+                    )
+                    order += 1
+
+        fmt = format_for or _format_for(original.suffix.lower())
+        if fmt == "pdf":
+            warnings.append("MinerU DOCX 未提供可靠页码/bbox；保留顺序与 OOXML 关系")
+        return self._register(
+            material_id,
+            original,
+            fmt,
+            sha256,
+            blocks,
+            assets,
+            warnings,
+        )
+
     def _parse_native_text(
         self, staged: Path, original: Path, suffix: str
     ) -> DocumentIR:
@@ -480,12 +924,13 @@ class MaterialService:
         except UnicodeDecodeError:
             md_text = staged.read_text(encoding="utf-8", errors="replace")
         warnings: list[str] = []
+        material_id = material_id_for(original)
 
         # 物化相对引用资源到 assets/（相对引用以原始文件目录为基准解析，
         # 拒绝逃逸源目录与远程 URL；staged 副本目录不含原始相对结构）
         assets: list[Asset] = []
         src_dir = original.parent.resolve()
-        assets_dir = self.workspace / COMPAT_MATERIALS_DIR / material_id_for(original)[:16] / "assets"
+        assets_dir = material_id_dir(self.workspace, material_id) / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
         asset_by_ref: dict[str, str] = {}
         for rel in _ref_targets(md_text):
@@ -503,20 +948,22 @@ class MaterialService:
             if src.suffix.lower() not in _REF_SAFE_SUFFIXES:
                 warnings.append(f"引用 {rel} 不是支持的媒体格式，已忽略")
                 continue
-            out = assets_dir / src.name
+            rel_scope = hashlib.sha256(rel.encode("utf-8")).hexdigest()[:10]
+            out = assets_dir / f"{rel_scope}-{src.name}"
             try:
                 shutil.copy2(src, out)
             except OSError as exc:
                 warnings.append(f"引用 {rel} 物化失败: {exc}")
                 continue
-            asset_id = f"asset-{len(assets)}"
+            content_hash = sha256_file(out)
+            asset_id = _asset_id(material_id, rel, content_hash)
             asset_by_ref[rel] = asset_id
             assets.append(
                 Asset(
                     id=asset_id,
                     path=self._rel(out),
                     mime_type=_mime_for(src),
-                    sha256=sha256_file(out),
+                    sha256=content_hash,
                 )
             )
 
@@ -531,7 +978,7 @@ class MaterialService:
                         asset_ids.append(asset_id)
             blocks.append(
                 Block(
-                    id=f"b{order}",
+                    id=_block_id(material_id, order),
                     type=block_type,
                     order=order,
                     text=raw.get("text", ""),
@@ -547,7 +994,7 @@ class MaterialService:
 
         sha256 = sha256_file(staged)
         return self._register(
-            material_id_for(original),
+            material_id,
             original,
             _format_for(suffix),
             sha256,
@@ -599,7 +1046,7 @@ def _mime_for(path: Path) -> str:
 
 def material_id_dir(workspace: Path, material_id: str) -> Path:
     """材料 IR 根目录（work/materials/<id16>/）；统一命名，避免各处拼接。"""
-    return workspace / COMPAT_MATERIALS_DIR / material_id[:16]
+    return workspace / COMPAT_MATERIALS_DIR / _material_scope(material_id)
 
 
 def _materialize_asset_into(
@@ -617,7 +1064,7 @@ def _materialize_asset_into(
     if not out.exists():
         shutil.copy2(src, out)
     content_hash = sha256_file(out)
-    asset_id = f"asset-{material_id[:8]}-{content_hash[:12]}"
+    asset_id = _asset_id(material_id, out.name, content_hash)
     return Asset(
         id=asset_id,
         path=_relative_to(workspace, out),

@@ -12,16 +12,13 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import json
-import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
-
 from skill_toolbox.models import AssistantTurn, ToolCall
 from skill_toolbox.providers.mock import ScriptedProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest
@@ -43,6 +40,7 @@ def _run_script(script: str, *args: str, cwd: Path) -> subprocess.CompletedProce
         text=True,
         cwd=str(cwd),
         timeout=300,
+        check=False,
     )
 
 
@@ -169,6 +167,19 @@ def test_apply_template_preserves_sections(workspace: Path) -> None:
 SPEC_JSON = json.dumps(STANDARD_SPEC, ensure_ascii=False)
 
 
+def _empty_content_plan(mode: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": "1",
+            "task_type": "docx",
+            "mode": mode,
+            "selections": [],
+            "exclusions": [],
+            "questions_asked": False,
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_runtime_docx_pro_full_pipeline(tmp_path: Path) -> None:
     """A scripted model walks the docx_pro workflow (write spec → build →
@@ -182,6 +193,9 @@ async def test_runtime_docx_pro_full_pipeline(tmp_path: Path) -> None:
             return await super().complete(system_prompt, messages, tools)
 
     provider = _ProbeProvider([
+        AssistantTurn(tool_calls=[ToolCall(id="plan", name="write", arguments={
+            "path": "work/plans/content-plan.json",
+            "content": _empty_content_plan("vision")})]),
         AssistantTurn(tool_calls=[ToolCall(id="w", name="write", arguments={
             "path": "work/spec.json", "content": SPEC_JSON})]),
         AssistantTurn(tool_calls=[ToolCall(id="b", name="exec_cmd", arguments={
@@ -193,6 +207,9 @@ async def test_runtime_docx_pro_full_pipeline(tmp_path: Path) -> None:
         AssistantTurn(tool_calls=[ToolCall(id="p", name="exec_cmd", arguments={
             "action": "postcheck_docx",
             "args": {"source": "artifacts/report.docx"}})]),
+        AssistantTurn(tool_calls=[ToolCall(id="q", name="write", arguments={
+            "path": "work/qa/mechanical.json",
+            "content": '{"mechanical": "passed", "visual": "passed", "used_assets": [], "skipped_assets": []}'})]),
         AssistantTurn(tool_calls=[ToolCall(id="f", name="finish_task", arguments={
             "artifacts": ["artifacts/report.docx"]})]),
     ])
@@ -221,11 +238,20 @@ async def test_runtime_docx_pro_vision_false_banner(tmp_path: Path) -> None:
             return await super().complete(system_prompt, messages, tools)
 
     provider = _ProbeProvider([
+        AssistantTurn(tool_calls=[ToolCall(id="plan", name="write", arguments={
+            "path": "work/plans/content-plan.json",
+            "content": _empty_content_plan("conservative")})]),
         AssistantTurn(tool_calls=[ToolCall(id="w", name="write", arguments={
             "path": "work/spec.json", "content": SPEC_JSON})]),
         AssistantTurn(tool_calls=[ToolCall(id="b", name="exec_cmd", arguments={
             "action": "build_docx",
             "args": {"source": "work/spec.json", "output": "artifacts/report.docx"}})]),
+        AssistantTurn(tool_calls=[ToolCall(id="p", name="exec_cmd", arguments={
+            "action": "postcheck_docx",
+            "args": {"source": "artifacts/report.docx"}})]),
+        AssistantTurn(tool_calls=[ToolCall(id="q", name="write", arguments={
+            "path": "work/qa/mechanical.json",
+            "content": '{"mechanical": "passed", "visual": "not_run", "used_assets": [], "skipped_assets": []}'})]),
         AssistantTurn(tool_calls=[ToolCall(id="f", name="finish_task", arguments={
             "artifacts": ["artifacts/report.docx"]})]),
     ])

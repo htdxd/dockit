@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skill_toolbox.materials import MaterialCatalog, MaterialError, MaterialService
+from skill_toolbox.material_models import ContentPlan, QAReport
+from skill_toolbox.materials import (
+    MaterialCatalog,
+    MaterialError,
+    MaterialService,
+    safe_stem,
+    sha256_file,
+)
 from skill_toolbox.models import ConversationMessage, ToolCall, ToolResult
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.providers.base import ModelProvider
@@ -25,6 +32,17 @@ MAX_LOG_RESULT_CHARS = 4_000
 MAX_LOG_TEXT_CHARS = 2_000
 # 外层超时 = 声明的 action 超时 + 清理余量（给子进程退出留时间）。
 ACTION_TIMEOUT_CLEANUP = 30
+TASK_TYPE_BY_SKILL = {
+    "ppt-master": "ppt",
+    "resume_pro": "resume",
+    "docx_pro": "docx",
+    "pdf_docx_routing": "pdf_to_docx",
+}
+DOCUMENT_QUALITY_PATH_ARG = {
+    "postcheck_docx": "source",
+    "audit_docx": "source",
+    "fill_resume": "output",
+}
 
 
 def _truncate(value: Any, limit: int) -> str:
@@ -46,9 +64,12 @@ class TaskRequest:
     # at the top of the skill's system prompt so prompt-level routing can
     # depend on them without guessing.
     capabilities: dict[str, bool] = field(default_factory=dict)
-    # Environment variables injected into exec_cmd subprocesses (e.g.
-    # MINERU_TOKEN for the PDF skill's MinerU scripts).
+    # Non-secret environment variables injected into declared exec_cmd scripts.
     env: dict[str, str] = field(default_factory=dict)
+    # MinerU API Token（Sidecar 持有的受限凭据）。不进入 Agent 可见的任何
+    # 路径：仅 MaterialService 的 PDF adapter 使用；所有 Agent exec_cmd
+    # 子进程均拿不到（实施计划 §3.1/§12.1）。
+    mineru_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,27 +147,36 @@ class AgentRuntime:
                     "note": "Materials are available to the model under the 'sources/' "
                             "relative path; this is the only correct way to read them.",
                 })
-            # 阶段 3：进入 Agent loop 前同步预处理材料（md/txt 原生解析为
-            # DocumentIR；pdf/docx/pptx 登记占位，旧 ingest/read 路径继续服务）。
-            # 横幅不再自动 ingest（实施计划 §12.1：横幅只读预处理结果短摘要）。
-            material_service = MaterialService(workspace, request.env)
-            material_errors: list[tuple[str, str, str]] = []
-            for rel, abs_path in staged:
-                self.emit({"type": "material_progress", "path": rel, "phase": "parsing"})
-                try:
-                    material_service.prepare_material(abs_path)
-                except MaterialError as exc:
-                    material_errors.append((rel, exc.code, str(exc)))
-                    self.emit(
-                        {
-                            "type": "material_progress",
-                            "path": rel,
-                            "phase": "failed",
-                            "error": exc.code,
-                        }
-                    )
-                    continue
-                self.emit({"type": "material_progress", "path": rel, "phase": "done"})
+            # 阶段 3：进入 Agent loop 前预处理材料（md/txt 原生解析为
+            # DocumentIR；pptx 复用 ppt-master parser；pdf 走 MinerU 共享解析；
+            # docx 原生提取文本与媒体）。横幅不再自动 ingest（§12.1）。
+            material_service = MaterialService(
+                workspace, request.env, mineru_token=request.mineru_token
+            )
+            try:
+                for rel, abs_path in staged:
+                    self.emit({"type": "material_progress", "path": rel, "phase": "parsing"})
+                    try:
+                        # 预处理（含 MinerU/PPT 子进程）放到线程执行，避免阻塞
+                        # Sidecar 事件循环；取消时由 terminate_all() 终止子进程
+                        # （实施计划 §9.2/§9.5）。
+                        await asyncio.to_thread(
+                            material_service.prepare_material, abs_path
+                        )
+                    except MaterialError as exc:
+                        self.emit(
+                            {
+                                "type": "material_progress",
+                                "path": rel,
+                                "phase": "failed",
+                                "error": exc.code,
+                            }
+                        )
+                        return self._failed(f"[{exc.code}] {exc}")
+                    self.emit({"type": "material_progress", "path": rel, "phase": "done"})
+            finally:
+                # 取消/异常时终止仍活动的解析子进程（MinerU/PPT parser）
+                material_service.terminate_all()
             catalog = material_service.catalog()
             policy = WorkspacePolicy(workspace, read_roots=(skill.dir,))
             tools = ToolRegistry(
@@ -155,17 +185,21 @@ class AgentRuntime:
                 scripts=skill.scripts,
                 env=request.env,
                 script_timeouts=skill.script_timeouts,
+                capabilities=request.capabilities,
             )
+            passed_quality_actions: set[str] = set()
+            quality_hashes: dict[str, set[str]] = {}
             messages: list[ConversationMessage] = []
             user_text = request.user_prompt or "按默认内容生成测试文档"
             if staged:
                 files_list = "\n".join(f"  - {rel}" for rel, _ in staged)
                 user_text = (
                     f"{user_text}\n\n"
-                    f"你上传的材料已暂存到工作区，相对路径如下（用 read 或 exec_cmd 的 "
-                    f"source 参数按此相对路径访问，不要猜其他路径）：\n{files_list}"
+                    "你上传的原始文件已暂存到工作区，相对路径如下。内容读取以 "
+                    "[MATERIALS] 中的共享 IR 为准；仅在声明脚本明确要求 source 时使用"
+                    f"这些原始路径，不要再次 ingest：\n{files_list}"
                 )
-            materials_banner = self._materials_banner(catalog, material_errors)
+            materials_banner = self._materials_banner(catalog)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
@@ -237,14 +271,63 @@ class AgentRuntime:
                 if finish is not None and len(turn.tool_calls) == 1:
                     self.emit({"type": "tool_started", "tool": finish.name})
                     try:
+                        # 先读 QA：机械门是硬门，mechanical=failed 直接拒绝交付
+                        # （不发布、不发 task_completed）。QAReport 由 Skill 脚本
+                        # 写入 work/qa/*.json（§8.3）；缺报告视为未确认，同样拒绝。
+                        # ContentPlan 是四个 Skill 的统一前置契约；即使没有上传
+                        # 材料，也必须由 Agent 写出合法的空计划，避免无材料路径
+                        # 绕过规划纪律（实施计划 §8.2/§15.3）。
+                        self._load_content_plan(
+                            workspace,
+                            TASK_TYPE_BY_SKILL[skill.id],
+                            request.capabilities,
+                            catalog,
+                        )
+                        qa = self._load_qa_report(workspace, request.capabilities)
+                        if qa.mechanical != "passed":
+                            raise ValueError(
+                                "机械检查未通过（mechanical=failed），不能交付。"
+                                "请先修复机械检查问题或调用 task_failed 明确失败。"
+                            )
+                        missing_quality = skill.quality_actions - passed_quality_actions
+                        if skill.quality_actions and not (
+                            skill.quality_actions & passed_quality_actions
+                        ):
+                            raise ValueError(
+                                "缺少可信机械检查结果：必须成功执行以下 action 之一后再交付："
+                                + ", ".join(sorted(missing_quality))
+                            )
+                        self._verify_quality_artifacts(
+                            finish,
+                            policy,
+                            skill.quality_actions,
+                            quality_hashes,
+                        )
                         published = self._publish(finish, policy, request.output_dir)
-                    except (OSError, ValueError) as exc:
+                        self.emit({"type": "qa_status", "qa": self._qa_event(qa)})
+                    except (OSError, TypeError, ValueError) as exc:
+                        # 机械门/QA 未过：不发 task_completed，把失败原因回给
+                        # 模型继续修复（模型若无法修复应调用 task_failed 结束）。
                         result = self._tool_result(finish, False, str(exc))
                         self.emit(
                             {
                                 "type": "tool_finished",
                                 "tool": finish.name,
                                 "success": False,
+                            }
+                        )
+                        self.emit(
+                            {
+                                "type": "qa_status",
+                                "qa": {
+                                    "mechanical": "failed",
+                                    "mechanical_issues": [str(exc)],
+                                    "visual": "not_run",
+                                    "visual_issues": [],
+                                    "repair_rounds": 0,
+                                    "used_assets": 0,
+                                    "skipped_assets": 0,
+                                },
                             }
                         )
                         messages.append(
@@ -277,8 +360,78 @@ class AgentRuntime:
                     self.emit(
                         {"type": "tool_finished", "tool": abort.name, "success": True}
                     )
+                    self.emit(
+                        {
+                            "type": "qa_status",
+                            "qa": {
+                                "mechanical": "failed",
+                                "mechanical_issues": [error or "Task aborted by the model"],
+                                "visual": "not_run",
+                                "visual_issues": [],
+                                "repair_rounds": 0,
+                                "used_assets": 0,
+                                "skipped_assets": 0,
+                            },
+                        }
+                    )
                     return self._failed(error or "Task aborted by the model")
+                # 单轮工具调用中出现 task_failed 或 finish_task（多个工具并行）：
+                # 按 tool_specs 契约，这两个工具必须是唯一调用。task_failed 出现
+                # 即模型放弃任务——立即终止，不执行同轮其它调用（避免在放弃时
+                # 仍跑 MinerU/Office 等昂贵动作）。finish_task 混入多调用按普通
+                # 失败工具处理（"must be the only tool call"），模型据此修正。
+                invalid = next(
+                    (
+                        call
+                        for call in turn.tool_calls
+                        if call.name in ("finish_task", "task_failed")
+                    ),
+                    None,
+                )
+                if invalid is not None:
+                    if invalid.name == "task_failed":
+                        # task_failed 是唯一合法终止信号：即使与其它调用同轮，
+                        # 也按放弃处理，不执行同轮其它调用（Tool Spec 契约）。
+                        error = str(invalid.arguments.get("error", "")).strip()
+                        self.emit(
+                            {
+                                "type": "qa_status",
+                                "qa": {
+                                    "mechanical": "failed",
+                                    "mechanical_issues": [error or "Task aborted by the model"],
+                                    "visual": "not_run",
+                                    "visual_issues": [],
+                                    "repair_rounds": 0,
+                                    "used_assets": 0,
+                                    "skipped_assets": 0,
+                                },
+                            }
+                        )
+                        return self._failed(error or "Task aborted by the model")
+                    # finish_task 混入多调用：按普通失败工具执行（执行链会返回
+                    # "must be the only tool call"），模型据此修正。
+                    results = await self._execute_calls(turn.tool_calls, tools)
+                    self._record_quality_results(
+                        turn.tool_calls,
+                        results,
+                        skill.quality_actions,
+                        passed_quality_actions,
+                        quality_hashes,
+                        policy,
+                    )
+                    messages.append(
+                        ConversationMessage(role="tool", tool_results=results)
+                    )
+                    continue
                 results = await self._execute_calls(turn.tool_calls, tools)
+                self._record_quality_results(
+                    turn.tool_calls,
+                    results,
+                    skill.quality_actions,
+                    passed_quality_actions,
+                    quality_hashes,
+                    policy,
+                )
                 messages.append(ConversationMessage(role="tool", tool_results=results))
             return self._failed(f"Task exceeded the {skill.max_steps}-step limit")
 
@@ -332,6 +485,13 @@ class AgentRuntime:
                 questions = call.arguments.get("questions", [])
                 self.emit({"type": "questions_requested", "questions": questions})
                 answers = await self.input_broker.wait()
+                self.emit(
+                    {
+                        "type": "questions_answered",
+                        "count": len(questions),
+                        "answer_ids": [str(q.get("id", "")) for q in questions],
+                    }
+                )
                 result = self._tool_result(
                     call, True, json.dumps(answers, ensure_ascii=False)
                 )
@@ -396,6 +556,172 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _load_content_plan(
+        workspace: Path,
+        task_type: str,
+        capabilities: dict[str, bool],
+        catalog: MaterialCatalog,
+    ) -> ContentPlan:
+        path = workspace / "work" / "plans" / "content-plan.json"
+        if not path.is_file():
+            raise ValueError("缺少 ContentPlan（work/plans/content-plan.json）")
+        try:
+            plan = ContentPlan.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"ContentPlan 无效: {exc}") from None
+        if plan.task_type != task_type:
+            raise ValueError(
+                f"ContentPlan.task_type 应为 {task_type}，实际为 {plan.task_type}"
+            )
+        if not capabilities.get("vision", False) and plan.mode != "conservative":
+            raise ValueError("vision=false 时 ContentPlan.mode 必须为 conservative")
+
+        selected = [item.source_id for item in plan.selections]
+        excluded = [item.source_id for item in plan.exclusions]
+        if len(selected) != len(set(selected)) or len(excluded) != len(set(excluded)):
+            raise ValueError("ContentPlan 中同一 source_id 不能重复")
+        overlap = set(selected) & set(excluded)
+        if overlap:
+            raise ValueError(f"ContentPlan 同时选择并排除了资源: {sorted(overlap)}")
+        known_ids = {
+            item.id
+            for ir in catalog.irs.values()
+            for item in [*ir.blocks, *ir.assets]
+        }
+        unknown = (set(selected) | set(excluded)) - known_ids
+        if unknown:
+            raise ValueError(f"ContentPlan 引用了未知 source_id: {sorted(unknown)}")
+        asset_ids = {
+            asset.id for ir in catalog.irs.values() for asset in ir.assets
+        }
+        missing_assets = asset_ids - set(selected) - set(excluded)
+        if missing_assets:
+            raise ValueError(
+                "ContentPlan 必须选择或明确排除每个候选 Asset: "
+                + ", ".join(sorted(missing_assets))
+            )
+        return plan
+
+    @staticmethod
+    def _load_qa_report(
+        workspace: Path, capabilities: dict[str, bool] | None = None
+    ) -> QAReport:
+        """读取 Skill 写入的 QAReport（work/qa/*.json，§8.3）。
+
+        按文件 mtime 取最新的一个并用共享 Pydantic schema 校验；缺失或非法
+        都拒绝发布。机械通过仍需本轮可信 quality action 的成功证据。
+        """
+        qa_root = workspace / "work" / "qa"
+        files = sorted(
+            qa_root.glob("*.json"),
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
+            reverse=True,
+        )
+        if not files:
+            raise ValueError("缺少 QAReport（work/qa/*.json），不能确认质量状态")
+        try:
+            qa = QAReport.model_validate_json(files[0].read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"QAReport 无效: {exc}") from None
+        if qa.mechanical == "passed" and qa.mechanical_issues:
+            raise ValueError("mechanical=passed 时 mechanical_issues 必须为空")
+        vision = (capabilities or {}).get("vision", False)
+        if not vision and qa.visual != "not_run":
+            raise ValueError("vision=false 时 QAReport.visual 必须为 not_run")
+        if vision and qa.visual != "passed":
+            raise ValueError("vision=true 时 QAReport.visual 必须为 passed")
+        return qa
+
+    @staticmethod
+    def _qa_event(qa: QAReport) -> dict[str, Any]:
+        payload = qa.model_dump()
+        payload["used_assets"] = len(qa.used_assets)
+        payload["skipped_assets"] = len(qa.skipped_assets)
+        return payload
+
+    @staticmethod
+    def _record_quality_results(
+        calls: list[ToolCall],
+        results: list[ToolResult],
+        quality_actions: frozenset[str],
+        passed: set[str],
+        quality_hashes: dict[str, set[str]],
+        policy: WorkspacePolicy,
+    ) -> None:
+        for call, result in zip(calls, results, strict=True):
+            if call.name != "exec_cmd":
+                continue
+            action = str(call.arguments.get("action", ""))
+            if action not in quality_actions:
+                continue
+            action_passed = result.success
+            if action == "fill_resume" and action_passed:
+                try:
+                    outer = json.loads(result.content)
+                    report = json.loads(outer.get("stdout", ""))
+                    overflow_risks = report["overflow_risks"]
+                    action_passed = (
+                        report.get("ok") is True
+                        and isinstance(overflow_risks, list)
+                        and not overflow_risks
+                    )
+                except (AttributeError, KeyError, json.JSONDecodeError, TypeError):
+                    action_passed = False
+            path_arg = DOCUMENT_QUALITY_PATH_ARG.get(action)
+            if action_passed and path_arg:
+                try:
+                    args = call.arguments.get("args", {})
+                    checked = policy.require_file(str(args[path_arg]))
+                    if checked.suffix.lower() != ".docx":
+                        raise ValueError("quality action target is not DOCX")
+                    checked_hash = sha256_file(checked)
+                except (KeyError, OSError, TypeError, ValueError):
+                    action_passed = False
+                else:
+                    quality_hashes.setdefault(action, set()).add(checked_hash)
+            if action_passed:
+                passed.add(action)
+            else:
+                passed.discard(action)
+                quality_hashes.pop(action, None)
+
+    @staticmethod
+    def _verify_quality_artifacts(
+        call: ToolCall,
+        policy: WorkspacePolicy,
+        quality_actions: frozenset[str],
+        quality_hashes: dict[str, set[str]],
+    ) -> None:
+        document_actions = quality_actions & DOCUMENT_QUALITY_PATH_ARG.keys()
+        if not document_actions:
+            return
+        artifacts = call.arguments.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise TypeError("finish_task artifacts 必须为数组")
+        docx_files = [
+            (str(relative), policy.require_file(str(relative)))
+            for relative in artifacts
+            if Path(str(relative)).suffix.lower() == ".docx"
+        ]
+        if not docx_files:
+            raise ValueError("当前功能必须交付至少一个经过机械检查的 DOCX")
+        accepted = {
+            digest
+            for action in document_actions
+            for digest in quality_hashes.get(action, set())
+        }
+        unchecked = [
+            relative
+            for relative, path in docx_files
+            if sha256_file(path) not in accepted
+        ]
+        if unchecked:
+            raise ValueError(
+                "交付 DOCX 与最近一次成功机械检查的内容不一致: "
+                + ", ".join(unchecked)
+            )
+
+    @staticmethod
     def _failed_event(error: str) -> dict[str, str]:
         """稳定错误码 / 结构化失败事件（见实施计划 §9.1）。"""
         return {"type": "task_failed", "error": error}
@@ -432,27 +758,31 @@ class AgentRuntime:
     ) -> list[tuple[str, Path]]:
         if not materials:
             return []
-        target = workspace / "sources"
-        target.mkdir(exist_ok=True)
+        workspace.mkdir(parents=True, exist_ok=True)
         staged: list[tuple[str, Path]] = []
-        for src in materials:
-            if src.is_file():
-                shutil.copy2(src, target / src.name)
-                staged.append((f"sources/{src.name}", target / src.name))
+        for idx, src in enumerate(materials):
+            if not src.is_file():
+                continue
+            # 按 basename 平铺会覆盖同名文件。每个材料独占子目录（序号 + 安全
+            # stem 保证唯一），同名互不覆盖（实施计划 §9.2）。
+            bucket = f"{idx}-{safe_stem(src.name) or 'material'}"
+            target = workspace / "sources" / bucket
+            target.mkdir(parents=True, exist_ok=True)
+            copy = target / src.name
+            shutil.copy2(src, copy)
+            # staged 路径给 Agent 的 read/exec_cmd 用；prepare_material 拿到
+            # 原始路径 src（md 相对引用以原文件父目录为基准解析，暂存目录形状
+            # 不影响——materials.py 自行再暂存一份到 sources/<hash>/）。
+            staged.append((f"sources/{bucket}/{src.name}", src))
         return staged
 
-    def _materials_banner(
-        self,
-        catalog: MaterialCatalog,
-        material_errors: list[tuple[str, str, str]],
-    ) -> str:
+    def _materials_banner(self, catalog: MaterialCatalog) -> str:
         """生成 [MATERIALS] 横幅：只读预处理结果短摘要，不执行 ingest。
 
-        阶段 3 起横幅不再自动萃取（实施计划 §12.1）。md/txt 已解析为
-        DocumentIR（列出 document.json/content.md/资源数）；pdf/docx/pptx
-        登记占位，引导模型用 read/ingest 获取富内容；解析失败列出稳定错误码。
+        阶段 3 起横幅不再自动萃取（实施计划 §12.1）。所有支持格式均列出
+        document.json/content.md/资源数；解析失败已在进入 Agent loop 前终止。
         """
-        if not catalog.manifest["materials"] and not material_errors:
+        if not catalog.manifest["materials"]:
             return ""
         lines: list[str] = ["[MATERIALS]"]
         for entry in catalog.manifest["materials"]:
@@ -461,18 +791,18 @@ class AgentRuntime:
             if ir is None:
                 lines.append(f"- {entry['original_names'][0]}（解析失败）")
                 continue
-            if not ir.blocks and ir.warnings and "尚未接入共享层" in " ".join(ir.warnings):
-                lines.append(
-                    f"- {entry['original_names'][0]}（{ir.source_format}）→ 工作区已登记；"
-                    f"用 read/ingest 获取富内容（含图片/表格/公式）"
-                )
-                continue
+            prepared = (
+                f"，准备产物 {str(entry['prepared_docx']).replace(chr(92), '/')}"
+                if entry.get("prepared_docx")
+                else ""
+            )
+            content_path = Path(catalog.compat_projection[material_id])
+            content_rel = content_path.as_posix()
+            document_rel = content_path.with_name("document.json").as_posix()
             lines.append(
                 f"- {entry['original_names'][0]}（{ir.source_format}, {len(ir.blocks)} 块, "
-                f"{len(ir.assets)} 资源）→ work/materials/{material_id[:16]}/document.json，"
-                f"顺序阅读 work/materials/{material_id[:16]}/content.md"
+                f"{len(ir.assets)} 资源）→ {document_rel}，"
+                f"顺序阅读 {content_rel}{prepared}"
             )
-        for rel, code, message in material_errors:
-            lines.append(f"- {rel} 材料处理失败（{code}）: {message}")
         return "\n".join(lines)
 

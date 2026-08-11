@@ -47,6 +47,7 @@ function element<T extends HTMLElement>(selector: string): T {
 /* ===== 供应商状态（DB 驱动） ===== */
 let providers: ProviderConfig[] = [];
 let globalSettings: GlobalSettings = { ...DEFAULT_GLOBAL_SETTINGS };
+let mineruReady: boolean | null = null;
 
 function activeProvider(): ProviderConfig {
   return providers.find((p) => p.id === globalSettings.active_provider) ?? providers[0] ?? _defaultFormProvider();
@@ -318,16 +319,18 @@ function saveGlobalFields(): void {
   void saveGlobalSettings(globalSettings);
 }
 
-/* 把 MinerU Token 同步给 sidecar（PDF 转换时注入 MINERU_TOKEN 环境变量）。
+/* 把 MinerU Token 同步给 sidecar（仅共享材料解析持有，Agent 工具不可见）。
    浏览器演示模式无 sidecar，直接跳过。 */
 async function syncMineruKey(): Promise<void> {
   if (!("__TAURI_INTERNALS__" in window)) return;
   const key = element<HTMLInputElement>("#mineru-key").value.trim();
   if (!key) {
     await send({ id: "mineru-key", type: "clear_mineru_key", payload: {} });
+    renderMineruStatus();
     return;
   }
   await send({ id: "mineru-key", type: "set_mineru_key", payload: { mineru_key: key } });
+  renderMineruStatus();
 }
 
 /* 表单字段变更：写回当前供应商 + 全局字段
@@ -627,6 +630,7 @@ function renderProbeStatus(report: CapabilityProbeReport | null): void {
 function renderMineruStatus(): void {
   const host = document.getElementById("mineru-status");
   if (!host) return;
+  mineruReady = null;
   host.textContent = "MinerU 状态检查中…";
   void send({ id: "mineru-status-check", type: "mineru_status", payload: {} });
 }
@@ -840,6 +844,16 @@ function validateSettings(): string {
   const outputDir = element<HTMLInputElement>("#output-dir").value.trim();
   if (!modelName() || !apiKey || !outputDir) return "请先完成「设置」：Model、API Key 与输出目录。";
   if (kind === "openai_compatible" && !baseUrl) return "OpenAI-compatible Provider 还需要填写 Base URL。";
+  // MinerU 强依赖（实施计划 §3.1）：CLI 与 Token 都必须在任务开始前校验。
+  // 这里只做前端即时提示；后端 start_task 仍会二次校验（后端为准）。
+  if (!("__TAURI_INTERNALS__" in window)) return "";
+  const mineruToken = element<HTMLInputElement>("#mineru-key").value.trim();
+  if (!mineruToken) return "MinerU 是强依赖：请先在设置页「第三方服务」填写 API Token（任务开始前会校验）。";
+  if (mineruReady !== true) {
+    return mineruReady === false
+      ? "MinerU CLI 或 Token 当前不可用，请根据状态提示修复后重试。"
+      : "MinerU 状态仍在检查，请稍候再开始任务。";
+  }
   return "";
 }
 
@@ -1120,13 +1134,18 @@ if ("__TAURI_INTERNALS__" in window) {
     }
     if (payload.id === "mineru-status-check" && payload.event.type === "mineru_status") {
       const host = document.getElementById("mineru-status");
-      const ok = Boolean((payload.event as { ok?: boolean }).ok);
+      const status = payload.event as { ok?: boolean; token_configured?: boolean };
+      const ok = Boolean(status.ok);
+      const tokenConfigured = Boolean(status.token_configured);
+      mineruReady = ok && tokenConfigured;
       if (host) {
-        host.textContent = ok
-          ? "MinerU CLI 可用 ✓"
-          : "MinerU CLI 未安装 —— 请先 npm install -g mineru-open-api（任务开始前会校验，未装会直接失败）";
-        host.classList.toggle("probe-ok", ok);
-        host.classList.toggle("probe-err", !ok);
+        host.textContent = !ok
+          ? "MinerU CLI 未安装 —— 请先 npm install -g mineru-open-api（任务开始前会校验，未装会直接失败）"
+          : !tokenConfigured
+            ? "MinerU CLI 可用，但未配置 Token —— 请在上方填写 API Token（任务开始前会校验）"
+            : "MinerU CLI 与 Token 均已配置 ✓";
+        host.classList.toggle("probe-ok", ok && tokenConfigured);
+        host.classList.toggle("probe-err", !ok || !tokenConfigured);
       }
       return;
     }

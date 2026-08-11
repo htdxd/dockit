@@ -1,4 +1,4 @@
-import asyncio
+from pathlib import Path
 
 import pytest
 from skill_toolbox.models import ToolCall
@@ -63,11 +63,11 @@ async def test_exec_cmd_omits_extra_env_when_unset(tmp_path) -> None:  # type: i
     assert "MISSING" in content
 
 
-def test_task_env_routes_mineru_token_to_pdf_skill_only() -> None:
-    """The token reaches pdf_docx_routing subprocesses but never other skills."""
+def test_task_env_never_exposes_mineru_token_to_agent_scripts() -> None:
+    """MinerU credentials travel only through TaskRequest's private field."""
     service = SidecarService(lambda _event: None)
     service._mineru_key = "sk-mineru"  # type: ignore[attr-defined]
-    assert service._task_env("pdf_docx_routing") == {"MINERU_TOKEN": "sk-mineru"}
+    assert service._task_env("pdf_docx_routing") == {}
     assert service._task_env("docx_pro") == {}
     assert service._task_env("ppt-master") == {}
 
@@ -81,7 +81,7 @@ async def test_set_mineru_key_updates_and_clears() -> None:
         {"id": "m1", "type": "set_mineru_key", "payload": {"mineru_key": "  sk-123  "}}
     )
     assert service._mineru_key == "sk-123"  # type: ignore[attr-defined]
-    assert service._task_env("pdf_docx_routing") == {"MINERU_TOKEN": "sk-123"}
+    assert service._task_env("pdf_docx_routing") == {}
     await service.handle({"id": "m2", "type": "clear_mineru_key", "payload": {}})
     assert service._mineru_key is None  # type: ignore[attr-defined]
     assert service._task_env("pdf_docx_routing") == {}

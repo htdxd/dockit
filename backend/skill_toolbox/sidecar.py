@@ -139,9 +139,8 @@ class SidecarService:
         self.brokers: dict[str, UserInputBroker] = {}
         # 独立运行的 capability probe 任务（不阻塞 stdin 消息循环）。
         self.probes: dict[str, asyncio.Task[None]] = {}
-        # MinerU token from the Settings page "第三方服务" tab. Held in memory
-        # only (never persisted to disk by the backend), injected as the
-        # MINERU_TOKEN env var into exec_cmd subprocesses for the PDF skill.
+        # MinerU token from Settings. Held in memory only and passed through the
+        # TaskRequest side channel to MaterialService; Agent exec_cmd never sees it.
         self._mineru_key: str | None = None
 
     def _set_mineru_key(self, request_id: str, payload: dict[str, Any]) -> None:
@@ -152,11 +151,8 @@ class SidecarService:
         )
 
     def _task_env(self, skill_id: str) -> dict[str, str]:
-        """Env vars for a task's exec_cmd subprocesses. Currently: the MinerU
-        token (Settings → 第三方服务) for the PDF skill only, so the key never
-        reaches other skills' subprocesses."""
-        if skill_id == "pdf_docx_routing" and self._mineru_key:
-            return {"MINERU_TOKEN": self._mineru_key}
+        """Agent-visible script env; MinerU credentials use TaskRequest instead."""
+        del skill_id
         return {}
 
     def mineru_ready(self) -> bool:
@@ -166,6 +162,14 @@ class SidecarService:
             return True
         except RuntimeError:
             return False
+
+    def mineru_status(self) -> dict[str, bool]:
+        """前端 preflight 状态：CLI 可解析 + Token 已配置（§12.3）。
+        Token 缺失也要在任务开始前提示，不能只查 CLI。"""
+        return {
+            "ok": self.mineru_ready(),
+            "token_configured": bool(self._mineru_key),
+        }
 
     async def handle(self, message: dict[str, Any]) -> None:
         request_id = str(message.get("id", ""))
@@ -194,10 +198,7 @@ class SidecarService:
                 self._mineru_key = None
                 self._emit(request_id, {"type": "mineru_key_cleared"})
             elif message_type == "mineru_status":
-                self._emit(
-                    request_id,
-                    {"type": "mineru_status", "ok": self.mineru_ready()},
-                )
+                self._emit(request_id, {"type": "mineru_status", **self.mineru_status()})
             elif message_type == "fetch_models":
                 await self._fetch_models(request_id, payload)
             elif message_type == "list_artifacts":
@@ -233,7 +234,18 @@ class SidecarService:
             )
             return
         # MinerU 全局 preflight（实施计划 §3.1/§9.1）：四个功能都是 MinerU
-        # 强依赖，CLI 不可用直接在 Agent loop 前失败，不进入运行时。
+        # 强依赖，CLI 不可用或 Token 未配置直接在 Agent loop 前失败，不进入
+        # 运行时（Token 缺失返回 MINERU_TOKEN_MISSING 稳定码）。
+        if not self._mineru_key:
+            self._emit(
+                request_id,
+                {
+                    "type": "task_failed",
+                    "error": "[MINERU_TOKEN_MISSING] 未配置 MinerU API Token："
+                    "请在设置页「第三方服务」填写 Token 后重试。",
+                },
+            )
+            return
         try:
             _mineru_preflight()
         except RuntimeError as exc:
@@ -273,6 +285,7 @@ class SidecarService:
             materials=materials,
             capabilities=capabilities,
             env=self._task_env(skill.id),
+            mineru_token=self._mineru_key,
         )
         self._emit(request_id, {"type": "debug_log_path", "path": str(log_path)})
         task = asyncio.create_task(self._run(request_id, runtime, request, log_path))

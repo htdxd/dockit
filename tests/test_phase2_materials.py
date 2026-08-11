@@ -23,9 +23,9 @@ from skill_toolbox.material_models import (
     Selection,
 )
 from skill_toolbox.materials import (
-    COMPAT_MATERIALS_DIR,
     MaterialError,
     MaterialService,
+    material_id_dir,
     material_id_for,
     project_content_md,
     safe_stem,
@@ -142,8 +142,8 @@ def test_same_stem_different_extension_coexist(tmp_path: Path) -> None:
     assert ir_a.source_format == "md"
     assert ir_b.source_format == "txt"
     # 各自 material_id 目录互不覆盖：md 投影以首标题为题，txt 以文件名+正文
-    md_dir = ws / COMPAT_MATERIALS_DIR / ir_a.material_id[:16]
-    txt_dir = ws / COMPAT_MATERIALS_DIR / ir_b.material_id[:16]
+    md_dir = material_id_dir(ws, ir_a.material_id)
+    txt_dir = material_id_dir(ws, ir_b.material_id)
     assert md_dir != txt_dir
     assert (md_dir / "content.md").read_text(encoding="utf-8").startswith("# 材料")
     assert "txt 内容" in (txt_dir / "content.md").read_text(encoding="utf-8")
@@ -171,10 +171,32 @@ def test_markdown_relative_images_materialized_with_location(tmp_path: Path) -> 
     assert not Path(asset.path).is_absolute()
     assert (ws / asset.path).is_file()
     # 投影 content.md 引用该相对路径
-    md = (ws / COMPAT_MATERIALS_DIR / ir.material_id[:16] / "content.md").read_text(
+    md = (material_id_dir(ws, ir.material_id) / "content.md").read_text(
         encoding="utf-8"
     )
     assert asset.path in md
+
+
+def test_markdown_same_basename_assets_do_not_overwrite(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source_dir = tmp_path / "source"
+    _write(source_dir / "left" / "figure.png", b"left-image")
+    _write(source_dir / "right" / "figure.png", b"right-image")
+    source = _write(
+        source_dir / "report.md",
+        "![Left](left/figure.png)\n\n![Right](right/figure.png)",
+    )
+
+    ir = MaterialService(workspace).prepare_material(source)
+
+    assert len(ir.assets) == 2
+    assert len({asset.id for asset in ir.assets}) == 2
+    assert len({asset.path for asset in ir.assets}) == 2
+    assert {asset.sha256 for asset in ir.assets} == {
+        material_id_for(source_dir / "left" / "figure.png").split(".")[0],
+        material_id_for(source_dir / "right" / "figure.png").split(".")[0],
+    }
 
 
 def test_markdown_missing_and_escaping_refs_warn(tmp_path: Path) -> None:
@@ -250,7 +272,10 @@ def test_same_hash_parsed_once(tmp_path: Path) -> None:
     assert ir1.material_id == ir2.material_id
     assert ir1 is ir2
     # manifest 记录两个原始名称，但 sources 只有一个 hash 目录
-    assert len(list((ws / "sources").iterdir())) == 1
+    sources_dirs = [p.name for p in (ws / "sources").iterdir() if p.is_dir()]
+    assert len(sources_dirs) == 1
+    # hash 目录内只登记一份 original.md
+    assert sorted(p.name for p in (ws / "sources" / sources_dirs[0]).iterdir()) == ["original.md"]
     entry = next(m for m in svc.catalog().manifest["materials"] if m["material_id"] == ir1.material_id)
     assert sorted(entry["original_names"]) == ["副本.md", "报告.md"]
     # 二次 prepare 同一文件仍命中缓存（不重复解析）
@@ -273,6 +298,129 @@ def test_material_error_codes(tmp_path: Path) -> None:
     assert exc.value.code == "MATERIAL_CORRUPT"
 
 
+def test_standalone_image_registers_asset(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = tmp_path / "portrait.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 24)
+
+    ir = MaterialService(workspace).prepare_material(image)
+
+    assert ir.source_format == "image"
+    assert ir.blocks == []
+    assert len(ir.assets) == 1
+    assert ir.assets[0].mime_type == "image/png"
+    assert not Path(ir.assets[0].path).is_absolute()
+
+
+def test_docx_ir_preserves_rich_block_order_and_image_links(tmp_path: Path) -> None:
+    import base64
+
+    from docx import Document
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    image = tmp_path / "figure.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z2S8AAAAASUVORK5CYII="
+        )
+    )
+    source = tmp_path / "rich.docx"
+    document = Document()
+    document.add_heading("Heading", level=1)
+    document.add_paragraph("First item", style="List Bullet")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 1).text = "Value"
+    table.cell(1, 0).text = "A"
+    table.cell(1, 1).text = "1"
+    document.add_paragraph().add_run().add_picture(str(image))
+    formula = document.add_paragraph()
+    formula._p.append(
+        parse_xml(
+            f'<m:oMath {nsdecls("m")}><m:r><m:t>E=mc^2</m:t></m:r></m:oMath>'
+        )
+    )
+    document.save(source)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ir = MaterialService(workspace).prepare_material(source)
+
+    types = [block.type for block in ir.blocks]
+    assert "heading" in types
+    assert "list" in types
+    assert "table" in types
+    assert "image" in types
+    assert "formula" in types
+    image_block = next(block for block in ir.blocks if block.type == "image")
+    assert image_block.asset_ids == [ir.assets[0].id]
+    assert ir.block_by_id(image_block.id) is image_block
+    assert "| Name | Value |" in next(
+        block.text for block in ir.blocks if block.type == "table"
+    )
+
+
+def test_pdf_preprocessing_exposes_single_prepared_docx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from docx import Document
+
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"%PDF-1.7\nfixture")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = MaterialService(workspace, mineru_token="test-token")
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(command)
+        output = Path(command[3])
+        document = Document()
+        document.add_heading("Converted", level=1)
+        document.save(output)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(service, "_run_subprocess", fake_run)
+
+    ir = service.prepare_material(source)
+
+    entry = service.catalog().manifest["materials"][0]
+    assert ir.source_format == "pdf"
+    assert len(calls) == 1
+    assert calls[0][-1] == "--internal-absolute-paths"
+    assert entry["prepared_docx"].endswith("report.docx")
+    assert (workspace / entry["prepared_docx"]).is_file()
+
+
+def test_material_subprocess_timeout_kills_child(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import time
+
+    child = tmp_path / "late_writer.py"
+    marker = tmp_path / "survived.txt"
+    child.write_text(
+        "import pathlib,sys,time\ntime.sleep(2)\npathlib.Path(sys.argv[1]).write_text('alive')\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = MaterialService(workspace)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        service._run_subprocess(
+            [sys.executable, str(child), str(marker)], timeout=0.05
+        )
+    time.sleep(2.2)
+
+    assert not marker.exists()
+    assert service._active_procs == []
+
+
 # ---------------- 兼容投影单向生成 ----------------
 
 def test_compat_projection_generated_from_ir(tmp_path: Path) -> None:
@@ -288,7 +436,28 @@ def test_compat_projection_generated_from_ir(tmp_path: Path) -> None:
     assert "# 标题" in md_path.read_text(encoding="utf-8")
     # 投影是 IR 的单向输出：修改投影不影响 IR
     md_path.write_text("# 被篡改\n", encoding="utf-8")
-    assert ir.block_by_id("b0").text == "标题"
+    assert ir.block_by_id(ir.blocks[0].id).text == "标题"
+
+
+def test_same_bytes_different_formats_have_unique_ids_and_directories(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    service = MaterialService(ws)
+    markdown = _write(tmp_path / "same.md", "same bytes")
+    text = _write(tmp_path / "same.txt", "same bytes")
+
+    md_ir = service.prepare_material(markdown)
+    txt_ir = service.prepare_material(text)
+
+    assert md_ir.material_id != txt_ir.material_id
+    assert material_id_dir(ws, md_ir.material_id) != material_id_dir(
+        ws, txt_ir.material_id
+    )
+    assert {block.id for block in md_ir.blocks}.isdisjoint(
+        block.id for block in txt_ir.blocks
+    )
 
 
 def test_safe_stem_sanitizes() -> None:

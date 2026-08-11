@@ -43,6 +43,29 @@ LINE_FACTOR = 1.3   # 行距系数（估算用）
 LATIN_FACTOR = 0.55  # 英文字符平均宽度系数
 
 
+def workspace_path(value: str, *, must_exist: bool = False) -> Path:
+    root = Path.cwd().resolve()
+    raw = Path(value)
+    path = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"路径越出任务工作区: {value}") from exc
+    if must_exist and not path.is_file():
+        raise FileNotFoundError(value)
+    return path
+
+
+def template_dir(value: str) -> Path:
+    root = (Path(__file__).resolve().parent.parent / "templates").resolve()
+    path = Path(value).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"模板目录不在内置模板库中: {value}") from exc
+    return path
+
+
 def emu2pt(v):
     try:
         return int(v) / EMU_PER_PT
@@ -391,30 +414,179 @@ def _wsp_by_loc(root, loc: dict):
     return wsps[widx]
 
 
+def _ancestor(element, tag: str):
+    node = element
+    while node is not None:
+        if node.tag == tag:
+            return node
+        node = node.getparent()
+    return None
+
+
+def _shift_anchor(anchor, delta_emu: int) -> None:
+    position = anchor.find(WP + "positionV/" + WP + "posOffset")
+    if position is not None and position.text:
+        position.text = str(int(position.text) + delta_emu)
+    for wsp in anchor.iter(WPS + "wsp"):
+        off = wsp.find(WPS + "spPr/" + A + "xfrm/" + A + "off")
+        if off is not None and off.get("y") is not None:
+            off.set("y", str(int(off.get("y")) + delta_emu))
+
+
+def _anchor_bounds(anchor) -> tuple[int, int]:
+    position = anchor.find(WP + "positionV/" + WP + "posOffset")
+    extent = anchor.find(WP + "extent")
+    if (
+        position is not None
+        and position.text
+        and extent is not None
+        and extent.get("cy")
+    ):
+        top = int(position.text)
+        return top, top + int(extent.get("cy"))
+    ys: list[int] = []
+    bottoms: list[int] = []
+    for wsp in anchor.iter(WPS + "wsp"):
+        xfrm = wsp.find(WPS + "spPr/" + A + "xfrm")
+        off = xfrm.find(A + "off") if xfrm is not None else None
+        ext = xfrm.find(A + "ext") if xfrm is not None else None
+        if off is None or ext is None or off.get("y") is None or ext.get("cy") is None:
+            continue
+        y = int(off.get("y"))
+        ys.append(y)
+        bottoms.append(y + int(ext.get("cy")))
+    if not ys:
+        raise RuntimeError("组件 anchor 缺少可定位的 xfrm")
+    return min(ys), max(bottoms)
+
+
+def _anchor_rect(anchor) -> tuple[int, int, int, int] | None:
+    x = anchor.find(WP + "positionH/" + WP + "posOffset")
+    y = anchor.find(WP + "positionV/" + WP + "posOffset")
+    extent = anchor.find(WP + "extent")
+    if (
+        x is None
+        or not x.text
+        or y is None
+        or not y.text
+        or extent is None
+        or not extent.get("cx")
+        or not extent.get("cy")
+    ):
+        return None
+    left, top = int(x.text), int(y.text)
+    return left, top, left + int(extent.get("cx")), top + int(extent.get("cy"))
+
+
+def _component_anchors(root, manifest: dict) -> list:
+    all_anchors = root.findall(".//" + WP + "anchor")
+    anchors: list = []
+    seen: set[int] = set()
+    for comp in manifest.get("components", []):
+        for obj in comp.get("objects", []):
+            index = int(obj.get("anchor_idx", -1))
+            if 0 <= index < len(all_anchors) and index not in seen:
+                seen.add(index)
+                anchors.append(all_anchors[index])
+    return anchors
+
+
+def _overlap_ratios(anchors: list) -> dict[tuple[str, str], float]:
+    entries: list[tuple[str, tuple[int, int, int, int]]] = []
+    for index, anchor in enumerate(anchors):
+        rect = _anchor_rect(anchor)
+        if rect is None:
+            continue
+        ids = sorted(
+            node.get("id")
+            for node in anchor.iter(WP + "docPr")
+            if node.get("id")
+        )
+        key = "docPr:" + ",".join(ids) if ids else f"anchor:{index}"
+        entries.append((key, rect))
+    overlaps: dict[tuple[str, str], float] = {}
+    for index, (left_key, left) in enumerate(entries):
+        for right_key, right in entries[index + 1 :]:
+            width = max(0, min(left[2], right[2]) - max(left[0], right[0]))
+            height = max(0, min(left[3], right[3]) - max(left[1], right[1]))
+            if not width or not height:
+                continue
+            left_area = max(1, (left[2] - left[0]) * (left[3] - left[1]))
+            right_area = max(1, (right[2] - right[0]) * (right[3] - right[1]))
+            overlaps[tuple(sorted((left_key, right_key)))] = (
+                width * height / min(left_area, right_area)
+            )
+    return overlaps
+
+
+def _reject_new_overlaps(before: dict[tuple[str, str], float], anchors: list) -> None:
+    after = _overlap_ratios(anchors)
+    added = [
+        pair
+        for pair, ratio in after.items()
+        if ratio >= 0.20 and ratio > before.get(pair, 0.0) + 0.05
+    ]
+    if added:
+        raise RuntimeError("组件动作会新增严重重叠: " + ", ".join("/".join(p) for p in added))
+
+
+def _expanded_shift_ids(component_ids: set[str], components: dict[str, dict]) -> set[str]:
+    expanded = set(component_ids)
+    pending = list(component_ids)
+    while pending:
+        comp_id = pending.pop()
+        comp = components.get(comp_id)
+        if comp is None:
+            continue
+        for linked in comp.get("moves_with", []):
+            if linked not in expanded:
+                expanded.add(linked)
+                pending.append(linked)
+    return expanded
+
+
+def _shared_anchor_components(manifest: dict, selected: set[str]) -> dict[int, set[str]]:
+    groups: dict[int, set[str]] = {}
+    for component in manifest.get("components", []):
+        component_id = component["id"]
+        for obj in component.get("objects", []):
+            index = int(obj.get("anchor_idx", -1))
+            if index >= 0:
+                groups.setdefault(index, set()).add(component_id)
+    return {
+        index: component_ids - selected
+        for index, component_ids in groups.items()
+        if component_ids & selected and component_ids - selected
+    }
+
+
 def _shift_ys(root, dy_pt: float, component_ids: set[str], manifest: dict) -> None:
     """纵向平移指定组件（含其 objects 与 moves_with 列出的其它组件）。
 
     只允许 manifest 明确列出的组件移动；dy_pt 为正向下、负向上。
     """
-    ids = set(component_ids)
+    all_anchors = root.findall(".//" + WP + "anchor")
+    anchors_to_shift: list = []
+    seen: set[int] = set()
     for comp in manifest.get("components", []):
         cid = comp["id"]
-        if cid not in ids:
-            continue
-        ids.update(comp.get("moves_with", []))
-    for comp in manifest.get("components", []):
-        cid = comp["id"]
-        if cid not in ids:
+        if cid not in component_ids:
             continue
         for obj in comp.get("objects", []):
-            wsp = _wsp_by_loc(root, obj)
-            if wsp is None:
-                continue
-            xfrm = wsp.find(WPS + "spPr/" + A + "xfrm")
-            off = xfrm.find(A + "off") if xfrm is not None else None
-            if off is None or off.get("y") is None:
-                continue
-            off.set("y", str(int(off.get("y")) + round(dy_pt * EMU_PER_PT)))
+            index = int(obj.get("anchor_idx", -1))
+            if 0 <= index < len(all_anchors) and index not in seen:
+                seen.add(index)
+                anchors_to_shift.append(all_anchors[index])
+    if not anchors_to_shift:
+        raise RuntimeError("shift_components 未找到目标 anchor")
+    delta = round(dy_pt * EMU_PER_PT)
+    page_height = round(PAGE_HEIGHT_PT * EMU_PER_PT)
+    for anchor in anchors_to_shift:
+        top, bottom = _anchor_bounds(anchor)
+        page_top = max(0, top // page_height) * page_height
+        if top + delta < page_top or bottom + delta > page_top + page_height:
+            raise RuntimeError("shift_components 会使组件越出页面边界")
+        _shift_anchor(anchor, delta)
 
 
 def _resize_component(root, comp: dict, height_pt: float) -> None:
@@ -438,44 +610,113 @@ def _resize_component(root, comp: dict, height_pt: float) -> None:
         if ext is None or ext.get("cy") is None:
             continue
         ext.set("cy", str(round(height_pt * EMU_PER_PT)))
+        anchor = _ancestor(wsp, WP + "anchor")
+        anchor_ext = anchor.find(WP + "extent") if anchor is not None else None
+        if anchor_ext is not None:
+            anchor_ext.set("cy", str(round(height_pt * EMU_PER_PT)))
 
 
-def _clone_component(root, src_comp: dict, after_comp: dict, manifest: dict) -> None:
-    """原子复制组件：把 src 的所有对象深拷贝一份插到 after 之后。
-
-    重写需要的唯一 ID/relationship：新元素不保留原 id（lxml 深拷贝会复制
-    id 属性，需清空重设）；图片类对象（r:embed）在阶段 5b 只支持文本组件
-    复制，图片组件复制报错（避免 relationship 重写复杂度失控）。
-    """
+def _clone_component(
+    root, src_comp: dict, after_comp: dict, value: str | None = None
+) -> tuple[dict, list]:
+    """Clone complete drawings, assign unique IDs, and place them after a component."""
     import copy
 
     if not src_comp.get("objects"):
         raise RuntimeError(f"clone_component({src_comp['id']}) 无对象可复制")
-    src_wsps = [_wsp_by_loc(root, obj) for obj in src_comp.get("objects", [])]
-    if any(w is None for w in src_wsps):
+    src_wsps = [_wsp_by_loc(root, obj) for obj in src_comp["objects"]]
+    if any(wsp is None for wsp in src_wsps):
         raise RuntimeError(f"clone_component({src_comp['id']}) 源组件定位失败")
-    # 拒绝含图片/嵌入对象的组件复制（relationship 重写复杂度失控）
-    for wsp in src_wsps:
-        if wsp.find(".//" + R + "embed") is not None:
-            raise RuntimeError(
-                f"clone_component({src_comp['id']}) 含图片对象，复制暂不支持（避免 relationship 损坏）"
-            )
     after_wsps = [_wsp_by_loc(root, obj) for obj in after_comp.get("objects", [])]
-    if not after_wsps or any(w is None for w in after_wsps):
+    if not after_wsps or any(wsp is None for wsp in after_wsps):
         raise RuntimeError(f"clone_component({after_comp['id']}) 目标位置定位失败")
 
-    # 深拷贝源对象，插到 after 最后一个对象之后（保持相对顺序）
-    inserted: list = []
+    source_anchors = []
     for wsp in src_wsps:
-        new_wsp = copy.deepcopy(wsp)
-        # 清空所有 id 属性，避免重复唯一 ID
-        for el in new_wsp.iter():
-            if el.get("id") is not None:
-                el.set("id", "")
-        after_wsps[-1].addnext(new_wsp)
-        inserted.append(new_wsp)
-    if not inserted:
+        anchor = _ancestor(wsp, WP + "anchor")
+        if anchor is not None and anchor not in source_anchors:
+            source_anchors.append(anchor)
+    after_anchors = [_ancestor(wsp, WP + "anchor") for wsp in after_wsps]
+    after_anchors = [anchor for anchor in after_anchors if anchor is not None]
+    if not source_anchors or not after_anchors:
+        raise RuntimeError("clone_component 缺少完整 wp:anchor")
+
+    source_top = min(_anchor_bounds(anchor)[0] for anchor in source_anchors)
+    target_top = max(_anchor_bounds(anchor)[1] for anchor in after_anchors) + round(
+        6 * EMU_PER_PT
+    )
+    delta = target_top - source_top
+    clone_bottom = max(_anchor_bounds(anchor)[1] + delta for anchor in source_anchors)
+    page_height = round(PAGE_HEIGHT_PT * EMU_PER_PT)
+    page_top = max(0, target_top // page_height) * page_height
+    if clone_bottom > page_top + page_height:
+        raise RuntimeError("clone_component 会使副本越出页面边界")
+
+    doc_pr_ids = [
+        int(node.get("id"))
+        for node in root.iter(WP + "docPr")
+        if (node.get("id") or "").isdigit()
+    ]
+    next_id = max(doc_pr_ids, default=0) + 1
+    relative_heights = [
+        int(anchor.get("relativeHeight"))
+        for anchor in root.iter(WP + "anchor")
+        if (anchor.get("relativeHeight") or "").isdigit()
+    ]
+    next_height = max(relative_heights, default=0) + 1
+    insertion = _ancestor(after_anchors[-1], W + "drawing")
+    if insertion is None:
+        raise RuntimeError("clone_component 目标 drawing 定位失败")
+
+    inserted_wsps: list = []
+    inserted_anchors: list = []
+    for source_anchor in source_anchors:
+        source_drawing = _ancestor(source_anchor, W + "drawing")
+        if source_drawing is None:
+            raise RuntimeError("clone_component 源 drawing 定位失败")
+        new_drawing = copy.deepcopy(source_drawing)
+        new_anchor = new_drawing.find(".//" + WP + "anchor")
+        if new_anchor is None:
+            raise RuntimeError("clone_component 副本 anchor 丢失")
+        _shift_anchor(new_anchor, delta)
+        new_anchor.set("relativeHeight", str(next_height))
+        next_height += 1
+        for doc_pr in new_anchor.iter(WP + "docPr"):
+            doc_pr.set("id", str(next_id))
+            doc_pr.set("name", f"{doc_pr.get('name', 'Component')} Copy {next_id}")
+            next_id += 1
+        for node in new_anchor.iter():
+            for attr_name in list(node.attrib):
+                if etree.QName(attr_name).localname in {"anchorId", "editId"}:
+                    node.set(attr_name, f"{next_id:08X}")
+                    next_id += 1
+        insertion.addnext(new_drawing)
+        insertion = new_drawing
+        inserted_anchors.append(new_anchor)
+        inserted_wsps.extend(new_anchor.iter(WPS + "wsp"))
+    if not inserted_wsps:
         raise RuntimeError(f"clone_component({src_comp['id']}) 未插入任何对象")
+    if value is not None:
+        target = next(
+            (
+                wsp.find(".//" + W + "txbxContent")
+                for wsp in inserted_wsps
+                if wsp.find(".//" + W + "txbxContent") is not None
+            ),
+            None,
+        )
+        if target is None:
+            raise RuntimeError("clone_component 副本没有可填充文本槽")
+        replace_text_in_paragraphs(target, box_text_exact(target), value, keep_anchor=False)
+    return (
+        {
+            "clone_id": f"{src_comp['id']}_clone_{next_id}",
+            "source": src_comp["id"],
+            "after": after_comp["id"],
+            "dy_pt": round(delta / EMU_PER_PT, 2),
+        },
+        inserted_anchors,
+    )
 
 
 def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, list[str]]:
@@ -489,7 +730,9 @@ def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, l
     records: list[dict] = []
     warnings: list[str] = []
     components = {c["id"]: c for c in manifest.get("components", [])}
-    for action_spec in values.get("actions", []):
+    actions = list(values.get("actions", []))
+    actions.sort(key=lambda item: item.get("action") == "clone_component")
+    for action_spec in actions:
         action = action_spec.get("action")
         if action not in ALLOWED_ACTIONS:
             warnings.append(f"未知动作: {action}（允许 {sorted(ALLOWED_ACTIONS)}）")
@@ -506,7 +749,33 @@ def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, l
             if not ids:
                 warnings.append("shift_components 缺少 component_ids")
                 continue
+            ids = _expanded_shift_ids(ids, components)
+            unknown = sorted(i for i in ids if i not in components)
+            if unknown:
+                warnings.append(f"shift_components moves_with 引用未知组件: {unknown}")
+                continue
+            forbidden = sorted(
+                comp_id
+                for comp_id in ids
+                if action not in components[comp_id].get("allowed_actions", [])
+            )
+            if forbidden:
+                warnings.append(f"组件 {forbidden} 不允许动作 shift_components")
+                continue
+            shared = _shared_anchor_components(manifest, ids)
+            if shared:
+                details = ", ".join(
+                    f"anchor {index} 还包含 {sorted(missing)}"
+                    for index, missing in sorted(shared.items())
+                )
+                warnings.append(
+                    "shift_components 必须同时选择共享 anchor 的全部组件: " + details
+                )
+                continue
+            anchors = _component_anchors(root, manifest)
+            before = _overlap_ratios(anchors)
             _shift_ys(root, dy_pt, ids, manifest)
+            _reject_new_overlaps(before, anchors)
             records.append({"action": action, "component_ids": sorted(ids), "dy_pt": dy_pt})
             continue
         if not comp_id or comp_id not in components:
@@ -580,11 +849,28 @@ def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, l
                 if not removed_any:
                     warnings.append(f"replace_asset({comp_id}) 未找到照片位")
             else:
-                warnings.append(f"replace_asset 图片写入需经照片字段流程（fields.photo），动作内直接写暂不支持: {comp_id}")
+                photo_ids = {
+                    field["id"]
+                    for field in manifest["fields"]
+                    if field.get("mode") == "photo"
+                }
+                if not photo_ids.intersection(comp.get("field_ids", [])):
+                    warnings.append(f"replace_asset({comp_id}) 没有照片内容槽")
+                    continue
+                image = workspace_path(value)
+                if values.get("photo") == value and image.is_file():
+                    records.append(
+                        {"action": action, "component": comp_id, "value": value}
+                    )
+                else:
+                    warnings.append(f"replace_asset({comp_id}) 图片不存在: {value}")
             continue
         if action == "resize_component":
             height_pt = float(action_spec.get("height_pt", 0))
+            anchors = _component_anchors(root, manifest)
+            before = _overlap_ratios(anchors)
             _resize_component(root, comp, height_pt)
+            _reject_new_overlaps(before, anchors)
             records.append({"action": action, "component": comp_id, "height_pt": height_pt})
             continue
         if action == "clone_component":
@@ -592,8 +878,16 @@ def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, l
             if not after_id or after_id not in components:
                 warnings.append(f"clone_component 缺少合法 after: {after_id}")
                 continue
-            _clone_component(root, comp, components[after_id], manifest)
-            records.append({"action": action, "component": comp_id, "after": after_id})
+            anchors = _component_anchors(root, manifest)
+            before = _overlap_ratios(anchors)
+            clone, inserted_anchors = _clone_component(
+                root,
+                comp,
+                components[after_id],
+                str(action_spec["value"]) if "value" in action_spec else None,
+            )
+            _reject_new_overlaps(before, [*anchors, *inserted_anchors])
+            records.append({"action": action, "component": comp_id, **clone})
             continue
     return records, warnings
 
@@ -603,9 +897,11 @@ def main() -> None:
     if len(sys.argv) != 4:
         print("用法: python fill_resume.py <template_dir> <data.json> <output.docx>", file=sys.stderr)
         sys.exit(2)
-    tpl_dir = Path(sys.argv[1])
-    data_path = Path(sys.argv[2])
-    out_path = Path(sys.argv[3])
+    tpl_dir = template_dir(sys.argv[1])
+    data_path = workspace_path(sys.argv[2])
+    out_path = workspace_path(sys.argv[3])
+    if out_path.suffix.lower() != ".docx":
+        raise RuntimeError("output 必须是工作区内的 .docx 路径")
     out_path.parent.mkdir(parents=True, exist_ok=True)  # 产物目录可能不存在（artifacts/）
 
     template = tpl_dir / "template.docx"
@@ -625,9 +921,29 @@ def main() -> None:
         print(f"[错误] 数据文件不是合法 JSON: {data_path} — {exc}", file=sys.stderr)
         sys.exit(1)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    values = data.get("fields", {})
+    values = dict(data.get("fields", {}))
+    # 顶层 actions 数组也作为动作来源（与 fields 内嵌 actions 兼容）
+    values.setdefault("actions", data.get("actions", []))
     # 阶段 5：模板 hash 校验（不匹配直接失败，禁止对未知结构套旧 selector）
     verify_template_hash(tpl_dir, manifest)
+
+    # 非删除型 replace_asset 复用既有 photo 字段写入链路；动作层只负责
+    # 白名单与记录，不复制 relationship/media 实现。
+    components = {item["id"]: item for item in manifest.get("components", [])}
+    photo_ids = {
+        field["id"] for field in manifest["fields"] if field.get("mode") == "photo"
+    }
+    for action_spec in values.get("actions", []):
+        comp = components.get(action_spec.get("component"))
+        value = str(action_spec.get("value", ""))
+        if (
+            action_spec.get("action") == "replace_asset"
+            and value != "__remove__"
+            and comp is not None
+            and "replace_asset" in comp.get("allowed_actions", [])
+            and photo_ids.intersection(comp.get("field_ids", []))
+        ):
+            values["photo"] = value
 
     root = load_docx_xml(template)
     # 构建 manifest 字段索引: (anchor_idx, wsp_idx) → [fields...]
@@ -663,9 +979,7 @@ def main() -> None:
             else:
                 warnings.append("photo: 未找到照片位 drawing，未能移除")
             continue
-        user_img = Path(str(val))
-        if not user_img.is_absolute():
-            user_img = (Path.cwd() / user_img).resolve()
+        user_img = workspace_path(str(val))
         if not user_img.is_file():
             warnings.append(f"photo: 图片不存在 {user_img}，保留模板原照片")
             continue

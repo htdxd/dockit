@@ -23,6 +23,9 @@ class SkillDefinition:
     # 允许几分钟到 30 分钟，Runtime 外层必须按 action 覆盖默认短超时，
     # 禁止出现外层 90s 提前终止内部 1800s 的 MinerU（见实施计划 §9.5）。
     script_timeouts: dict[str, float] = dataclasses.field(default_factory=dict)
+    # Deterministic actions whose successful execution can satisfy the
+    # mechanical delivery gate. Agent-authored QA JSON is not trusted alone.
+    quality_actions: frozenset[str] = frozenset()
 
 
 def load_skill(skill_id: str) -> SkillDefinition:
@@ -53,4 +56,5 @@ def load_skill(skill_id: str) -> SkillDefinition:
         required_capabilities=frozenset(manifest.get("required_capabilities", [])),
         optional_capabilities=frozenset(manifest.get("optional_capabilities", [])),
         script_timeouts=script_timeouts,
+        quality_actions=frozenset(manifest.get("quality_actions", [])),
     )

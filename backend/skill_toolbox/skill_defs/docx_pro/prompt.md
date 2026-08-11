@@ -86,8 +86,15 @@
    图片、表格、公式以**顺序 block** 写入规格 `work/spec.json` 的 `blocks[]`
    （见 `references/spec-schema.md`「顺序 block 规格」），使资源出现在指定
    section/段落之间（如"第 2 段后插图"），而不是只能放文档尾部。
-4. **机械门 → （vision）视觉门 → finish_task**：`postcheck_docx` 未通过前不得
-   `finish_task`。
+4. **机械门 → （vision）视觉门 → QAReport → finish_task**：
+   - `postcheck_docx` 未通过前不得 `finish_task`；
+   - 机械门通过后，把机械/视觉状态写入 `work/qa/mechanical.json`：
+     `{"mechanical": "passed", "mechanical_issues": [], "visual": "not_run"|"passed"|"failed", "visual_issues": [], "repair_rounds": 0, "used_assets": ["<asset id>"], "skipped_assets": ["<asset id>"]}`。
+     **缺这份 QAReport 或 mechanical 不是 passed 时，Runtime 会拒绝交付**（
+     `finish_task` 返回失败并提示先写 QA）；Runtime 还会核对本轮确实成功执行过
+     `postcheck_docx`，仅写 JSON 不能绕过机械门。`vision: false` 时 `visual`
+     必须是 `not_run`，不得伪造 passed；`vision: true` 时必须实际渲染检查并写
+     `passed`，若为 `failed/not_run` 则先修复或调用 `task_failed`。
 
 无 Vision 模式（`vision: false`）：
 - 只用高置信度资源（用户单独上传、明确图注、稳定相邻关系）；

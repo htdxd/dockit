@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ from lxml import etree
 
 from skill_toolbox.models import ImageContent, ToolCall, ToolResult
 from skill_toolbox.policy import PolicyViolation, WorkspacePolicy
+from skill_toolbox.subprocess_utils import (
+    child_env,
+    process_group_kwargs,
+    terminate_process_tree,
+)
 
 MAX_TEXT_BYTES = 1_000_000
 MAX_IMAGE_BYTES = 12_000_000
@@ -220,10 +226,8 @@ def _extract_docx_text(path: Path) -> str:
 
 # ---------------- 材料萃取（ingest） ----------------
 #
-# 目标：把用户上传的各种源（pdf / docx / md）统一萃取成一份「中间表示」——
-# 一个 Markdown 文件（对齐 MinerU 的 md 输出约定：![img] 图片、$...$ 公式、
-# HTML 表格、``` 代码围栏）+ 一个媒体目录 + 一个 manifest 索引。模型读
-# manifest 即可决定用哪些富内容，而不是逐个试读（省步数、治 20 步烧尽）。
+# 这是保留给旧 DOCX/Markdown 调用者的兼容投影；任务上传材料的事实源是
+# Runtime 预处理生成的 DocumentIR，不在此处再次解析 PDF 或运行 MinerU。
 #
 # 约定（对齐 resume_pro 已验证的 media 元数据模式）：
 #   manifest["media"][i] = {name, path(工作区相对), width, height, aspect,
@@ -232,7 +236,6 @@ def _extract_docx_text(path: Path) -> str:
 
 INGEST_DIR = "work/materials"
 INGEST_MANIFEST = "manifest.json"  # 相对 materials/ 目录（ingest 入口的路径基准不一致，避免拼接错位）
-INGEST_AUTO_BYTES = 1_000_000  # 横幅里 ≤1MB 的小文件自动萃取
 
 # 图片引用在 md 文本中的两种形态：![alt](path) 与 <img src="path">。
 # inline 引用可带 title（![alt](path "title")），捕获到空白处即可。
@@ -358,7 +361,7 @@ def resolve_mineru_cli() -> list[str]:
 
     Windows 上 npm 全局装的 mineru-open-api 是 .cmd 包装器，CreateProcess
     不能直接跑 .cmd → 优先 node + 包内 JS 入口，退化为 cmd.exe /c。
-    Sidecar 的 MinerU preflight 与材料 ingest 共用这一解析，保证同一判定。
+    Sidecar 的 MinerU preflight 使用这一解析，保证启动门判定一致。
     """
     cli = shutil.which("mineru-open-api")
     if not cli:
@@ -374,71 +377,6 @@ def resolve_mineru_cli() -> list[str]:
             return [node, str(js_bin)]
         return ["cmd.exe", "/c", str(cli_path)]
     return [str(cli_path)]
-
-
-def _mineru_command() -> list[str]:
-    """ingest 内部使用的 mineru 前缀（语义同上）。"""
-    return resolve_mineru_cli()
-
-
-def _run_mineru(source: Path, out_dir: Path, extra_env: dict[str, str]) -> None:
-    """MinerU 萃取：优先 flash-extract（免 token），超限/失败回退 extract。
-
-    token 由 sidecar 以 MINERU_TOKEN 注入 extra_env（仅 pdf 相关路径）；
-    这里不主动向用户要 key（约束：PDF skill 的 prompt 不得索要 MinerU token）。
-    """
-    base = _mineru_command()
-    # 先免 token 快速模式（≤10MB/≤20 页；只出 md——正是我们的 IR 形态）
-    try:
-        completed = subprocess.run(
-            base + ["flash-extract", str(source), "-o", str(out_dir)],
-            capture_output=True, timeout=300, check=False,
-        )
-        md_files = list(out_dir.glob("*.md"))
-        if completed.returncode == 0 and md_files:
-            return
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    # 回退：带 token 的 extract（--timeout 可调；输出仍统一 -f md 到 out_dir）
-    token = extra_env.get("MINERU_TOKEN", "")
-    if not token:
-        raise RuntimeError(
-            "MinerU 免 token 快速萃取失败，且未配置 MINERU_TOKEN。"
-            "请在设置页「第三方服务」填写 MinerU API Token 后重试。"
-        )
-    cmd = base + [
-        "extract", str(source), "-o", str(out_dir), "-f", "md",
-        "--timeout", "1800",
-    ]
-    try:
-        completed = subprocess.run(cmd, capture_output=True, timeout=1860,
-                                   env={**os.environ, **extra_env}, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"MinerU extract 调用失败: {exc}") from None
-    md_files = list(out_dir.glob("*.md"))
-    if completed.returncode or not md_files:
-        detail = (completed.stderr or b"").decode("utf-8", errors="replace")[-2000:]
-        raise RuntimeError(f"MinerU extract 失败: {detail or '未产出 md'}")
-
-
-def _ingest_pdf(source: Path, materials: Path, extra_env: dict[str, str]) -> tuple[str, list[Path]]:
-    """pdf → MinerU md（落 materials/）+ 媒体物化。返回 (md_text, 媒体路径列表)。
-
-    MinerU 的 md 输出带图片引用（对齐 ![img] 约定），图片在 _media/ 下，
-    manifest 统一索引。
-    """
-    out_dir = materials
-    _run_mineru(source, out_dir, extra_env)
-    md_files = list(out_dir.glob("*.md"))
-    if not md_files:
-        raise RuntimeError("MinerU 未产出 Markdown")
-    md_path = md_files[0]
-    md_text = md_path.read_text(encoding="utf-8", errors="replace")
-    # 媒体从 md 实际引用的图片里找（MinerU 输出形如 ![img](media/xxx.png)，
-    # 相对 md 所在目录），物化到 materials/_media/ 统一命名。不要假设有
-    # _media/ 子目录——MinerU 并不产出它。
-    media_paths: list[Path] = _materialize_refs_from_md(md_path, materials / "_media")
-    return md_text, media_paths
 
 
 def _materialize_refs_from_md(md_path: Path, dest_dir: Path) -> list[Path]:
@@ -500,7 +438,7 @@ def _write_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
     os.replace(tmp, manifest_path)
 
 
-def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
+def ingest_material(source: Path, materials: Path) -> dict[str, Any]:
     """萃取单个源文件到 work/materials/，返回描述（供横幅与 read 复用）。
 
     幂等：已萃取（manifest 里存在）直接复用，重跑零成本。
@@ -523,14 +461,12 @@ def ingest_material(source: Path, materials: Path, extra_env: dict[str, str] | N
 
     suffix = source.suffix.lower()
     try:
-        if suffix == ".pdf":
-            md_text, media_paths = _ingest_pdf(source, materials, extra_env or {})
-        elif suffix == ".docx":
+        if suffix == ".docx":
             md_text, media_paths = _ingest_docx(source, materials)
         elif suffix in {".md", ".markdown", ".txt"}:
             md_text, media_paths = _ingest_markdown(source, materials)
         else:
-            raise ValueError(f"ingest 不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt）")
+            raise ValueError(f"ingest 不支持的格式: {suffix or 'unknown'}（支持 docx/md/txt）")
     except Exception as exc:
         entry = {"source": str(source), "format": suffix.lstrip("."), "ok": False, "error": str(exc)}
         manifest["sources"].append(entry)
@@ -588,16 +524,21 @@ class ToolRegistry:
         scripts: dict[str, tuple[str, tuple[str, ...]]] | None = None,
         env: dict[str, str] | None = None,
         script_timeouts: dict[str, float] | None = None,
+        capabilities: dict[str, bool] | None = None,
     ) -> None:
         self.policy = policy
         self.skill_dir = skill_dir
         self.scripts = scripts or {}
-        # Extra env vars merged into exec_cmd subprocesses (e.g. MINERU_TOKEN).
+        # Non-secret extra env vars merged into exec_cmd subprocesses.
         self.extra_env = env or {}
         # 每个 action 的显式超时（manifest script spec 的 timeout_seconds）。
         # 未声明的 action 沿用 communicate 默认 300s（外层 runtime 仍按默认
         # 短超时提前终止）。MinerU/Office 长任务靠声明值覆盖。
         self.script_timeouts = script_timeouts or {}
+        # 模型能力（来自运行时解析的 capabilities）。vision=false 时硬性拒绝
+        # 图片 read，保证 Provider 不收到 image payload（实施计划 §15.3 回归
+        # 断言），而不是只靠 Prompt 自律。未提供时默认放行（历史测试兼容）。
+        self.vision = (capabilities or {}).get("vision", True)
 
     def action_timeout(self, action: str) -> float:
         """声明过的 action 超时；未声明返回 0（由 runtime 走默认短超时）。"""
@@ -623,27 +564,35 @@ class ToolRegistry:
         """Run declared scripts with cooperative cancellation so runtime
         timeouts terminate the spawned process instead of leaking it."""
         proc_holder: dict[str, subprocess.Popen[bytes] | None] = {"proc": None}
+        cancelled = threading.Event()
 
         def runner() -> ToolResult:
-            proc_holder["proc"] = subprocess.Popen(
+            if cancelled.is_set():
+                return self._result(call, False, "Script cancelled before start")
+            proc = subprocess.Popen(
                 self._build_cmd(call),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self.policy.root),
-                env={**os.environ, **self.extra_env},
+                env=child_env(self.extra_env),
                 close_fds=True,
+                **process_group_kwargs(),
             )
+            proc_holder["proc"] = proc
+            if cancelled.is_set():
+                self._kill(proc)
+                return self._result(call, False, "Script cancelled during start")
             # 脚本内部可能自设超时（MinerU 1800s 等）；communicate 用声明值，
             # 避免此处提前杀掉合法长任务。未声明的沿用默认 300s（此时外层
             # runtime 短超时才是真正生效的界限）。
             timeout = self.action_timeout(str(call.arguments.get("action", ""))) or 300
             try:
-                stdout_b, stderr_b = proc_holder["proc"].communicate(timeout=timeout)
+                stdout_b, stderr_b = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._kill(proc_holder["proc"])
+                self._kill(proc)
                 return self._result(call, False, f"Script timed out: {call.arguments.get('action')}")
-            rc = proc_holder["proc"].returncode or 0
+            rc = proc.returncode or 0
             return self._result(
                 call,
                 rc == 0,
@@ -659,25 +608,23 @@ class ToolRegistry:
 
         task = asyncio.get_running_loop().run_in_executor(None, runner)
         try:
-            return await task
+            return await asyncio.shield(task)
         except asyncio.CancelledError:
             # Runtime timed out (asyncio.wait_for) — kill the subprocess so it
             # doesn't keep consuming resources while we report the timeout.
+            cancelled.set()
             self._kill(proc_holder["proc"])
+            try:
+                await asyncio.shield(task)
+            except (asyncio.CancelledError, OSError):
+                pass
             raise
 
     @staticmethod
     def _kill(proc: subprocess.Popen[bytes] | None) -> None:
         if proc is None:
             return
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        terminate_process_tree(proc)
 
     def _build_cmd(self, call: ToolCall) -> list[str]:
         action = str(call.arguments["action"])
@@ -736,6 +683,15 @@ class ToolRegistry:
                 raise
         suffix = path.suffix.lower()
         if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            if not self.vision:
+                # 无视觉模型硬性拒绝图片 read：不能把 base64 图片发给无视觉
+                # Provider（实施计划 §3.3/§15.3）。材料图片仍可由 Agent 读其
+                # 元数据（IR/caption/文件名）并据此做保守决策。
+                raise ValueError(
+                    "当前模型不支持图像理解（vision=false）：不能读取图片。"
+                    "请基于图片的 caption、文件名或材料 IR 元数据做保守选择，"
+                    "或换用支持 Vision 的模型。"
+                )
             if path.stat().st_size > MAX_IMAGE_BYTES:
                 raise ValueError("Image exceeds the 12 MB read limit")
             media_type = (
@@ -774,33 +730,9 @@ class ToolRegistry:
                 ),
             )
         if suffix == ".pdf":
-            # pdf 需要 ingest（MinerU 萃取）后才能读：返回萃取的 md 文本 +
-            # 媒体清单。首次自动触发 ingest（幂等，已萃取直接复用）。
-            if not path.is_relative_to(self.policy.root):
-                raise ValueError("read .pdf 仅支持工作区内文件（先 ingest 再读）")
-            entry = ingest_material(path, self.policy.root / INGEST_DIR, self.extra_env)
-            if not entry.get("ok"):
-                raise ValueError(f"pdf 萃取失败: {entry.get('error')}")
-            md_path = self.policy.root / INGEST_DIR / entry["md_path"]
-            md_text = md_path.read_text(encoding="utf-8", errors="replace")
-            md_lines = md_text.splitlines()
-            offset = int(call.arguments.get("offset", 0))
-            limit = int(call.arguments.get("limit", 500))
-            content = "\n".join(md_lines[offset : offset + limit])
-            return self._result(
-                call,
-                True,
-                json.dumps(
-                    {
-                        "content": content,
-                        "format": "markdown",
-                        "lines": len(md_lines),
-                        "media": entry.get("media", []),
-                        "source": entry.get("source", ""),
-                        "md_path": entry.get("md_path", ""),
-                    },
-                    ensure_ascii=False,
-                ),
+            raise ValueError(
+                "PDF 已在 Agent loop 前由共享材料层解析；不要再次 read/ingest PDF。"
+                "请读取 [MATERIALS] 横幅列出的 content.md 或 document.json。"
             )
         if suffix == ".md":
             if path.stat().st_size > MAX_TEXT_BYTES:
@@ -854,8 +786,14 @@ class ToolRegistry:
             path = self.policy.require_file(path_str)
         except PolicyViolation:
             raise ValueError(f"ingest 仅支持工作区内文件: {path_str}")
+        if path.suffix.lower() == ".pdf":
+            return self._result(
+                call,
+                False,
+                "PDF 已由共享材料层解析；请读取 [MATERIALS] 中的 IR 路径，禁止重复 MinerU。",
+            )
         try:
-            entry = ingest_material(path, self.policy.root / INGEST_DIR, self.extra_env)
+            entry = ingest_material(path, self.policy.root / INGEST_DIR)
         except Exception as exc:  # noqa: BLE001 - 失败信息要完整回给模型
             return self._result(call, False, f"ingest 失败: {exc}")
         if not entry.get("ok"):

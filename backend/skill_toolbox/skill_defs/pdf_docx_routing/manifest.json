@@ -2,6 +2,7 @@
   "id": "pdf_docx_routing",
   "name": "PDF 转 DOCX 路由",
   "description": "按 PDF 类型和模型视觉能力选择 MinerU DOCX 转换及质量检查路线。",
+  "quality_actions": ["audit_docx"],
   "max_steps": 20,
   "initial_form": {
     "prompt": {
@@ -16,20 +17,7 @@
       "argv": [
         "{source}"
       ],
-      "timeout_seconds": 60
-    },
-    "convert_pdf": {
-      "entry": "convert_pdf.py",
-      "argv": [
-        "{source}",
-        "{output}",
-        "{model}",
-        "{ocr}",
-        "{formula}",
-        "{table}",
-        "{language}"
-      ],
-      "timeout_seconds": 1830
+      "timeout_seconds": 180
     },
     "audit_docx": {
       "entry": "audit_docx.py",

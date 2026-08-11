@@ -24,10 +24,10 @@ TOOL_SPECS = [
         "Read a text or image file from the task workspace or the active skill's "
         "read-only directory. Path must be relative (absolute paths are rejected). "
         "Text formats (.txt/.md/.json/.yaml/.csv/.py/.svg/.xml/.html etc.) return "
-        "content with optional offset/limit pagination; images (.png/.jpg/.png/.gif/"
+        "content with optional offset/limit pagination; images (.png/.jpg/.jpeg/.gif/"
         ".webp) return a base64 view. .md also returns a 'media' list of images it "
-        "references (materialized under work/_media/). .pdf triggers a MinerU "
-        "ingest and returns the extracted markdown text plus a media list.",
+        "references (materialized under work/_media/). PDF is preprocessed once by "
+        "the shared material layer and must be read through [MATERIALS] IR paths.",
         {
             "path": {"type": "string", "description": "Relative path from workspace root"},
             "offset": {"type": "integer", "minimum": 0, "description": "Line offset for text (default 0)"},
@@ -37,8 +37,10 @@ TOOL_SPECS = [
     ),
     _function(
         "ingest",
-        "Extract an uploaded material (pdf / docx / md / txt) into a unified "
-        "intermediate representation under work/materials/: a markdown file "
+        "Legacy compatibility extraction for docx / md / txt only. Task uploads "
+        "are already parsed by the shared material layer; read its DocumentIR "
+        "instead of calling ingest. This compatibility action writes a markdown "
+        "projection under work/materials/: a markdown file "
         "(images as ![alt](path), tables as HTML, formulas as $...$, code as "
         "fenced blocks), a _media/ folder with materialized images, and a "
         "manifest.json index. Returns the manifest entry for the file with "

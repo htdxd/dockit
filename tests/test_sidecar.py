@@ -1,15 +1,43 @@
 import asyncio
+import dataclasses
 from pathlib import Path
 
 import pytest
 from skill_toolbox.models import AssistantTurn, ToolCall
 from skill_toolbox.providers.mock import ScriptedProvider
 from skill_toolbox.sidecar import SidecarService
+from skill_toolbox.skills import load_skill
+
+EMPTY_DOCX_PLAN = (
+    '{"schema_version":"1","task_type":"docx","mode":"conservative",'
+    '"selections":[],"exclusions":[],"questions_asked":false}'
+)
+
 
 @pytest.mark.asyncio
-async def test_sidecar_runs_task_and_emits_correlated_events(tmp_path: Path) -> None:
+async def test_sidecar_runs_task_and_emits_correlated_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "skill_toolbox.runtime.load_skill",
+        lambda skill_id: dataclasses.replace(
+            load_skill(skill_id), quality_actions=frozenset()
+        ),
+    )
     provider = ScriptedProvider(
         [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="plan",
+                        name="write",
+                        arguments={
+                            "path": "work/plans/content-plan.json",
+                            "content": EMPTY_DOCX_PLAN,
+                        },
+                    )
+                ]
+            ),
             AssistantTurn(
                 tool_calls=[
                     ToolCall(
@@ -18,6 +46,18 @@ async def test_sidecar_runs_task_and_emits_correlated_events(tmp_path: Path) -> 
                         arguments={
                             "path": "artifacts/sidecar.md",
                             "content": "Sidecar 测试",
+                        },
+                    )
+                ]
+            ),
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="write-qa",
+                        name="write",
+                        arguments={
+                            "path": "work/qa/mechanical.json",
+                            "content": '{"mechanical": "passed", "visual": "not_run"}',
                         },
                     )
                 ]
@@ -35,6 +75,8 @@ async def test_sidecar_runs_task_and_emits_correlated_events(tmp_path: Path) -> 
     )
     events: list[dict[str, object]] = []
     service = SidecarService(events.append, provider_factory=lambda _: provider)
+    # MinerU 强依赖（§3.1）：任务前必须配置 Token，否则 preflight 直接失败
+    service._set_mineru_key("task-1", {"mineru_key": "test-token"})
 
     await service.handle(
         {
@@ -62,6 +104,8 @@ async def test_sidecar_accepts_skill_with_satisfied_capabilities(tmp_path: Path)
     events: list[dict[str, object]] = []
     provider = ScriptedProvider([])  # empty → runtime will fail on no tool calls; gate must not reject
     service = SidecarService(events.append, provider_factory=lambda _: provider)
+    # MinerU 强依赖（§3.1）：配置 Token 以通过 preflight
+    service._set_mineru_key("task-gated", {"mineru_key": "test-token"})
 
     await service.handle(
         {
@@ -84,11 +128,37 @@ async def test_sidecar_accepts_skill_with_satisfied_capabilities(tmp_path: Path)
     assert all("capability" not in str(error) for error in errors)
 
 
+@pytest.mark.asyncio
+async def test_sidecar_requires_mineru_token(tmp_path: Path) -> None:
+    """未配置 MinerU Token 时任务在 Agent loop 前失败（§3.1 fail-fast）。"""
+    events: list[dict[str, object]] = []
+    provider = ScriptedProvider([])
+    service = SidecarService(events.append, provider_factory=lambda _: provider)
+
+    await service.handle(
+        {
+            "id": "task-notoken",
+            "type": "start_task",
+            "payload": {
+                "provider": {"kind": "openai", "model": "gpt-4o"},
+                "skill_id": "docx_pro",
+                "user_prompt": "生成报告",
+                "output_dir": str(tmp_path),
+            },
+        }
+    )
+    await asyncio.wait_for(service.wait_all(), timeout=5)
+
+    failed = [e["event"] for e in events if e["event"].get("type") == "task_failed"]
+    assert failed and "MINERU_TOKEN_MISSING" in str(failed[0].get("error", ""))
+    started = [e["event"] for e in events if e["event"].get("type") == "task_started"]
+    assert started == []
+
+
 def test_request_models_openai_endpoint_and_auth(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """OpenAI route: GET {base}/models with Bearer auth, parse data[].id."""
-    from unittest.mock import MagicMock
 
-    import skill_toolbox.sidecar as sidecar
+    from skill_toolbox import sidecar
 
     captured: dict[str, object] = {}
 
@@ -96,13 +166,13 @@ def test_request_models_openai_endpoint_and_auth(monkeypatch) -> None:  # type: 
         def read(self) -> bytes:
             return b'{"data":[{"id":"gpt-4o"},{"id":"deepseek-v3"},{"id":null}]}'
 
-        def __enter__(self):  # noqa: ANN204
+        def __enter__(self):
             return self
 
-        def __exit__(self, *args) -> None:  # noqa: ANN002
+        def __exit__(self, *args) -> None:
             return None
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001, ANN202
+    def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         captured["header"] = request.headers.get("Authorization")
         return FakeResponse()
@@ -118,7 +188,7 @@ def test_request_models_openai_endpoint_and_auth(monkeypatch) -> None:  # type: 
 
 def test_request_models_anthropic_endpoint_and_auth(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Anthropic route: /v1/models with x-api-key + anthropic-version."""
-    import skill_toolbox.sidecar as sidecar
+    from skill_toolbox import sidecar
 
     captured: dict[str, object] = {}
 
@@ -126,13 +196,13 @@ def test_request_models_anthropic_endpoint_and_auth(monkeypatch) -> None:  # typ
         def read(self) -> bytes:
             return b'{"data":[{"id":"claude-4-sonnet"},{"id":"claude-4-haiku"}]}'
 
-        def __enter__(self):  # noqa: ANN204
+        def __enter__(self):
             return self
 
-        def __exit__(self, *args) -> None:  # noqa: ANN002
+        def __exit__(self, *args) -> None:
             return None
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001, ANN202
+    def fake_urlopen(request, timeout):
         headers = {k.lower(): v for k, v in request.headers.items()}
         captured["url"] = request.full_url
         captured["x-api-key"] = headers.get("x-api-key")
@@ -158,9 +228,9 @@ def test_request_models_anthropic_endpoint_and_auth(monkeypatch) -> None:  # typ
 def test_request_models_http_error_returns_message(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import urllib.error
 
-    import skill_toolbox.sidecar as sidecar
+    from skill_toolbox import sidecar
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001, ANN202
+    def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
 
     monkeypatch.setattr(sidecar.urllib.request, "urlopen", fake_urlopen)

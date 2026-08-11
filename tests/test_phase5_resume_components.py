@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
+import os
 import subprocess
 import sys
 import zipfile
@@ -34,6 +34,10 @@ def _run_fill(
     data_path = tmp_path / "data.json"
     data_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     out = tmp_path / "artifacts" / "resume.docx"
+    # 子进程统一 UTF-8 输出契约：无 PYTHONUTF8（GBK shell）时 child 中文输出
+    # 是 GBK，父按 utf-8 解码会乱码；强制 PYTHONIOENCODING=utf-8（与
+    # runtime/tools 的 CHILD_UTF8_ENV 一致，确保断言可复现）。
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     return subprocess.run(
         [sys.executable, str(FILL_SCRIPT.resolve()), str(tpl_dir.resolve()), str(data_path), str(out)],
         capture_output=True,
@@ -43,6 +47,7 @@ def _run_fill(
         timeout=180,
         cwd=str(tmp_path),
         check=False,
+        env=env,
     )
 
 
@@ -78,6 +83,8 @@ def test_template_sha256_matches_actual_file() -> None:
 
 def test_fill_rejects_modified_template(tmp_path: Path) -> None:
     """模板 hash 不匹配 → 立即失败，不套旧 selector。"""
+    import importlib.util
+
     tpl_dir = RESUME_TEMPLATES / "t001"
     # 构造一个 hash 被改写的副本模板目录
     fake_dir = tmp_path / "fake_t001"
@@ -86,17 +93,57 @@ def test_fill_rejects_modified_template(tmp_path: Path) -> None:
     manifest = json.loads((tpl_dir / "manifest.json").read_text(encoding="utf-8"))
     manifest["template_sha256"] = "0" * 64
     (fake_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    data_path = tmp_path / "data.json"
-    data_path.write_text(json.dumps({"fields": {"name": "张三"}}), encoding="utf-8")
-    out = tmp_path / "out.docx"
+    spec = importlib.util.spec_from_file_location("fill_resume_hash", FILL_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    with pytest.raises(RuntimeError, match="hash"):
+        module.verify_template_hash(fake_dir, manifest)
+
+
+@pytest.mark.parametrize("outside_arg", ["data", "output", "photo"])
+def test_fill_rejects_paths_outside_workspace(
+    tmp_path: Path, outside_arg: str
+) -> None:
+    from PIL import Image
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_data = tmp_path / "outside.json"
+    outside_output = tmp_path / "outside.docx"
+    outside_photo = tmp_path / "outside.png"
+    Image.new("RGB", (10, 10), (1, 2, 3)).save(outside_photo)
+    data = {"fields": {"name": "张三"}}
+    if outside_arg == "photo":
+        data["fields"]["photo"] = str(outside_photo.resolve())
+    inside_data = workspace / "data.json"
+    inside_data.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    outside_data.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    data_path = outside_data if outside_arg == "data" else inside_data
+    output = outside_output if outside_arg == "output" else workspace / "resume.docx"
 
     result = subprocess.run(
-        [sys.executable, str(FILL_SCRIPT.resolve()), str(fake_dir.resolve()), str(data_path), str(out)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, cwd=str(tmp_path), check=False,
+        [
+            sys.executable,
+            str(FILL_SCRIPT.resolve()),
+            str((RESUME_TEMPLATES / "t001").resolve()),
+            str(data_path.resolve()),
+            str(output.resolve()),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        cwd=str(workspace),
+        check=False,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
+
     assert result.returncode != 0
-    assert "hash" in result.stderr.lower() or "重新索引" in result.stderr
-    assert not out.exists()
+    assert "路径越出任务工作区" in result.stderr
+    assert not output.exists()
 
 
 # ---------------- 受限动作 ----------------
@@ -155,39 +202,55 @@ def test_shift_components(tmp_path: Path) -> None:
     result = _run_fill(
         "t001",
         {},
-        [{"action": "shift_components", "component_ids": ["work"], "dy_pt": -20}],
+        [{"action": "shift_components", "component_ids": ["work"], "dy_pt": 10}],
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert any(r.get("action") == "shift_components" and r.get("dy_pt") == -20.0 for r in payload["replaced"])
+    assert any(r.get("action") == "shift_components" and r.get("dy_pt") == 10.0 for r in payload["replaced"])
 
 
-def test_clone_text_component_preserves_package(tmp_path: Path) -> None:
-    """clone 文本组件：zip 包结构完好、XML 可解析、未引入新的重复 id。"""
-    # 基线模板本身就有 id 重复（Word 容忍），clone 不得让重复数变差
-    baseline_xml = zipfile.ZipFile(RESUME_TEMPLATES / "t001" / "template.docx").read(
-        "word/document.xml"
-    ).decode("utf-8")
-    baseline_ids = re.findall(r'\bid="(\d+)"', baseline_xml)
-    baseline_dups = len(baseline_ids) - len(set(baseline_ids))
-
+def test_clone_text_component_rejects_new_overlap(tmp_path: Path) -> None:
+    """work after work_1 会覆盖既有 work，机械门必须拒绝整个产物。"""
     result = _run_fill(
         "t001",
         {},
-        [{"action": "clone_component", "component": "work", "after": "work_1"}],
+        [{
+            "action": "clone_component",
+            "component": "work",
+            "after": "work_1",
+            "value": "新增经历：负责架构设计与交付。",
+        }],
         tmp_path,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
+    assert "新增严重重叠" in result.stderr
+    assert not (tmp_path / "artifacts" / "resume.docx").exists()
+
+
+def test_shift_photo_component_rejected_by_whitelist(tmp_path: Path) -> None:
+    result = _run_fill(
+        "t001",
+        {},
+        [{"action": "shift_components", "component_ids": ["photo"], "dy_pt": 10}],
+        tmp_path,
+    )
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert any(r.get("action") == "clone_component" for r in payload["replaced"])
-    out = tmp_path / "artifacts" / "resume.docx"
-    with zipfile.ZipFile(out) as z:
-        names = z.namelist()
-        assert "word/document.xml" in names
-        xml = z.read("word/document.xml").decode("utf-8")
-    ids = re.findall(r'\bid="(\d+)"', xml)
-    assert len(ids) - len(set(ids)) == baseline_dups  # 未新增重复 id
+    assert any("不允许动作 shift_components" in item for item in payload["warnings"])
+
+
+def test_shift_shared_anchor_requires_all_components(tmp_path: Path) -> None:
+    result = _run_fill(
+        "t002",
+        {},
+        [{"action": "shift_components", "component_ids": ["header_left"], "dy_pt": 5}],
+        tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert any("共享 anchor" in item for item in payload["warnings"])
+    assert not any(item.get("action") == "shift_components" for item in payload["actions"])
 
 
 def test_clone_image_component_rejected(tmp_path: Path) -> None:
@@ -216,6 +279,25 @@ def test_replace_asset_remove_photo(tmp_path: Path) -> None:
     with zipfile.ZipFile(out) as z:
         # 旧照片字节被移除
         assert "word/media/image1.jpeg" not in z.namelist()
+
+
+def test_replace_asset_writes_user_photo(tmp_path: Path) -> None:
+    from PIL import Image
+
+    image = tmp_path / "portrait.png"
+    Image.new("RGB", (32, 40), (20, 80, 140)).save(image)
+    result = _run_fill(
+        "t001",
+        {},
+        [{"action": "replace_asset", "component": "photo", "value": str(image)}],
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert any(item.get("action") == "replace_asset" for item in payload["actions"])
+    with zipfile.ZipFile(tmp_path / "artifacts" / "resume.docx") as archive:
+        assert "word/media/image1_user.png" in archive.namelist()
 
 
 # ---------------- L1 原位替换回归 ----------------

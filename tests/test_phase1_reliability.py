@@ -38,6 +38,9 @@ async def test_preflight_missing_mineru_fails_before_agent_loop(
     events: list[dict[str, object]] = []
     provider = ScriptedProvider([AssistantTurn(text="不应被调用", tool_calls=[])])
     service = SidecarService(events.append, provider_factory=lambda _config: provider)
+    # preflight 前必须先配置 Token（MinerU 强依赖，§3.1）；这里配置后
+    # 才轮到 CLI 解析失败 → 验证 MINERU_CLI_MISSING 分支。
+    service._set_mineru_key("preflight-1", {"mineru_key": "test-token"})
 
     await service.handle(
         {
@@ -63,6 +66,9 @@ async def test_preflight_missing_mineru_fails_before_agent_loop(
 @pytest.mark.asyncio
 async def test_preflight_passes_when_cli_resolvable(tmp_path: Path) -> None:
     """CLI 可解析时 preflight 放行，任务进入 Agent loop。"""
+    import dataclasses
+
+    import skill_toolbox.runtime as runtime_mod
     import skill_toolbox.sidecar as sidecar_mod
 
     def _ok() -> list[str]:
@@ -70,13 +76,40 @@ async def test_preflight_passes_when_cli_resolvable(tmp_path: Path) -> None:
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(sidecar_mod, "resolve_mineru_cli", _ok)
+    monkeypatch.setattr(
+        runtime_mod,
+        "load_skill",
+        lambda skill_id: dataclasses.replace(
+            load_skill(skill_id), quality_actions=frozenset()
+        ),
+    )
     try:
         events: list[dict[str, object]] = []
         provider = ScriptedProvider(
             [
                 AssistantTurn(
                     tool_calls=[
+                        ToolCall(
+                            id="plan",
+                            name="write",
+                            arguments={
+                                "path": "work/plans/content-plan.json",
+                                "content": '{"schema_version":"1","task_type":"docx","mode":"conservative","selections":[],"exclusions":[],"questions_asked":false}',
+                            },
+                        )
+                    ]
+                ),
+                AssistantTurn(
+                    tool_calls=[
                         ToolCall(id="w", name="write", arguments={"path": "artifacts/preflight.md", "content": "ok"})
+                    ]
+                ),
+                AssistantTurn(
+                    tool_calls=[
+                        ToolCall(id="q", name="write", arguments={
+                            "path": "work/qa/mechanical.json",
+                            "content": '{"mechanical": "passed", "visual": "not_run"}',
+                        })
                     ]
                 ),
                 AssistantTurn(
@@ -87,6 +120,8 @@ async def test_preflight_passes_when_cli_resolvable(tmp_path: Path) -> None:
             ]
         )
         service = SidecarService(events.append, provider_factory=lambda _config: provider)
+        # preflight 前必须配置 Token（§3.1），否则走 MINERU_TOKEN_MISSING
+        service._set_mineru_key("preflight-2", {"mineru_key": "test-token"})
         await service.handle(
             {
                 "id": "preflight-2",
@@ -175,7 +210,8 @@ async def _execute_action(
 def test_script_timeout_parsed_from_manifest(tmp_path: Path) -> None:
     """skills.load_skill 解析 script spec 的 timeout_seconds。"""
     skill = load_skill("pdf_docx_routing")
-    assert skill.script_timeouts["convert_pdf"] == 1830.0
+    assert "convert_pdf" not in skill.scripts
+    assert skill.script_timeouts["inspect_pdf"] == 180.0
     assert skill.script_timeouts["render_docx"] == 240.0
     # 未声明超时的 skill 不产生条目
     skill = load_skill("docx_pro")
@@ -251,7 +287,8 @@ async def test_task_failed_aborts_with_error(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_task_failed_must_be_single_tool_call(tmp_path: Path) -> None:
-    """task_failed 混在多个工具调用中时按普通失败工具返回，任务继续。"""
+    """task_failed 混在多个工具调用中时：按 Tool Spec 契约立即终止任务，
+    不执行同轮其它调用（避免放弃时仍跑 MinerU/Office 等昂贵动作）。"""
     provider = ScriptedProvider(
         [
             AssistantTurn(
@@ -260,16 +297,14 @@ async def test_task_failed_must_be_single_tool_call(tmp_path: Path) -> None:
                     ToolCall(id="abort", name="task_failed", arguments={"error": "nope"}),
                 ]
             ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(id="f", name="finish_task", arguments={"artifacts": ["artifacts/x.md"]})
-                ]
-            ),
         ]
     )
     runtime = AgentRuntime(provider=provider, emit=lambda _e: None)
     result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
-    assert result.status == "completed"
+    assert result.status == "failed"
+    assert "nope" in (result.error or "")
+    # task_failed 立即终止：同轮其它调用未被执行（artifacts/x.md 不存在）
+    assert not (tmp_path / "artifacts" / "x.md").exists()
 
 
 def test_task_failed_in_tool_specs() -> None:
@@ -314,6 +349,31 @@ def test_convert_pdf_selects_matching_stem_output(tmp_path: Path) -> None:
     generated = next((f for f in files if f.stem == stem), None)
     assert generated == target
     assert generated.read_text(encoding="utf-8") == "new"
+
+
+def test_convert_pdf_rejects_agent_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "convert_pdf_paths",
+        Path("backend/skill_toolbox/skill_defs/pdf_docx_routing/scripts/convert_pdf.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF")
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(ValueError):
+        module.workspace_path(str(outside.resolve()), must_exist=True)
+    assert module.workspace_path(
+        str(outside.resolve()), must_exist=True, allow_absolute=True
+    ) == outside.resolve()
 
 
 def test_render_docx_page_prefix_per_document(tmp_path: Path) -> None:
@@ -362,3 +422,36 @@ async def test_exec_cmd_uses_declared_communicate_timeout(tmp_path: Path) -> Non
     result = await registry.execute(call)
     assert result.success is False
     assert "Script timed out" in result.content
+
+
+@pytest.mark.asyncio
+async def test_exec_cmd_forces_utf8_child_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    skill_dir = tmp_path / "skill"
+    scripts = skill_dir / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "encoding.py").write_text(
+        "import os\nprint(os.environ.get('PYTHONIOENCODING', ''))\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    registry = ToolRegistry(
+        WorkspacePolicy(workspace),
+        skill_dir=skill_dir,
+        scripts={"encoding": ("encoding.py", ())},
+    )
+
+    result = await registry.execute(
+        ToolCall(
+            id="encoding", name="exec_cmd", arguments={"action": "encoding", "args": {}}
+        )
+    )
+
+    assert result.success
+    assert json.loads(result.content)["stdout"].strip() == "utf-8"

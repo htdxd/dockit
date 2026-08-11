@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from skill_toolbox.materials import MaterialService
+from skill_toolbox.materials import MaterialService, material_id_dir
 
 
 def _make_minimal_pptx(path: Path) -> None:
@@ -50,9 +50,38 @@ def test_pptx_parsed_into_shared_ir(tmp_path: Path) -> None:
     # 文本来自 parser 输出（第二事实不再产生：共享 IR 是唯一解析）
     assert any("要点" in b.text for b in ir.blocks)
     # 兼容投影存在
-    md = (ws / "work" / "materials" / ir.material_id[:16] / "content.md")
+    md = material_id_dir(ws, ir.material_id) / "content.md"
     assert md.is_file()
     assert "阶段 6 测试标题" in md.read_text(encoding="utf-8")
+
+
+def test_ppt_parser_does_not_request_mineru_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    source = tmp_path / "deck.pptx"
+    _make_minimal_pptx(source)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = MaterialService(
+        workspace,
+        extra_env={"MINERU_TOKEN": "must-not-leak"},
+        mineru_token="sidecar-secret",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        target = Path(command[command.index("-o") + 1])
+        target.write_text("# Parsed deck", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(service, "_run_subprocess", fake_run)
+
+    service.prepare_material(source)
+
+    assert calls and calls[0].get("use_mineru_token") is not True
 
 
 @pytest.mark.skipif(
@@ -114,8 +143,15 @@ def test_ppt_prompt_no_duplicate_source_to_md() -> None:
     # 统一材料协议要求先读共享 IR/ContentPlan
     assert "ContentPlan" in prompt
     assert "[MATERIALS]" in prompt or "材料" in prompt
-    # 不再指导"先跑 source_to_md 转换材料"（第二套事实）
-    assert "先调用" not in prompt or "source_to_md" not in prompt.split("统一材料协议")[1][:600] or True
+    # 统一材料协议段（本段到下一个 "## " 标题之间）不得指导"先跑 source_to_md
+    # 转换材料"（材料理解已由共享 IR 完成，§10.1）；source_to_md 只出现在
+    # 后面的 Generate 路由 action 说明里。
+    protocol_section = (
+        prompt.split("## 统一材料协议", 1)[1].split("## ", 1)[0]
+        if "## 统一材料协议" in prompt
+        else ""
+    )
+    assert protocol_section and "source_to_md" not in protocol_section
     # Generate 路由仍可用 source_to_md action（作为 action 而非材料解析第一步）
     assert "source_to_md" in prompt
 

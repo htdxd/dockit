@@ -717,7 +717,7 @@ function renderQAStatus(state: TaskState): string {
   return `<div class="qa-row card" style="margin-top:10px;">
     <div class="card-title">🧪 质量检查</div>
     <div class="qa-item">结构与机械检查：${mech}${qa.mechanical_issues.length ? `（${qa.mechanical_issues.length} 项）` : ""}</div>
-    <div class="qa-item">视觉版式检查：${vis}${qa.visual === "not_run" ? " — 当前模型不支持图像理解，未执行视觉验证" : ""}</div>
+    <div class="qa-item">视觉版式检查：${vis}${qa.visual === "not_run" ? " — 未执行视觉验证" : ""}</div>
     ${qa.used_assets || qa.skipped_assets ? `<div class="qa-item">已采用资源 ${qa.used_assets} 个 · 低置信度舍弃 ${qa.skipped_assets} 个</div>` : ""}
   </div>`;
 }

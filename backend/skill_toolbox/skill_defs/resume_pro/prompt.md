@@ -45,7 +45,8 @@
      - 有 `vision` 能力时：先 `read` 该候选图确认是真人像，不是再换下一个候选。
      - 多个候选都 `portrait_likely` 时：**只选一张**（引用顺序最靠前），其余候选路径写入交付说明，方便用户手动换。
      - 若旧简历里没有任何 `portrait_likely` 的图，视为无照片。
-  2.5. **旧简历是 PDF 时**：先 `read` 该 pdf（自动触发 MinerU 萃取，返回 `media` 清单 + 文本），同样按上一条选 `portrait_likely=true` 且最靠前的图，`fields.photo = <media.path>`（在 work/materials/_media/ 下）。
+  2.5. **旧简历是 PDF 时**：禁止再次 `read/ingest` 原 PDF；读取 `[MATERIALS]`
+       给出的 `document.json/content.md`，从共享 IR 的 Asset 列表选择头像。
   3. **以上都没有**：用 `ask_user_questions` 一次问清三选一：① 用户提供照片（告知路径或重新上传）；② 移除照片位（`fields.photo = "__remove__"`，fill 会删掉模板示例照片）；③ 保留模板示例照片（不写 photo 字段）。
   - 照片会自动等比嵌入原照片位，不改变模板照片框尺寸；照片源文件必须真实存在，不存在时保留模板原照片并在 `warnings` 说明。
 
@@ -91,6 +92,23 @@
    - `warnings`：替换失败/未匹配的字段，检查模板是否支持该字段；数据错则修数据，模板不支持则放弃该字段。
 6. **渲染校验**（可选但有 vision 时必做）：`exec_cmd` action=`render_pages`，`args.source=artifacts/resume.docx`、`args.output_dir=artifacts/`；然后 `read` 生成的 PNG 检查：文字是否溢出/重叠、排版是否正常、分区标题与装饰是否完好、**是否存在重复标签（如「手机：手机：」）或值被截断**——发现问题回第 4 步。
 7. **交付**：`finish_task`，artifacts 至少包含 `artifacts/resume.docx`；**若用户要求 PDF 格式，把 render 生成的 `artifacts/resume.pdf` 一起传**（render_pages 已在 artifacts/ 产出同名 pdf，直接用即可，不要重新转换）。fill/render 全部通过后**下一步立即 finish_task**，不要再做多余的验证轮。
+   - **组件动作**：`fill_resume` 支持 `actions[]`（`replace_text` /
+     `replace_asset` / `resize_component` / `shift_components` /
+     `clone_component`），**仅当模板 manifest 的 `components` 声明了
+     `allowed_actions` 时使用**。调用前先 `read` `templates/<id>/manifest.json`
+     确认该 component 允许的动作与 `bbox_pt`；动作执行到 `artifacts/` 候选
+     副本，任一步失败即丢弃候选重新填充，不在半修改文件上继续。
+     `resize_component` 只能改 manifest 标注可拉伸的对象（背景与文字框须同属
+     一个 component 才允许同步）；`shift_components` 只纵向移动 manifest 明确
+     列出的组件；`clone_component` 只复制 manifest 列出的完整 anchor 并重写
+     唯一 ID，不复制 section/header/footer/未列出的相邻对象；通过同一 action
+     的 `value` 填入副本内容。副本自动放在 `after` 组件下方，越界会直接失败。
+   - **QAReport**：交付前把机械/视觉状态写入 `work/qa/mechanical.json`
+     （`{"mechanical": "passed", "mechanical_issues": [], "visual": "not_run"|"passed"|"failed", "visual_issues": [], "repair_rounds": 0, "used_assets": ["<asset id>"], "skipped_assets": ["<asset id>"]}`）。
+     **缺这份报告、`fill_resume` 本轮未成功或仍报告 `overflow_risks` 时 Runtime
+     会拒绝交付**；仅写 JSON 不能绕过机械门；
+     `vision: false` 时 `visual` 必须 `not_run`；`vision: true` 时必须实际渲染
+     检查并写 `passed`，若为 `failed/not_run` 则先修复或调用 `task_failed`。
 
 ## 硬性规则
 

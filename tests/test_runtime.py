@@ -1,10 +1,26 @@
 import asyncio
+import dataclasses
 from pathlib import Path
 
 import pytest
 from skill_toolbox.models import AssistantTurn, ToolCall, ToolResult
 from skill_toolbox.providers.mock import ScriptedProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest
+from skill_toolbox.skills import load_skill
+
+EMPTY_DOCX_PLAN = (
+    '{"schema_version":"1","task_type":"docx","mode":"conservative",'
+    '"selections":[],"exclusions":[],"questions_asked":false}'
+)
+
+
+def _disable_skill_quality_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "skill_toolbox.runtime.load_skill",
+        lambda skill_id: dataclasses.replace(
+            load_skill(skill_id), quality_actions=frozenset()
+        ),
+    )
 
 
 class HangingProvider:
@@ -33,9 +49,24 @@ class LargeResultTools:
 
 
 @pytest.mark.asyncio
-async def test_runtime_publishes_artifact(tmp_path: Path) -> None:
+async def test_runtime_publishes_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _disable_skill_quality_gate(monkeypatch)
     provider = ScriptedProvider(
         [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="plan",
+                        name="write",
+                        arguments={
+                            "path": "work/plans/content-plan.json",
+                            "content": EMPTY_DOCX_PLAN,
+                        },
+                    )
+                ]
+            ),
             AssistantTurn(
                 tool_calls=[
                     ToolCall(
@@ -44,6 +75,18 @@ async def test_runtime_publishes_artifact(tmp_path: Path) -> None:
                         arguments={
                             "path": "artifacts/runtime-test.md",
                             "content": "Agent loop 已成功生成产物。",
+                        },
+                    )
+                ]
+            ),
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="write-qa",
+                        name="write",
+                        arguments={
+                            "path": "work/qa/mechanical.json",
+                            "content": '{"mechanical": "passed", "visual": "not_run"}',
                         },
                     )
                 ]
@@ -83,9 +126,24 @@ async def test_runtime_publishes_artifact(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
+async def test_finish_task_must_be_the_only_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _disable_skill_quality_gate(monkeypatch)
     provider = ScriptedProvider(
         [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="plan",
+                        name="write",
+                        arguments={
+                            "path": "work/plans/content-plan.json",
+                            "content": EMPTY_DOCX_PLAN,
+                        },
+                    )
+                ]
+            ),
             AssistantTurn(
                 tool_calls=[
                     ToolCall(
@@ -98,6 +156,18 @@ async def test_finish_task_must_be_the_only_tool_call(tmp_path: Path) -> None:
                         name="finish_task",
                         arguments={"artifacts": ["artifacts/mixed.md"]},
                     ),
+                ]
+            ),
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="write-qa",
+                        name="write",
+                        arguments={
+                            "path": "work/qa/mechanical.json",
+                            "content": '{"mechanical": "passed", "visual": "not_run"}',
+                        },
+                    )
                 ]
             ),
             AssistantTurn(

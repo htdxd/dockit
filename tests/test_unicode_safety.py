@@ -455,7 +455,7 @@ def test_ingest_docx_produces_md_tables_and_media(tmp_path: Path) -> None:
     _make_docx_with_table_and_image(src)
     mats = tmp_path / INGEST_DIR
 
-    entry = ingest_material(src, mats, {})
+    entry = ingest_material(src, mats)
 
     assert entry["ok"] is True
     assert entry["format"] == "docx"
@@ -468,7 +468,7 @@ def test_ingest_docx_produces_md_tables_and_media(tmp_path: Path) -> None:
     # manifest 落盘
     assert (mats / "manifest.json").is_file()
     # 幂等：再次 ingest 走缓存（manifest 里 sources 只有一条）
-    again = ingest_material(src, mats, {})
+    again = ingest_material(src, mats)
     assert again["ok"] is True
     manifest_text = (mats / "manifest.json").read_text(encoding="utf-8")
     assert manifest_text.count("photo.png") > 0
@@ -502,7 +502,7 @@ def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
     md.write_text("# 笔记\n\n![架构图](assets/fig.png)\n\n正文", encoding="utf-8")
     mats = tmp_path / INGEST_DIR
 
-    entry = ingest_material(md, mats, {})
+    entry = ingest_material(md, mats)
 
     assert entry["ok"] is True
     assert entry["format"] == "md"
@@ -512,8 +512,8 @@ def test_ingest_markdown_materializes_local_images(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypatch) -> None:
-    """read .pdf → 自动 MinerU 萃取（mock 命令）→ 返回 md 文本 + media 清单。"""
+async def test_read_pdf_rejects_second_mineru_parse(tmp_path: Path, monkeypatch) -> None:
+    """PDF 只能由共享预处理解析，Agent read 不得再触发 MinerU。"""
 
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF-1.4\nfake pdf bytes")
@@ -521,39 +521,17 @@ async def test_read_pdf_triggers_ingest_and_returns_md(tmp_path: Path, monkeypat
 
     calls = {"n": 0}
 
-    def fake_mineru():
-        return ["fake-mineru"]
-
-    def fake_run(*args, **kwargs):
+    def fake_run(*_args, **_kwargs):
         calls["n"] += 1
-        cmd = list(args[0])
-        assert "flash-extract" in cmd or "extract" in cmd
-        # 模拟 MinerU：写一个 md 到 out_dir
-        out_dir = None
-        for i, a in enumerate(cmd):
-            if a == "-o":
-                out_dir = Path(cmd[i + 1])
-        assert out_dir is not None
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "paper.md").write_text(
-            "# 论文标题\n\n![图1](media/fig1.png)\n\n正文内容",
-            encoding="utf-8",
-        )
-        if "media" in [x for x in cmd]:
-            pass
-        return type("CP", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+        raise AssertionError("read(pdf) must not invoke MinerU")
 
-    monkeypatch.setattr("skill_toolbox.tools._mineru_command", fake_mineru)
     monkeypatch.setattr("skill_toolbox.tools.subprocess.run", fake_run)
 
     result = await registry.execute(ToolCall(id="r", name="read", arguments={"path": "paper.pdf"}))
 
-    assert result.success is True, result.content
-    payload = json.loads(result.content)
-    assert payload["format"] == "markdown"
-    assert "论文标题" in payload["content"]
-    assert payload["md_path"] == "paper.md"
-    assert calls["n"] == 1  # flash-extract 一次成功，不再回退
+    assert result.success is False
+    assert "共享材料层" in result.content
+    assert calls["n"] == 0
 
 
 @pytest.mark.asyncio
@@ -575,11 +553,11 @@ async def test_read_md_returns_media_list(tmp_path: Path) -> None:
 
 
 def test_materials_banner_summarizes_preprocessed_catalog(tmp_path: Path) -> None:
-    """[MATERIALS] 横幅：md 列出 IR/投影路径；pdf 占位引导 ingest；失败列错误码。
+    """[MATERIALS] 横幅列出共享 IR/投影路径。
 
     阶段 3 起横幅只读预处理结果，不再在横幅内自动 ingest（实施计划 §12.1）。
     """
-    from skill_toolbox.materials import MaterialError, MaterialService
+    from skill_toolbox.materials import MaterialService
     from skill_toolbox.providers.mock import ScriptedProvider
     from skill_toolbox.runtime import AgentRuntime
 
@@ -590,18 +568,8 @@ def test_materials_banner_summarizes_preprocessed_catalog(tmp_path: Path) -> Non
     service.prepare_material(small_md)
     catalog = service.catalog()
 
-    banner = rt._materials_banner(catalog, [])
+    banner = rt._materials_banner(catalog)
     assert "[MATERIALS]" in banner
     assert "notes.md" in banner
     assert "content.md" in banner
     assert "document.json" in banner
-
-    # 解析失败 → 稳定错误码进横幅
-    bad = tmp_path / "bad.xyz"
-    bad.write_text("x", encoding="utf-8")
-    try:
-        service.prepare_material(bad)
-    except MaterialError as exc:
-        errors = [(bad.name, exc.code, str(exc))]
-    banner = rt._materials_banner(catalog, errors)
-    assert "MATERIAL_UNSUPPORTED" in banner
