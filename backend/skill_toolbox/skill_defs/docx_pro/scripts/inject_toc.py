@@ -31,7 +31,13 @@ TOC_INSTR = r'TOC \o "1-3" \h \z \u'
 
 
 def _inject_toc_field(document: Document) -> None:
-    """Append a TOC field paragraph + refresh hint + PageBreak to the body."""
+    """Insert a TOC field paragraph + refresh hint + PageBreak right after the
+    cover section break, so the TOC occupies its own page after the title page.
+
+    build_docx 的 standard 版式是「封面 section + 正文 section」：封面分节符是
+    body 里第一个含 <w:sectPr> 的段落。目录必须插在它后面（正文之前），而不是
+    追加到文档末尾——否则目录会跑到最后一页。simple 无分节时回退为追加末尾。
+    """
     # TOC title must NOT use a Heading style (prevents TOC self-indexing).
     title = document.add_paragraph()
     title.alignment = 1  # CENTER
@@ -76,6 +82,25 @@ def _inject_toc_field(document: Document) -> None:
     break_paragraph = document.add_paragraph()
     break_run = break_paragraph.add_run()
     break_run.add_break(WD_BREAK.PAGE)
+
+    # 把整个 TOC 块搬到封面分节符之后（正文之前）。
+    body = document.element.body
+    toc_block = [
+        title._p, toc_paragraph._p, instr_paragraph._p,
+        separate_paragraph._p, end_paragraph._p, hint._p, break_paragraph._p,
+    ]
+    anchor = None
+    for p in body.iter():
+        if p.tag == qn("w:p"):
+            if p.find(f"{qn('w:pPr')}/{qn('w:sectPr')}") is not None:
+                anchor = p
+                break
+    if anchor is not None:
+        prev = anchor
+        for element in toc_block:
+            prev.addnext(element)
+            prev = element
+    # anchor 为 None（无分节的简单文档）时保持追加末尾（已是默认行为）。
 
 
 def _enable_update_fields(docx_path: Path) -> None:

@@ -31,7 +31,7 @@ from docx.enum.table import WD_ALIGN_VERTICAL, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Mm, Pt, RGBColor, Twips
+from docx.shared import Length, Mm, Pt, RGBColor, Twips
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
@@ -172,6 +172,24 @@ def set_table_column_widths_pct(table: Table, widths_pct: list[float]) -> None:
 def set_line_spacing_twips(paragraph: Paragraph, twips: int = DEFAULT_LINE_312) -> None:
     paragraph.paragraph_format.line_spacing = Twips(twips)
     paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+
+
+def set_visual_paragraph_layout(
+    paragraph: Paragraph, *, keep_with_next: bool = False
+) -> None:
+    """Give inline media a line box that can grow to its rendered height.
+
+    Body paragraphs use exact CJK line spacing for predictable text layout,
+    but that rule clips tall inline drawings to the line height. Media must
+    use an at-least line box and remain an isolated paragraph.
+    """
+    fmt = paragraph.paragraph_format
+    fmt.line_spacing = 1.0
+    fmt.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+    fmt.space_before = Pt(6)
+    fmt.space_after = Pt(6)
+    fmt.keep_together = True
+    fmt.keep_with_next = keep_with_next
 
 
 def set_first_line_indent_chars(paragraph: Paragraph, chars: int = 200) -> None:
@@ -463,6 +481,7 @@ def add_caption(document: Document, text: str, *, italic: bool = False) -> None:
     """图注/表注: centered, 五号 (10.5pt), SimSun/Times."""
     paragraph = document.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    set_visual_paragraph_layout(paragraph)
     run = paragraph.add_run(text)
     run.font.size = Pt(10.5)
     run.font.italic = italic
@@ -496,15 +515,33 @@ def add_image(
 
     if width_mm <= 0:
         section = document.sections[-1]
+        # python-docx 的 section 尺寸是 Twips（Length 子类），相减会退化成裸
+        # int，直接 .mm 会崩（'int' object has no attribute 'mm'）。差值仍是
+        # EMU，用 Length 重建单位再换算 mm。
         usable = section.page_width - section.left_margin - section.right_margin
-        width_mm = usable.mm * 0.9
+        width_mm = Length(usable).mm * 0.9
+    else:
+        # 显式 width_mm 超过可用页宽时自动收窄（防 postcheck image-overflow
+        # 反复触发、模型盲改宽度烧步）。图片按比例缩放，观感不受影响。
+        section = document.sections[-1]
+        usable = section.page_width - section.left_margin - section.right_margin
+        usable_mm = Length(usable).mm
+        width_mm = min(width_mm, usable_mm * 0.95)
     if width_px and height_px:
         height_mm = width_mm * (height_px / width_px)
+        # 高度钳制：超高 aspect 长图（如 684×2486）宽度铺满后高度会超过
+        # 页面（画出页外、文字与图片重叠）。按可用页高反算宽度，保比例缩。
+        section = document.sections[-1]
+        usable_h_mm = Length(section.page_height - section.top_margin - section.bottom_margin).mm
+        if height_mm > usable_h_mm * 0.95:
+            width_mm = (usable_h_mm * 0.95) * (width_px / height_px)
+            height_mm = usable_h_mm * 0.95
     else:
         height_mm = width_mm
 
     paragraph = document.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    set_visual_paragraph_layout(paragraph, keep_with_next=bool(caption))
     run = paragraph.add_run()
     run.add_picture(str(image_path), width=Mm(width_mm), height=Mm(height_mm))
     if caption:
@@ -566,6 +603,7 @@ def _add_formula_image(document: Document, formula: str, caption: str) -> None:
         subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, timeout=60)
         paragraph = document.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        set_visual_paragraph_layout(paragraph, keep_with_next=bool(caption))
         run = paragraph.add_run()
         run.add_picture(str(png), width=Mm(90))
     if caption:

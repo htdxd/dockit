@@ -93,6 +93,40 @@ TOOL_SPECS = [
         ["action", "args"],
     ),
     _function(
+        "spec_append",
+        "Incrementally build a DOCX generation spec (used by docx_pro). Append a "
+        "SMALL batch of content blocks to work/spec.json each call — the backend "
+        "merges and validates them, so you never hand-write a huge JSON in one go "
+        "(large single-generation payloads get truncated and fail). First call "
+        "may also set top-level meta (title/subtitle/complexity/scene/cover/"
+        "sections); later calls add only blocks. Returns total block count.",
+        {
+            "spec": {"type": "string", "description": "Spec path, usually work/spec.json"},
+            "blocks": {
+                "type": "array",
+                "description": "Blocks to append this call (1-8 items). Each item is "
+                "{type: 'heading'|'paragraph'|'image'|'table'|'formula', ...}: "
+                "heading {text, level}; paragraph {text}; image {source, caption?, width_mm?}; "
+                "table {caption?, headers, rows, widths_pct?}; formula {latex, caption?}.",
+                "items": {"type": "object"},
+            },
+            "title": {"type": "string", "description": "Document title (meta, first call)"},
+            "subtitle": {"type": "string", "description": "Document subtitle (meta)"},
+            "author": {"type": "string", "description": "Author name (meta)"},
+            "date": {"type": "string", "description": "Document date (meta)"},
+            "language": {"type": "string", "description": "e.g. zh-CN (meta)"},
+            "complexity": {"type": "string", "enum": ["simple", "standard", "academic", "gongwen", "form", "template"], "description": "Complexity tier (meta)"},
+            "scene": {"type": "string", "description": "Design scene, see references/aesthetics.md (meta)"},
+            "cover": {"type": "object", "description": "Cover recipe spec (meta)"},
+            "sections": {
+                "type": "array",
+                "description": "Top-level sections (meta, first call): [{heading, level, paragraphs: [{text, style?}]}]",
+                "items": {"type": "object"},
+            },
+        },
+        ["spec"],
+    ),
+    _function(
         "ask_user_questions",
         "Pause the task and ask the user structured questions. This is the ONLY "
         "way to get user input — there is no chat channel. Ask all needed questions "

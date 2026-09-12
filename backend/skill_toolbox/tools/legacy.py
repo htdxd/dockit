@@ -554,6 +554,8 @@ class ToolRegistry:
                 return await asyncio.to_thread(self._write, call)
             if call.name == "edit":
                 return await asyncio.to_thread(self._edit, call)
+            if call.name == "spec_append":
+                return await asyncio.to_thread(self._spec_append, call)
             if call.name == "exec_cmd":
                 return await self._exec_cmd_async(call)
             return self._result(call, False, f"Unknown data tool: {call.name}")
@@ -627,7 +629,18 @@ class ToolRegistry:
         terminate_process_tree(proc)
 
     def _build_cmd(self, call: ToolCall) -> list[str]:
-        action = str(call.arguments["action"])
+        action = call.arguments.get("action")
+        if not action:
+            # 模型常把 action 误放进 args 内层（{"args": {"action": ...}}），
+            # 若直接 KeyError 会让模型无法自我纠正，宽容读取并给出明确指引。
+            action = dict(call.arguments.get("args", {})).get("action")
+        if not action:
+            raise ValueError(
+                "exec_cmd 缺少 action：action 必须放在顶层 arguments"
+                '（如 {"action": "fill_resume", "args": {...}}），'
+                "不要写进 args 内层。"
+            )
+        action = str(action)
         args = dict(call.arguments.get("args", {}))
         if action not in self.scripts:
             raise ValueError(f"Action is not allowed: {action}")
@@ -805,8 +818,9 @@ class ToolRegistry:
         )
 
     def _write(self, call: ToolCall) -> ToolResult:
-        path = self.policy.resolve(str(call.arguments["path"]))
-        content = str(call.arguments["content"])
+        args = self._coerce_write_args(call.arguments)
+        path = self.policy.resolve(str(args["path"]))
+        content = str(args["content"])
         if path.suffix.lower() not in TEXT_SUFFIXES:
             raise ValueError("write only supports text files")
         if len(content.encode("utf-8")) > MAX_TEXT_BYTES:
@@ -816,6 +830,174 @@ class ToolRegistry:
         temp.write_text(content, encoding="utf-8")
         temp.replace(path)
         return self._result(call, True, f"Wrote {path.relative_to(self.policy.root)}")
+
+    # spec_append：docx 规格增量构建。模型每次只提交一小块 blocks（1-8 个），
+    # 后端合并进 work/spec.json 并校验——模型不再手拼整个巨型 spec JSON，
+    # 避免单次工具参数过大在生成/传输中被截断（这是 docx 超轮的头号根因）。
+    # 允许的 block 类型与 build_docx 的 blocks[] 对齐（见 spec-schema.md）。
+    _SPEC_BLOCK_TYPES = {
+        "heading": ("text", "level"),
+        "paragraph": ("text",),
+        "image": ("source", "caption", "width_mm"),
+        "table": ("caption", "headers", "rows", "widths_pct"),
+        "formula": ("latex", "caption"),
+    }
+    # 每个 block 类型必填字段（其余可选；caption 一律可选，表头/行/公式必填）
+    _SPEC_REQUIRED = {
+        "heading": ("text",),
+        "paragraph": ("text",),
+        "image": ("source",),
+        "table": ("headers", "rows"),
+        "formula": ("latex",),
+    }
+    _SPEC_META_KEYS = (
+        "title", "subtitle", "author", "date", "language",
+        "complexity", "scene", "cover", "sections",
+    )
+    _SPEC_MAX_BLOCKS_PER_CALL = 8
+
+    def _spec_append(self, call: ToolCall) -> ToolResult:
+        args = dict(call.arguments)
+        spec_rel = str(args.get("spec") or "work/spec.json")
+        path = self.policy.resolve(spec_rel)
+        if path.suffix.lower() != ".json":
+            raise ValueError("spec 必须是 .json 文件（如 work/spec.json）")
+
+        spec: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                spec = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"work/spec.json 已是损坏 JSON（{exc.msg}）：请用 write 重写骨架，"
+                    "或用 edit 修复后再 spec_append。"
+                ) from None
+            if not isinstance(spec, dict):
+                raise ValueError("work/spec.json 顶层必须是 JSON 对象")
+
+        # 顶层 meta 合并（首次调用可带 title/complexity/cover/sections…）
+        for key in self._SPEC_META_KEYS:
+            if key in args and args[key] is not None:
+                spec[key] = args[key]
+
+        # blocks 追加 + 逐项校验（出错即拒绝，不写半成品）
+        blocks = args.get("blocks")
+        if blocks is not None:
+            if not isinstance(blocks, list):
+                raise ValueError("blocks 必须是数组；每次传 1-8 个 block")
+            if len(blocks) > self._SPEC_MAX_BLOCKS_PER_CALL:
+                raise ValueError(
+                    f"blocks 一次最多 {self._SPEC_MAX_BLOCKS_PER_CALL} 个，"
+                    f"本次 {len(blocks)} 个——请分批 spec_append。"
+                )
+            for i, block in enumerate(blocks):
+                if not isinstance(block, dict) or "type" not in block:
+                    raise ValueError(
+                        f"blocks[{i}] 缺少 'type'，必须是 "
+                        f"{sorted(self._SPEC_BLOCK_TYPES)} 之一"
+                    )
+                btype = block["type"]
+                allowed = self._SPEC_BLOCK_TYPES.get(btype)
+                if allowed is None:
+                    raise ValueError(
+                        f"blocks[{i}].type='{btype}' 不支持，允许 "
+                        f"{sorted(self._SPEC_BLOCK_TYPES)}"
+                    )
+                required_fields = self._SPEC_REQUIRED.get(btype, ())
+                for field in required_fields:
+                    if field not in block or block[field] in (None, ""):
+                        raise ValueError(f"blocks[{i}]（type={btype}）缺必需字段 '{field}'")
+                unknown = set(block) - {btype} - set(allowed) - {"type"}
+                if unknown:
+                    raise ValueError(
+                        f"blocks[{i}]（type={btype}）有未知字段 {sorted(unknown)}，"
+                        f"允许 {allowed}"
+                    )
+                # image source 存在性预检：模型自造/抄漏 hash 前缀的路径（如
+                # 丢了 download_assets 返回的 8 位前缀）会拖到 build_docx 才报
+                # FileNotFoundError，然后进入 9 步修路径循环。在这里当场拒绝
+                # 并提示相近的真实文件名，模型一次就能纠正。
+                if btype == "image":
+                    src = str(block.get("source", ""))
+                    if src and not src.startswith(("http://", "https://", "data:")):
+                        img_path = (
+                            Path(src) if Path(src).is_absolute()
+                            else self.policy.root / src
+                        )
+                        if not img_path.is_file():
+                            assets_dir = self.policy.root / "work" / "assets"
+                            cands: list[str] = []
+                            if assets_dir.is_dir():
+                                stem = Path(src).name
+                                cands = [
+                                    f.name for f in sorted(assets_dir.iterdir())
+                                    if f.name.endswith(stem[-16:])
+                                ][:3]
+                            raise ValueError(
+                                f"blocks[{i}] image source 不存在: {src}。"
+                                "图片路径必须用 download_assets 返回的 path"
+                                "（形如 work/assets/<8位hex>-<文件名>），"
+                                "不得自造或改写 hash。"
+                                + (
+                                    f" work/assets 下相近文件: {cands}"
+                                    if cands else
+                                    " 先重新调 download_assets 拿真实 path"
+                                )
+                            )
+            spec.setdefault("blocks", []).extend(blocks)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(path)
+        total = len(spec.get("blocks", []))
+        return self._result(
+            call,
+            True,
+            json.dumps(
+                {"ok": True, "spec": spec_rel, "total_blocks": total},
+                ensure_ascii=False,
+            ),
+        )
+
+    @staticmethod
+    def _coerce_write_args(arguments: dict) -> dict:
+        """write 容错：模型偶尔把 {path, content} 包进 _invalid_json 等内部
+        key（值可能是 dict 或 JSON 字符串），顶层缺 path/content 时尽量恢复，
+        恢复不了给清晰错误而不是裸 KeyError（后者模型无法自我纠正）。
+        """
+        args = dict(arguments)
+        if "path" in args and "content" in args:
+            return args
+        for key, value in args.items():
+            if key in ("path", "content"):
+                continue
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if isinstance(value, dict) and "path" in value:
+                args.setdefault("path", value["path"])
+                args.setdefault("content", value.get("content", ""))
+                return args
+        missing = [k for k in ("path", "content") if k not in args]
+        # 单次 write 塞整个巨型 JSON（图片多/全文长）时，工具参数在生成/传输中
+        # 易被截断导致解析失败、path 丢失。给明确的分步建议而不是让模型盲目重试。
+        payload = json.dumps(args, ensure_ascii=False) if args else ""
+        hint = ""
+        if len(payload) > 4000 or any(
+            isinstance(v, str) and len(v) > 2000 for v in args.values()
+        ):
+            hint = (
+                " 若内容很大（图片多/正文长），请拆成多次 write/edit：先 write 骨架，"
+                "再用 edit 逐段追加，不要一次 write 塞整个巨型 JSON。"
+            )
+        raise ValueError(
+            f"write 缺少参数 {missing}：path/content 必须放在顶层 arguments，"
+            "不要包进 _invalid_json 等其它字段。示例："
+            '{"path": "work/plans/content-plan.json", "content": "..."}' + hint
+        )
 
     def _edit(self, call: ToolCall) -> ToolResult:
         path = self.policy.require_file(str(call.arguments["path"]))

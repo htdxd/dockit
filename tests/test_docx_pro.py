@@ -116,6 +116,156 @@ def test_build_docx_standard_pipeline(workspace: Path) -> None:
     assert "updateFields" in settings
     # Body footer carries the live PAGE field with the explicit arabic switch.
     assert "PAGE" in footer and "arabic" in footer
+    # TOC 插在封面分节符之后、正文之前（回归：曾追加到文档末尾，目录跑最后一页）。
+    toc_pos = document.find("TOC")
+    sectpr = document.find("<w:sectPr")
+    first_outline0 = document.find('w:outlineLvl w:val="0"')
+    assert toc_pos > sectpr > 0
+    assert first_outline0 == -1 or toc_pos < first_outline0
+    # TOC 之后紧跟分页符（独占一页）。
+    assert "type=\"page\"" in document[toc_pos : toc_pos + 3000]
+
+
+def test_build_docx_embeds_image_from_asset(workspace: Path) -> None:
+    """带图片的 spec 能成功生成（回归：python-docx 1.2 的 section 尺寸相减会
+    退化成裸 int，usable.mm 曾崩溃，导致任何插图文档生成失败）。"""
+    from PIL import Image as PILImage
+
+    img = workspace / "work" / "fig.png"
+    PILImage.new("RGB", (640, 400), (200, 120, 40)).save(img)
+    spec = _write_spec(
+        workspace,
+        {
+            "title": "带图报告",
+            "sections": [{"heading": "一、插图", "level": 1}],
+            "blocks": [
+                {"type": "heading", "level": 1, "text": "报告"},
+                {"type": "paragraph", "text": "正文段。"},
+                {"type": "image", "source": str(img), "caption": "图 1 示例"},
+            ],
+        },
+    )
+    output = workspace / "artifacts" / "with-img.docx"
+    result = _run_script("build_docx.py", str(spec), str(output), cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    assert output.is_file()
+    with zipfile.ZipFile(output) as archive:
+        assert any(n.startswith("word/media/") for n in archive.namelist())
+        document = archive.read("word/document.xml").decode("utf-8")
+    assert "<w:drawing>" in document
+
+
+def test_image_overflow_check_units_and_clamp(workspace: Path) -> None:
+    """回归：postcheck 的 image-overflow 曾把 extent(EMU) 和页宽(twips) 直接比
+    （1 twip=635 EMU），任何图片都误报超宽；且显式 width_mm 超可用宽应被自动
+    钳制，postcheck 必须全绿。"""
+    from PIL import Image as PILImage
+
+    img = workspace / "work" / "big.png"
+    PILImage.new("RGB", (4000, 2000), (30, 80, 200)).save(img)
+    spec = _write_spec(
+        workspace,
+        {
+            "title": "钳制回归",
+            "complexity": "standard",
+            "sections": [{"heading": "一、图", "level": 1}],
+            "blocks": [
+                {"type": "heading", "level": 1, "text": "报告"},
+                {"type": "image", "source": str(img), "width_mm": 300, "caption": "图 1"},
+                {"type": "image", "source": str(img), "width_mm": 90, "caption": "图 2"},
+            ],
+        },
+    )
+    output = workspace / "artifacts" / "clamp.docx"
+    result = _run_script("build_docx.py", str(spec), str(output), cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    results = _postcheck(output)
+    iof = next(c for c in results if c["name"] == "image-overflow")
+    assert iof["passed"], iof["message"]
+    assert _errors(results) == []
+
+
+def test_image_paragraph_allows_rendered_height(workspace: Path) -> None:
+    """图片段落不能继承正文 exact 行距，否则 Word/WPS 会裁剪图片。"""
+    from PIL import Image as PILImage
+
+    img = workspace / "work" / "tall.png"
+    PILImage.new("RGB", (400, 900), (30, 120, 80)).save(img)
+    spec = _write_spec(
+        workspace,
+        {
+            "title": "图片布局回归",
+            "complexity": "simple",
+            "blocks": [{"type": "image", "source": str(img), "caption": "图 1"}],
+        },
+    )
+    output = workspace / "artifacts" / "image-layout.docx"
+    result = _run_script("build_docx.py", str(spec), str(output), cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    results = _postcheck(output)
+    layout = next(c for c in results if c["name"] == "image-layout")
+    assert layout["passed"], layout["message"]
+    assert _errors(results) == []
+
+
+def test_spec_append_builds_spec_incrementally(workspace: Path) -> None:
+    """spec_append 分小批追加 blocks 到 work/spec.json，后端合并+校验，
+    最终 build_docx 能直接消费（回归：大规格单次 write 会被截断）。"""
+    from skill_toolbox.policy import WorkspacePolicy
+    from skill_toolbox.tools import ToolRegistry
+
+    (workspace / "work").mkdir(exist_ok=True)
+    (workspace / "artifacts").mkdir(exist_ok=True)
+    from PIL import Image as PILImage
+
+    img = workspace / "work" / "fig.png"
+    PILImage.new("RGB", (640, 400), (20, 80, 140)).save(img)
+
+    policy = WorkspacePolicy(workspace)
+    reg = ToolRegistry(policy, capabilities={"vision": True})
+
+    def append(args: dict) -> str | None:
+        """同步调用 _spec_append：成功返回 None，被拒返回错误文本。"""
+        try:
+            reg._spec_append(ToolCall(id="s", name="spec_append", arguments=args))
+            return None
+        except ValueError as exc:
+            return str(exc)
+
+    assert append({"spec": "work/spec.json", "title": "增量规格", "complexity": "standard",
+                   "blocks": [{"type": "heading", "text": "一、架构", "level": 1},
+                              {"type": "paragraph", "text": "正文。"}]}) is None
+    assert append({"spec": "work/spec.json",
+                   "blocks": [{"type": "image", "source": str(img), "caption": "图 1"},
+                              {"type": "table", "headers": ["模型", "Top5"], "rows": [["AlexNet", "84.6%"]]}]}) is None
+
+    spec = json.loads((workspace / "work" / "spec.json").read_text(encoding="utf-8"))
+    assert [b["type"] for b in spec["blocks"]] == ["heading", "paragraph", "image", "table"]
+    assert spec["title"] == "增量规格" and spec["complexity"] == "standard"
+
+    # 校验：超 8 个 / 未知字段 被拒且不写坏文件
+    over = append({"spec": "work/spec.json",
+                   "blocks": [{"type": "paragraph", "text": str(i)} for i in range(9)]})
+    assert over is not None and "最多 8 个" in over
+    bad = append({"spec": "work/spec.json",
+                  "blocks": [{"type": "heading", "text": "x", "foo": "y"}]})
+    assert bad is not None and "未知字段" in bad
+
+    # image source 存在性预检：自造路径当场拒绝并给相近候选（回归：曾拖到
+    # build_docx 才 FileNotFoundError，然后烧 9 步修路径）。
+    (workspace / "work" / "assets").mkdir(exist_ok=True)
+    (workspace / "work" / "assets" / "abcd1234-deadbeef-missing.png").write_bytes(b"x")
+    bogus = append({"spec": "work/spec.json",
+                    "blocks": [{"type": "image", "source": "work/deadbeef-missing.png", "caption": "自造"}]})
+    assert bogus is not None and "image source 不存在" in bogus and "abcd1234" in bogus
+
+    # 生成端到端可用
+    output = workspace / "artifacts" / "incr.docx"
+    result = _run_script("build_docx.py", str(workspace / "work" / "spec.json"), str(output), cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(output) as archive:
+        assert any(n.startswith("word/media/") for n in archive.namelist())
+        assert "<w:drawing>" in archive.read("word/document.xml").decode("utf-8")
 
 
 def test_fill_form_creates_sdt_and_protection(workspace: Path) -> None:

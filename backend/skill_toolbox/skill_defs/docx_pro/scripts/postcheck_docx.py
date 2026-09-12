@@ -6,7 +6,7 @@ Runs 15 business-rule checks (port of the fused skills' post-generation
 checklist; the proprietary plugin only implemented 9 of its advertised 14 —
 this implementation covers the full set):
 
-  blank-pages / cover-overflow / line-spacing / image-overflow /
+  blank-pages / cover-overflow / line-spacing / image-layout / image-overflow /
   image-aspect-ratio / font-fallback / heading-levels / shading-type / toc /
   table-margins / table-cross-page / cjk-indent / numbering-continuity /
   cleanliness / content-quality
@@ -222,12 +222,42 @@ def check_line_spacing(root: ET.Element) -> CheckResult:
 
 
 def check_image_overflow(root: ET.Element) -> CheckResult:
-    width, height, left, right = page_setup(root)
-    usable = (width - left - right) * 1.05
-    over = [cx for ext in root.findall(f".//{WP}extent") if (cx := int(ext.get("cx", "0"))) > usable]
-    return CheckResult(
-        "image-overflow", not over, f"{len(over)} image(s) wider than usable page" if over else "images within page"
-    )
+    width, height, left, right = page_setup(root)  # twips
+    # extent cx 是 EMU（1 twip = 635 EMU）；usable 是 twips，必须同单位比较，
+    # 否则任何图片都会被误报超宽（修复：把 EMU 换算成 twips）。
+    usable_emu = (width - left - right) * 1.05 * 635
+    over = [cx for ext in root.findall(f".//{WP}extent") if (cx := int(ext.get("cx", "0"))) > usable_emu]
+    if over:
+        details = ", ".join(f"{cx / 635:.0f}tw" for cx in sorted(over, reverse=True)[:5])
+        return CheckResult(
+            "image-overflow",
+            False,
+            f"{len(over)} image(s) wider than usable page (可用宽 {usable_emu / 635:.0f}tw, 超宽 {details})",
+        )
+    return CheckResult("image-overflow", True, "images within page")
+
+
+def check_image_layout(root: ET.Element) -> CheckResult:
+    """Detect inline drawings clipped by an exact body line-height.
+
+    Images and rendered formulas live in their own paragraphs. An exact line
+    rule (for example the 312-twip body rule) constrains the drawing's line
+    box and causes Word/WPS to show only a thin slice of the image.
+    """
+    clipped: list[str] = []
+    for idx, paragraph in enumerate(root.findall(f".//{W}p"), start=1):
+        if paragraph.find(f".//{W}drawing") is None:
+            continue
+        spacing = paragraph.find(f"./{W}pPr/{W}spacing")
+        if spacing is not None and spacing.get(f"{W}lineRule") == "exact":
+            clipped.append(str(idx))
+    if clipped:
+        return CheckResult(
+            "image-layout",
+            False,
+            f"{len(clipped)} image paragraph(s) use exact line spacing and may be clipped",
+        )
+    return CheckResult("image-layout", True, "media paragraphs allow rendered height")
 
 
 def check_image_aspect_ratio(docx_path: str, root: ET.Element) -> CheckResult:
@@ -465,6 +495,7 @@ def run_all_checks(docx_path: str) -> list[CheckResult]:
         check_blank_pages(root),
         check_cover_overflow(root),
         check_line_spacing(root),
+        check_image_layout(root),
         check_image_overflow(root),
         check_font_fallback(root),
         check_heading_levels(root),
