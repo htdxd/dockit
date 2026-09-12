@@ -20,7 +20,6 @@ catalog/tool view，不拥有解析缓存。
 from __future__ import annotations
 
 import hashlib
-import json
 import posixpath
 import re
 import shutil
@@ -32,6 +31,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from lxml import etree
+
+from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
 
 from skill_toolbox.material_models import (
     SCHEMA_VERSION,
@@ -87,14 +88,6 @@ class MaterialError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def safe_stem(name: str) -> str:
@@ -366,6 +359,11 @@ def _docx_assets(
     assets_dir.mkdir(parents=True, exist_ok=True)
     assets: list[Asset] = []
     by_member: dict[str, Asset] = {}
+    content_types = {}
+    if "[Content_Types].xml" in archive.namelist():
+        types = etree.fromstring(archive.read("[Content_Types].xml"))
+        content_types = {node.get("PartName", "").lstrip("/"): node.get("ContentType")
+                         for node in types if node.get("PartName")}
     for member in sorted(
         name for name in archive.namelist() if name.startswith("word/media/")
     ):
@@ -375,7 +373,7 @@ def _docx_assets(
         asset = Asset(
             id=_asset_id(material_id, member, content_hash),
             path=_relative_to(workspace, out),
-            mime_type=_mime_for(out),
+            mime_type=content_types.get(member) or _mime_for(out),
             sha256=content_hash,
             width=_image_width(out),
             height=_image_height(out),
@@ -425,6 +423,13 @@ class MaterialCatalog:
 
     def ir_for(self, material_id: str) -> DocumentIR | None:
         return self.irs.get(material_id)
+
+    def asset_path(self, asset_id: str) -> str | None:
+        for ir in self.irs.values():
+            asset = ir.asset_by_id(asset_id)
+            if asset is not None:
+                return asset.path
+        return None
 
 
 class MaterialService:
@@ -582,11 +587,7 @@ class MaterialService:
         materials_root = material_id_dir(self.workspace, ir.material_id)
         materials_root.mkdir(parents=True, exist_ok=True)
         doc_path = materials_root / "document.json"
-        tmp = doc_path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(ir.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        tmp.replace(doc_path)
+        atomic_write_json(doc_path, ir.model_dump())
         md_path = materials_root / "content.md"
         md_path.write_text(project_content_md(ir), encoding="utf-8")
         self._compat[ir.material_id] = self._rel(md_path)
@@ -753,8 +754,6 @@ class MaterialService:
         fail-fast（任务直接失败），不降级、不登记成可继续的 warning。
         """
         from skill_toolbox.tools.mineru import (
-            MINERU_PARSE_FAILED,
-            MINERU_TOKEN_MISSING,
             MineruOptions,
             MineruService,
         )
@@ -792,6 +791,8 @@ class MaterialService:
         # 复用 docx 结构解析（MinerU 产出的 docx 同样是 OOXML 包）；
         # source_format 保留 pdf（不写成 docx，IR 记录真实来源格式）。
         ir = self._parse_native_docx(converted, original, material_id, sha256, "pdf")
+        self._add_pdf_original_images(staged, ir)
+        self._write_ir(ir)
         entry = next(
             item
             for item in self._manifest["materials"]
@@ -801,6 +802,58 @@ class MaterialService:
         entry["mineru_cache"] = result["status"]
         entry["mineru_cache_key"] = result["cache_key"]
         return ir
+
+    def _add_pdf_original_images(self, source: Path, ir: DocumentIR) -> None:
+        """保留 PDF 内嵌位图，避免选用重建 DOCX 中重采样过的照片。"""
+        import pymupdf as fitz
+
+        assets_dir = material_id_dir(self.workspace, ir.material_id) / "assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        seen_xrefs: set[int] = set()
+        by_hash = {asset.sha256: asset for asset in ir.assets}
+        try:
+            with fitz.open(source) as pdf:
+                for page_index, page in enumerate(pdf):
+                    for image_info in page.get_images():
+                        xref = image_info[0]
+                        if xref in seen_xrefs:
+                            continue
+                        seen_xrefs.add(xref)
+                        image = pdf.extract_image(xref)
+                        if not image:
+                            continue
+                        data = image["image"]
+                        digest = hashlib.sha256(data).hexdigest()
+                        locator = f"pdf:embedded-image:page[{page_index + 1}]:xref[{xref}]"
+                        caption = (
+                            f"PDF 第 {page_index + 1} 页原始内嵌图片"
+                            f"（{image['width']}×{image['height']}，未裁剪或缩放）。"
+                            "可能是照片、图标或整页扫描图；用于照片前请查看图片确认。"
+                        )
+                        if digest in by_hash:
+                            asset = by_hash[digest]
+                            if not asset.source_locator.startswith("pdf:embedded-image:"):
+                                asset.source_locator = locator
+                                asset.caption = caption
+                                asset.page = page_index + 1
+                            continue
+                        out = assets_dir / f"pdf-original-{xref}.{image['ext']}"
+                        out.write_bytes(data)
+                        asset = Asset(
+                            id=_asset_id(ir.material_id, locator, digest),
+                            path=self._rel(out),
+                            mime_type=_mime_for(out),
+                            sha256=digest,
+                            width=image["width"],
+                            height=image["height"],
+                            page=page_index + 1,
+                            caption=caption,
+                            source_locator=locator,
+                        )
+                        ir.assets.append(asset)
+                        by_hash[digest] = asset
+        except (fitz.FileDataError, OSError) as exc:
+            ir.warnings.append(f"PDF 原始内嵌图片提取失败：{exc}")
 
     def _parse_native_docx(
         self,
@@ -1012,12 +1065,7 @@ class MaterialService:
 
     def _write_manifest(self) -> None:
         manifest_path = self.workspace / "work" / "materials" / "manifest.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = manifest_path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(self._manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        tmp.replace(manifest_path)
+        atomic_write_json(manifest_path, self._manifest)
 
     def catalog(self) -> MaterialCatalog:
         return MaterialCatalog(self.workspace, self._irs, self._manifest, self._compat)

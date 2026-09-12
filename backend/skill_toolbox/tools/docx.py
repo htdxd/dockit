@@ -25,6 +25,7 @@ from skill_toolbox.contracts.docx import (
 )
 from skill_toolbox.materials import MaterialCatalog
 from skill_toolbox.tools.process import ProcessRunner
+from skill_toolbox.tools.workspace import atomic_write_json
 from skill_toolbox.unicode_utils import redact_secrets
 
 DRAFT_DIR = "work/drafts"
@@ -66,7 +67,7 @@ class DocxService:
         }
         path = self._draft_path(document_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_json(path, draft)
+        atomic_write_json(path, draft)
         return OperationResult(
             ok=True,
             status="created",
@@ -103,7 +104,7 @@ class DocxService:
             )
         spec_blocks = [self._to_spec_block(block) for block in request.blocks]
         draft["blocks"].extend(spec_blocks)
-        self._atomic_json(self._draft_path(request.document_id), draft)
+        atomic_write_json(self._draft_path(request.document_id), draft)
         return OperationResult(
             ok=True,
             status="created",
@@ -181,7 +182,7 @@ class DocxService:
             spec["author"] = draft["author"]
         if draft.get("date"):
             spec["date"] = draft["date"]
-        self._atomic_json(spec_path, spec)
+        atomic_write_json(spec_path, spec)
 
         out = self.workspace / "artifacts" / output_name
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +257,7 @@ class DocxService:
                 "replace_block_text / remove_block）",
             )
         if changed:
-            self._atomic_json(self._draft_path(request.artifact_id), draft)
+            atomic_write_json(self._draft_path(request.artifact_id), draft)
         return self.finalize(
             DocxFinalizeRequest(
                 document_id=request.artifact_id,
@@ -282,13 +283,7 @@ class DocxService:
             raise ToolError("DOCX_DRAFT_CORRUPT", f"草稿损坏: {exc}") from None
 
     def _asset_path(self, asset_id: str) -> str | None:
-        if self.catalog is None:
-            return None
-        for ir in self.catalog.irs.values():
-            asset = ir.asset_by_id(asset_id)
-            if asset is not None:
-                return asset.path
-        return None
+        return self.catalog.asset_path(asset_id) if self.catalog else None
 
     def _run_script(
         self, script_name: str, args: list[str], fail_code: str
@@ -346,7 +341,7 @@ class DocxService:
         qa_dir.mkdir(parents=True, exist_ok=True)
         qa = {"mechanical": mechanical, "visual": "not_run"}
         path = qa_dir / "docx.json"
-        self._atomic_json(path, qa)
+        atomic_write_json(path, qa)
 
     def _write_pending_visual(self, step: str, artifact: Path) -> None:
         path = self.workspace / PENDING_VISUAL
@@ -366,13 +361,7 @@ class DocxService:
                 "status": "skipped",
             }
         )
-        self._atomic_json(path, {"items": items})
-
-    def _atomic_json(self, path: Path, payload: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(path.suffix + ".tmp")
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(path)
+        atomic_write_json(path, {"items": items})
 
     def _rel(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.workspace.resolve()))

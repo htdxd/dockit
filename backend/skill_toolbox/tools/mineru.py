@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from skill_toolbox.contracts.common import ToolError
 from skill_toolbox.tools.cache import HashCache
+from skill_toolbox.tools.workspace import sha256_file
 from skill_toolbox.unicode_utils import redact_secrets
 
 MINERU_ADAPTER_VERSION = "1"
@@ -108,14 +109,6 @@ def mineru_cli_version() -> str:
         except OSError:
             return "unknown"
     return "unknown"
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _default_runner() -> Callable[[list[str], dict[str, Any]], subprocess.CompletedProcess[bytes]]:

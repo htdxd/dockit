@@ -1,6 +1,6 @@
 """共享材料 Service：read_material / create_content_plan（实施计划 §5.2）。
 
-read_material 按 IR source_id 返回摘要、正文分页或 Asset 元数据；**不接受
+read_material 按材料 ID 或 IR source_id 返回摘要、正文分页或 Asset；**不接受
 任意路径**。无 Vision 模式不返回图片 payload，只返回文件名/尺寸/aspect/
 bbox/caption/来源关系（计划 §8）。
 
@@ -11,18 +11,19 @@ create_content_plan 由后端写入计划文件并补齐 task_type/mode/schema_v
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import Any, Literal
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.material_models import (
-    SCHEMA_VERSION,
     ContentPlan,
     Exclusion,
     Selection,
 )
 from skill_toolbox.materials import MaterialCatalog
+from skill_toolbox.models import ImageContent
 
 ViewKind = Literal["summary", "blocks", "assets"]
 MaterialIR = Any  # DocumentIR（避免重导入 pydantic 模型类型标注）
@@ -53,8 +54,7 @@ class MaterialPlanService:
         offset: int = 0,
         limit: int = 200,
     ) -> OperationResult:
-        """按 IR id 读取摘要/块/Asset 元数据。source_id 形如 block-<id16>-<n>
-        或 asset-<id16>-<hash>（文档要求复制真实 ID，禁止自造路径）。"""
+        """材料 ID 按块分页；单块 ID 保留字符切片；图片 Asset 按视觉能力返回。"""
         if view not in {"summary", "blocks", "assets"}:
             raise ToolError(
                 "MATERIAL_VIEW_INVALID",
@@ -65,6 +65,22 @@ class MaterialPlanService:
                 "MATERIAL_PAGING_INVALID",
                 "offset 必须 >= 0，limit 必须在 1-2000",
             )
+        document = self.catalog.ir_for(source_id)
+        if document is not None:
+            if view == "summary":
+                return self.material_summary(source_id)
+            items = (
+                [block.model_dump() for block in document.blocks]
+                if view == "blocks" else self.material_summary(source_id).data["assets"]
+            )
+            page = items[offset:offset + limit]
+            next_offset = offset + len(page)
+            return OperationResult(ok=True, status="validated", data={
+                "material_id": source_id, "view": view, view: page,
+                "offset": offset, "total": len(items),
+                "next_offset": next_offset if next_offset < len(items) else None,
+                "has_more": next_offset < len(items),
+            })
         ir = self._ir_for_id(source_id)
         if ir is None:
             raise ToolError(
@@ -80,13 +96,24 @@ class MaterialPlanService:
                     "MATERIAL_UNKNOWN_ID",
                     f"材料 {ir.material_id} 中不存在 asset: {source_id}",
                 )
+            images = []
+            if self.vision and asset.mime_type in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+                path = (self.workspace / asset.path).resolve()
+                path.relative_to(self.workspace.resolve())
+                if path.stat().st_size > 12 * 1024 * 1024:
+                    raise ToolError("MATERIAL_IMAGE_TOO_LARGE", "图片超过 12 MB 读取上限。")
+                images = [ImageContent(
+                    media_type=asset.mime_type,
+                    base64_data=base64.b64encode(path.read_bytes()).decode("ascii"),
+                ).model_dump()]
             return OperationResult(
                 ok=True,
                 status="validated",
+                images=images,
                 data={
                     "material_id": ir.material_id,
                     "view": "asset",
-                    # 无 Vision：只返回元数据，不返回图片字节（计划 §8）
+                    # 图片字节通过 images 独立投递，文本只携带元数据。
                     "asset": {
                         "id": asset.id,
                         "path": asset.path,
@@ -97,7 +124,7 @@ class MaterialPlanService:
                         "caption": asset.caption,
                         "surrounding_text": asset.surrounding_text[:500],
                         "source_locator": asset.source_locator,
-                        "image_payload": False,
+                        "image_payload": bool(images),
                     },
                 },
             )

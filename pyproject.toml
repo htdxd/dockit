@@ -9,6 +9,7 @@ dependencies = [
     "pillow>=12.3.0",
     "platformdirs>=4.11.0",
     "python-docx>=1.2.0",
+    "pymupdf>=1.28.0",
 ]
 
 [project.scripts]
@@ -36,4 +37,3 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.0",
 ]
-

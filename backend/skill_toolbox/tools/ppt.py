@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +31,7 @@ from skill_toolbox.contracts.ppt import (
 )
 from skill_toolbox.materials import MaterialCatalog
 from skill_toolbox.tools.process import ProcessRunner
+from skill_toolbox.tools.workspace import atomic_write_json
 from skill_toolbox.unicode_utils import redact_secrets
 
 OUTLINE_DIR = "work/outlines"
@@ -157,7 +157,7 @@ class PptService:
         outline_id = f"outline-{_short_hash(topic)}"
         path = self.workspace / OUTLINE_DIR / f"{outline_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_json(path, outline.model_dump())
+        atomic_write_json(path, outline.model_dump())
         return OperationResult(
             ok=True,
             status="created",
@@ -359,20 +359,14 @@ class PptService:
     # ---------------- helpers ----------------
 
     def _asset_path(self, asset_id: str) -> str | None:
-        if self.catalog is None:
-            return None
-        for ir in self.catalog.irs.values():
-            asset = ir.asset_by_id(asset_id)
-            if asset is not None:
-                return asset.path
-        return None
+        return self.catalog.asset_path(asset_id) if self.catalog else None
 
     def _write_qa(self) -> None:
         qa_dir = self.workspace / QA_DIR
         qa_dir.mkdir(parents=True, exist_ok=True)
         qa = {"mechanical": "passed", "visual": "not_run"}
         path = qa_dir / "ppt.json"
-        self._atomic_json(path, qa)
+        atomic_write_json(path, qa)
 
     def _write_pending_visual(self, output: Path) -> None:
         qa_dir = self.workspace / QA_DIR
@@ -393,13 +387,7 @@ class PptService:
                 "status": "skipped",
             }
         )
-        self._atomic_json(path, {"items": items})
-
-    def _atomic_json(self, path: Path, payload: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(path.suffix + ".tmp")
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(path)
+        atomic_write_json(path, {"items": items})
 
 
 def _add_title(slide: Any, text: str, left: float, top: float, size: int) -> None:
