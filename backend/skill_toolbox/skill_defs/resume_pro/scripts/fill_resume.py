@@ -97,6 +97,19 @@ def estimate_height(text: str, width_pt: float, font_pt: float) -> float:
     return estimate_lines(text, width_pt, font_pt) * font_pt * LINE_FACTOR
 
 
+def _copy_rpr(rpr):
+    """深拷贝 rPr，无显式 color 时保持原样。
+
+    注意：不要在这里"兜底"补白色。模板正文（如 t026 右栏）run 常无显式
+    <w:color>，继承默认黑色、在白底可见；只有深色背景文字才自带显式
+    FFFFFF。强行补白会让白底正文变成白字——不可见（曾致颜色"翻转"）。
+    无 rPr 返回 None，由调用方决定不挂 rPr（同样继承默认）。
+    """
+    if rpr is None:
+        return None
+    return etree.fromstring(etree.tostring(rpr))
+
+
 # ---------------- docx 解析 ----------------
 def load_docx_xml(path: Path):
     with ZipFile(path) as z:
@@ -263,24 +276,26 @@ def box_text_exact(tx) -> str:
 
 
 # ---------------- 替换 ----------------
-def replace_text_in_paragraphs(tx, old_text: str, new_text: str, keep_anchor: bool = True) -> int:
+def replace_text_in_paragraphs(tx, old_text: str, new_text: str, keep_anchor: bool = True) -> tuple[int, list]:
     """在文本框内按文本替换。
 
     keep_anchor=True（line 字段）: 只替换锚点（含冒号）之后的值部分。
     keep_anchor=False（block 字段）: 整个文本框文本替换。
-    返回替换次数。
+    返回 (替换次数, 新写入的 run 列表)——run 供溢出缩号直接改 rPr。
     """
     paras = list(tx.iter(W + "p"))
     if keep_anchor:
-        return _replace_line_value(tx, paras, old_text, new_text)
-    return _replace_block(tx, paras, new_text)
+        count, run = _replace_line_value(tx, paras, old_text, new_text)
+        return count, ([run] if run is not None else [])
+    runs = _replace_block(tx, paras, new_text)
+    return (1 if runs else 0), runs
 
 
-def _replace_block(tx, paras, new_text: str) -> int:
-    """整块替换: 保留第一段第一个 run 的 rPr，清空其余内容"""
+def _replace_block(tx, paras, new_text: str) -> list:
+    """整块替换: 保留第一段第一个 run 的 rPr，清空其余内容；返回所有新 run"""
     runs_all = list(tx.iter(W + "r"))
     if not runs_all:
-        return 0
+        return []
     first_run = runs_all[0]
     rpr = first_run.find(W + "rPr")
 
@@ -293,18 +308,17 @@ def _replace_block(tx, paras, new_text: str) -> int:
     for r in list(first_p.iter(W + "r")):
         if r is not first_run:
             first_p.remove(r)
-    # 第一段内可能还有书签/域等，保留；run 文本设为新内容（拆成多段）
-    if rpr is None:
-        rpr = etree.SubElement(first_run, W + "rPr")
-    # 删掉 first_run 现有的所有 w:t
+    # 删掉 first_run 现有的所有 w:t（旧文本），再写入新文本
     for t in first_run.findall(W + "t"):
         first_run.remove(t)
-
+    # 第一段内可能还有书签/域等，保留；run 文本设为新内容（拆成多段）
+    # first_run 的 rPr 原样保留（可能为 None，此时继承段落/文档默认色）
     lines = new_text.split("\n")
     # 若有多行，给第一行所在的 run 设置文本后补段落
     # 先处理第一行
     _set_run_text(first_run, rpr, lines[0] if lines else "")
-    # 其余行：在 first_p 后插入新段落（复制 rPr）
+    # 其余行：在 first_p 后插入新段落（复制 rPr，无显式色则继承默认，避免白底白字）
+    new_rs = [first_run]
     for extra in lines[1:]:
         new_p = etree.Element(W + "p")
         # 复制第一段的 pPr（如果有）保持格式
@@ -312,11 +326,16 @@ def _replace_block(tx, paras, new_text: str) -> int:
         if ppr is not None:
             new_p.append(etree.fromstring(etree.tostring(ppr)))
         new_r = etree.SubElement(new_p, W + "r")
-        new_r.append(etree.fromstring(etree.tostring(rpr)))
+        copied = _copy_rpr(rpr)
+        if copied is not None:
+            new_r.append(copied)
+        # 新段新 run 直接挂自己的 rPr（有颜色则复制；无则保持继承），
+        # 复用旧 run 会被 lxml 自动从旧段落卸载、导致旧段落丢 rPr。
         _set_run_text(new_r, rpr, extra)
+        new_rs.append(new_r)
         first_p.addnext(new_p)
         first_p = new_p
-    return 1
+    return new_rs
 
 
 def _set_run_text(run, rpr, text: str) -> None:
@@ -325,13 +344,14 @@ def _set_run_text(run, rpr, text: str) -> None:
     t.text = text
 
 
-def _replace_line_value(tx, paras, old_line: str, new_text: str) -> int:
+def _replace_line_value(tx, paras, old_line: str, new_text: str) -> tuple[int, object]:
     """line 字段: 旧行匹配锚点行，替换锚点后的值部分。
 
     old_line 形如 "姓    名：  余涵"。锚点 = 冒号前（含冒号）部分。
     新值 = 锚点 + 新文本。锚点文字、空格格式保留。
     匹配对空白不敏感（模板常含多个连续空格对齐）。
     若新值自身已带锚点标签（如"手机：138-…"），去重后不再重复拼接。
+    返回 (替换次数, 最后一个替换段的新 run)。
     """
     m = re.match(r"^([^：:]*[：:])", old_line)
     anchor = m.group(1) if m else ""
@@ -346,16 +366,19 @@ def _replace_line_value(tx, paras, old_line: str, new_text: str) -> int:
         new_full = anchor + new_text if anchor else new_text
     old_norm = re.sub(r"\s+", "", old_line)
     replaced = 0
+    last_run = None
     for p in paras:
         ptext = "".join(t.text or "" for t in p.iter(W + "t"))
         if old_norm and old_norm in re.sub(r"\s+", "", ptext):
-            _set_paragraph_text(p, new_full)
+            run = _set_paragraph_text(p, new_full)
+            if run is not None:
+                last_run = run
             replaced += 1
-    return replaced
+    return replaced, last_run
 
 
 def _set_paragraph_text(p, new_text: str) -> None:
-    """整段替换: 保留第一个 run 的 rPr，删其余 run"""
+    """整段替换: 保留第一个 run 的 rPr（包括字体/字号/颜色），删其余 run"""
     runs = list(p.iter(W + "r"))
     if not runs:
         return
@@ -365,12 +388,51 @@ def _set_paragraph_text(p, new_text: str) -> None:
         p.remove(r)
     for t in first.findall(W + "t"):
         first.remove(t)
-    t = etree.SubElement(first, W + "t")
+    # 重新创建 run 并复制 rPr（关键修复：之前只保留 text，没保留 rPr，导致颜色丢失）
+    run = etree.SubElement(first, W + "r")
+    if rpr is not None:
+        copied = _copy_rpr(rpr)
+        if copied is not None:
+            run.append(copied)
+    t = etree.SubElement(run, W + "t")
     t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
     t.text = new_text
-    # 清除断字/空白差异
-    if rpr is not None and rpr.find(W + "noProof") is None:
-        pass  # 保留 rPr 原样
+    return run
+
+
+# ---------------- 溢出适配（阶段 5.5） ----------------
+# 内容超出文本框时，优先缩字号至 9pt（保排版完整），仍不够才提示精简。
+# 与 overflow_risks 提示并列——先试自动缩号，避免模型手动循环精简烧步。
+MIN_FONT_PT = 9.0
+
+
+def _fit_shrink_font(new_text: str, w_pt: float, h_pt: float, base_font_pt: float) -> float | None:
+    """把文本行跑一遍逐级缩号，返回能装进 h_pt 的最小字号；装不下返回 None。"""
+    if not w_pt or not h_pt:
+        return None
+    cur = base_font_pt if base_font_pt else 11.0
+    while cur >= MIN_FONT_PT:
+        if estimate_height(new_text, w_pt, cur) <= h_pt * 1.05:
+            return cur
+        cur -= 0.5
+    return None
+
+
+def _set_font_size_in_rpr(rpr, font_pt: float) -> None:
+    """把 rPr（可为 None）的 sz 设为 font_pt（半磅单位）；无 rPr 时新建。
+
+    缩号只影响字号，保留颜色/字体继承语义——与原 rPr 的其它属性（如
+    显式 <w:color>）不冲突。调用方保证 font_pt 已足够小能装下。
+    """
+    if rpr is None:
+        return  # 无 rPr 时不能新建空 rPr（会破坏颜色继承），交给 overflow 分支处理
+    for sz in rpr.iter(W + "sz"):
+        sz.set(W + "val", str(int(font_pt * 2)))
+        return
+    # 无 sz：插在 rPr 首子元素之前（按 OOXML 顺序应在 fonts 之后）
+    sz = etree.Element(W + "sz")
+    sz.set(W + "val", str(int(font_pt * 2)))
+    rpr.insert(0, sz)
 
 
 # ---------------- 受限组件动作（阶段 5） ----------------
@@ -815,12 +877,12 @@ def apply_component_actions(root, manifest: dict, values: dict) -> tuple[list, l
                         continue
                     if keep_anchor:
                         tpl_line = f.get("text") or ""
-                        n = replace_text_in_paragraphs(tx, tpl_line, value, keep_anchor=True)
+                        count, _run = replace_text_in_paragraphs(tx, tpl_line, value, keep_anchor=True)
                     else:
-                        n = replace_text_in_paragraphs(tx, box_text_exact(tx), value, keep_anchor=False)
-                    if n:
+                        count, _run = replace_text_in_paragraphs(tx, box_text_exact(tx), value, keep_anchor=False)
+                    if count:
                         replaced_any = True
-                        records.append({"action": action, "component": comp_id, "field": field_id, "count": n})
+                        records.append({"action": action, "component": comp_id, "field": field_id, "count": count})
                         break
                 if replaced_any:
                     break
@@ -1008,32 +1070,64 @@ def main() -> None:
                 continue
 
             mode = f.get("mode", "line")
+            new_runs: list | None = None
+            line_run = None
             try:
                 if mode == "block":
-                    n = replace_text_in_paragraphs(tx, box_text_exact(tx), new_value, keep_anchor=False)
+                    _count, new_runs = replace_text_in_paragraphs(tx, box_text_exact(tx), new_value, keep_anchor=False)
                 else:
                     # line: 匹配 manifest text（模板原文行）所在段落
                     tpl_line = f["text"]
-                    n = replace_text_in_paragraphs(tx, tpl_line, new_value, keep_anchor=True)
+                    _count, line_run = replace_text_in_paragraphs(tx, tpl_line, new_value, keep_anchor=True)
             except Exception as e:  # noqa: BLE001
                 warnings.append(f"{field_id}: 替换异常 {e}")
                 continue
-            if n == 0:
+            if (new_runs is not None and not new_runs) or (new_runs is None and line_run is None):
                 warnings.append(f"{field_id}: 未找到匹配文本，跳过（模板 {tpl_dir.name} 结构可能已变）")
                 continue
-            replaced.append({"id": field_id, "key": key, "count": n, "new_text": new_value[:40]})
+            replaced.append({
+                "id": field_id, "key": key,
+                "count": 1,
+                "new_text": new_value[:40],
+            })
 
-            # 溢出估算
+            # 溢出估算：先尝试自动缩字号（>=9pt）适配，缩号仍装不下才报
+            # overflow_risks 并给出可执行精简量，让模型一次改到位，而不是
+            # 反复「重写 JSON + 重跑 fill」试探。
+            shrink_to = _fit_shrink_font(new_value, w_pt or 0, h_pt or 0, font_pt or 11)
+            # new_runs/line_run 都是「新 run 元素列表」；无 rPr 时该 run 不缩号
+            target_runs = (new_runs if mode == "block" else line_run) or []
+            if shrink_to is not None and target_runs:
+                # block 字段的 rPr 已复制到每一段的新 run；line 字段的整段 run
+                # 由 _set_paragraph_text 返回。对每个新 run 的 rPr 缩号。
+                for _r in target_runs:
+                    rpr_el = _r.find(W + "rPr")
+                    if rpr_el is not None:
+                        _set_font_size_in_rpr(rpr_el, shrink_to)
+                replaced[-1]["font_pt"] = round(shrink_to, 1)
+                continue
             est_h = estimate_height(new_value, w_pt or 0, font_pt or 10)
             if h_pt and est_h > h_pt * 1.05:
+                est_lines = max(1, int(est_h / (font_pt * LINE_FACTOR)) if font_pt else len(new_value.split("\n")))
+                capacity_lines = max(1, int(h_pt / (font_pt * LINE_FACTOR))) if font_pt and h_pt else est_lines
+                over_lines = max(0, est_lines - capacity_lines)
+                # 中文行均约 30 字（11pt/框宽 350pt 实测混合文本），给出保守删减量
+                cut_chars = over_lines * 30 if over_lines else 20
+                hint = (
+                    f"内容超出文本框约 {over_lines} 行（框容量约 {capacity_lines} 行，"
+                    f"当前约 {est_lines} 行，最小 9pt 也放不下）；请精简到约 "
+                    f"{max(0, len(new_value) - cut_chars)} 字（删减约 {cut_chars} 字）"
+                    f"后重写同一文件再跑，不要改 output 路径重试同一数据。"
+                )
                 overflow.append({
                     "id": field_id, "key": key,
                     "box_pt": [round(w_pt, 1) if w_pt else None, round(h_pt, 1) if h_pt else None],
                     "font_pt": font_pt,
-                    "estimated_lines": max(1, int(est_h / (font_pt * LINE_FACTOR)) if font_pt else len(new_value.split("\n"))),
+                    "estimated_lines": est_lines,
+                    "capacity_lines": capacity_lines,
                     "estimated_height_pt": round(est_h, 1),
                     "text": new_value[:60],
-                    "hint": "内容可能超出文本框，需精简或换行适配（L2 版式重排二期支持自动扩框）",
+                    "hint": hint,
                 })
 
     # 阶段 5：受限组件动作（replace_text/replace_asset/resize/shift/clone）。

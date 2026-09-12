@@ -24,6 +24,9 @@ packages = ["backend/skill_toolbox"]
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
+markers = [
+  "e2e: 需要真实环境（Word COM/渲染器）的端到端测试，环境缺失时 skip",
+]
 pythonpath = ["backend"]
 testpaths = ["tests"]
 
