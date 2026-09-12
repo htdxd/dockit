@@ -17,7 +17,7 @@ from skill_toolbox.models import (
     ReasoningLevel,
     ToolCall,
 )
-from skill_toolbox.unicode_utils import redact_secrets
+from skill_toolbox.providers.probes import classify_probe_error, run_probes
 
 
 def _reasoning_kwargs(level: ReasoningLevel) -> dict[str, Any]:
@@ -85,13 +85,17 @@ class OpenAIProvider:
         }
         params.update(_reasoning_kwargs(self.reasoning_level))
         response = await self.client.chat.completions.create(**params)
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
         calls: list[ToolCall] = []
         for call in message.tool_calls or []:
             try:
                 arguments = json.loads(call.function.arguments)
             except json.JSONDecodeError:
                 arguments = {"_invalid_json": call.function.arguments[:2000]}
+                if isinstance(finish_reason, str):
+                    arguments["_finish_reason"] = finish_reason
             calls.append(
                 ToolCall(id=call.id, name=call.function.name, arguments=arguments)
             )
@@ -100,7 +104,24 @@ class OpenAIProvider:
         # are empty (400). Supply a placeholder so the next request stays valid.
         if not text and not calls:
             text = "(no output)"
-        return AssistantTurn(text=text, tool_calls=calls)
+        metadata: dict[str, Any] = {}
+        if isinstance(finish_reason, str):
+            metadata["finish_reason"] = finish_reason
+        usage = getattr(response, "usage", None)
+        counts = {
+            name: getattr(usage, name, None)
+            for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+        }
+        counts["reasoning_tokens"] = getattr(
+            getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None
+        )
+        counts["cached_tokens"] = getattr(
+            getattr(usage, "prompt_tokens_details", None), "cached_tokens", None
+        )
+        counts = {name: value for name, value in counts.items() if type(value) is int}
+        if counts:
+            metadata["usage"] = counts
+        return AssistantTurn(text=text, tool_calls=calls, response_metadata=metadata)
 
     @staticmethod
     def _messages(
@@ -174,15 +195,11 @@ class OpenAIProvider:
           200 gateway without verifiable metadata stays unknown.
         No raw CoT, no API keys, no user materials are ever returned.
         """
-        kinds = capabilities or ["tool_calling", "vision", "reasoning_control"]
-        result: dict[str, tuple[str, str | None]] = {}
-        if "tool_calling" in kinds:
-            result["tool_calling"] = await self._probe_tool_calling()
-        if "vision" in kinds:
-            result["vision"] = await self._probe_vision()
-        if "reasoning_control" in kinds:
-            result["reasoning_control"] = await self._probe_reasoning_control()
-        return result
+        return await run_probes(capabilities, {
+            "tool_calling": self._probe_tool_calling,
+            "vision": self._probe_vision,
+            "reasoning_control": self._probe_reasoning_control,
+        })
 
     @staticmethod
     def _nonce(length: int = 6) -> str:
@@ -306,18 +323,4 @@ class OpenAIProvider:
             return ("verified", "effort")
         return ("unknown", "no reasoning metadata returned")
 
-    @staticmethod
-    def _classify_error(capability: str, exc: Exception) -> tuple[str, str | None]:
-        """Auth/rate-limit/network → probe_error; explicit unsupported → unsupported.
-
-        The returned detail is always secret-redacted: OpenAI error bodies can
-        echo the api_key back (401 "Incorrect API key provided: sk-..."), and
-        that text must never reach the UI or SQLite.
-        """
-        text = str(exc).lower()
-        if isinstance(exc, KeyboardInterrupt):  # pragma: no cover
-            raise exc
-        detail = redact_secrets(str(exc))[:200]
-        if "unsupported" in text or "not support" in text or "does not support" in text:
-            return ("unsupported", detail)
-        return ("probe_error", detail)
+    _classify_error = staticmethod(classify_probe_error)

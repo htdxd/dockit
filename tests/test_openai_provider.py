@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from skill_toolbox.models import ProviderConfig
@@ -23,6 +24,62 @@ class _FakeCompletions:
 class _FakeClient:
     def __init__(self, completions: _FakeCompletions) -> None:
         self.chat = SimpleNamespace(completions=completions)
+
+
+def _provider_with_response(monkeypatch, response):
+    client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=AsyncMock(return_value=response)),
+    ))
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", lambda **_: client)
+    return openai_provider.OpenAIProvider(
+        ProviderConfig(kind="openai", model="test", api_key="test")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["length", "tool_calls"])
+async def test_complete_records_safe_counts_and_invalid_json_reason(monkeypatch, finish_reason):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            finish_reason=finish_reason,
+            message=SimpleNamespace(
+                content=None,
+                reasoning_content="hidden reasoning must not be recorded",
+                tool_calls=[SimpleNamespace(id="call-1", function=SimpleNamespace(
+                    name="resume_generate", arguments='{"content":',
+                ))],
+            ),
+        )],
+        usage=SimpleNamespace(
+            prompt_tokens=120, completion_tokens=80, total_tokens=200,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=60),
+            prompt_tokens_details=SimpleNamespace(cached_tokens=20),
+            vendor_private="not included",
+        ),
+    )
+    provider = _provider_with_response(monkeypatch, response)
+    turn = await provider.complete("system", [], [])
+    assert turn.response_metadata == {
+        "finish_reason": finish_reason,
+        "usage": {
+            "prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200,
+            "reasoning_tokens": 60, "cached_tokens": 20,
+        },
+    }
+    assert turn.tool_calls[0].arguments == {"_invalid_json": '{"content":', "_finish_reason": finish_reason}
+    assert "hidden reasoning" not in turn.model_dump_json()
+    assert "vendor_private" not in turn.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_complete_accepts_response_without_usage_or_finish_reason(monkeypatch):
+    response = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="ok", tool_calls=[]),
+    )])
+    provider = _provider_with_response(monkeypatch, response)
+    turn = await provider.complete("system", [], [])
+    assert turn.text == "ok"
+    assert turn.response_metadata == {}
 
 
 @pytest.mark.asyncio

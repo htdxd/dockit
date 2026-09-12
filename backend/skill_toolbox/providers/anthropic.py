@@ -15,7 +15,7 @@ from skill_toolbox.models import (
     ReasoningLevel,
     ToolCall,
 )
-from skill_toolbox.unicode_utils import redact_secrets
+from skill_toolbox.providers.probes import classify_probe_error, run_probes
 
 
 def _thinking_kwargs(level: ReasoningLevel, max_tokens: int) -> dict[str, Any]:
@@ -138,15 +138,11 @@ class AnthropicProvider:
         carries thinking metadata / usage (thinking_blocks or output_tokens
         beyond the text), and its ``control`` type is "budget".
         """
-        kinds = capabilities or ["tool_calling", "vision", "reasoning_control"]
-        result: dict[str, tuple[str, str | None]] = {}
-        if "tool_calling" in kinds:
-            result["tool_calling"] = await self._probe_tool_calling()
-        if "vision" in kinds:
-            result["vision"] = await self._probe_vision()
-        if "reasoning_control" in kinds:
-            result["reasoning_control"] = await self._probe_reasoning_control()
-        return result
+        return await run_probes(capabilities, {
+            "tool_calling": self._probe_tool_calling,
+            "vision": self._probe_vision,
+            "reasoning_control": self._probe_reasoning_control,
+        })
 
     @staticmethod
     def _nonce(length: int = 6) -> str:
@@ -258,17 +254,4 @@ class AnthropicProvider:
         # Some gateways 200 but strip thinking blocks; keep unknown (not a lie).
         return ("unknown", "no thinking block returned")
 
-    @staticmethod
-    def _classify_error(capability: str, exc: Exception) -> tuple[str, str | None]:
-        """Auth/rate-limit/network → probe_error; explicit unsupported → unsupported.
-
-        Detail is secret-redacted (Anthropic error bodies can echo the
-        x-api-key), so it is safe to surface in the UI and persist.
-        """
-        text = str(exc).lower()
-        if isinstance(exc, KeyboardInterrupt):  # pragma: no cover
-            raise exc
-        detail = redact_secrets(str(exc))[:200]
-        if "unsupported" in text or "not support" in text or "does not support" in text:
-            return ("unsupported", detail)
-        return ("probe_error", detail)
+    _classify_error = staticmethod(classify_probe_error)

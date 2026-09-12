@@ -21,6 +21,7 @@ class ToolCall(BaseModel):
 class AssistantTurn(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    response_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("text", mode="before")
     @classmethod
