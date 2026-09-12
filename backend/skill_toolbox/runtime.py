@@ -37,6 +37,8 @@ from skill_toolbox.llm_tools.dispatcher import (  # noqa: E402
 from skill_toolbox.llm_tools.docx import docx_tools
 from skill_toolbox.llm_tools.ppt import ppt_tools
 from skill_toolbox.llm_tools.resume import resume_tools
+from skill_toolbox.llm_tools.resume_workflow import workflow_tools
+from skill_toolbox.tools.resume_workflow import ResumeWorkflow, SUPPORTED_TEMPLATES
 from skill_toolbox.tools.docx import DocxService
 from skill_toolbox.tools.materials import MaterialPlanService
 from skill_toolbox.tools.ppt import PptService
@@ -52,7 +54,8 @@ MAX_LOG_TEXT_CHARS = 2_000
 # 外层超时 = 声明的 action 超时 + 清理余量（给子进程退出留时间）。
 ACTION_TIMEOUT_CLEANUP = 30
 DOMAIN_TOOL_TIMEOUTS = {
-    "resume_generate": 210.0,
+    "resume_generate": 420.0,
+    "resume_edit": 420.0,
     "resume_repair": 210.0,
     # v2：一次调用含测量(Word COM)+布局+落盘+渲染(COM→PDF→PNG)+QA
     "resume_prepare_v2": 60.0,
@@ -70,6 +73,7 @@ DOMAIN_ARTIFACT_TOOLS = frozenset(
     {
         "resume_generate",
         "resume_repair",
+        "resume_edit",
         # v2（P2-3）：候选版本本身即登记产物；accept 只更新已接受指针，
         # 不产生新文件（避免绕过 hash 校验的“伪产物”）。
         "resume_generate_v2",
@@ -127,6 +131,7 @@ class TaskRequest:
     user_prompt: str
     output_dir: Path
     materials: list[Path] = field(default_factory=list)
+    template_id: str | None = field(default=None, kw_only=True)
     # Resolved model capabilities (e.g. {"vision": True}) injected as a banner
     # at the top of the skill's system prompt so prompt-level routing can
     # depend on them without guessing.
@@ -192,6 +197,9 @@ class AgentRuntime:
         self.skill_id = skill.id  # _publish 用它给产物文件名打来源标记
         request.output_dir.mkdir(parents=True, exist_ok=True)
         system_prompt = skill.system_prompt
+        workflow_mode = _resume_workflow_enabled(skill, request)
+        if workflow_mode:
+            system_prompt = (skill.dir / "workflow.md").read_text(encoding="utf-8")
         if request.capabilities:
             banner = "[CAPABILITIES]\n" + "\n".join(
                 f"{name}: {str(value).lower()}"
@@ -274,9 +282,9 @@ class AgentRuntime:
                 request,
                 material_service,
             )
-            domain_tool_specs = _domain_tool_specs(skill, request.capabilities)
+            domain_tool_specs = _domain_tool_specs(skill, request.capabilities, workflow=workflow_mode)
             tool_specs = domain_tool_specs if domain_mode else TOOL_SPECS
-            if domain_mode:
+            if domain_mode and not workflow_mode:
                 # 领域模式（实施计划 §8）：注入领域工具指引，覆盖 prompt.md 中
                 # 残留的底层工具说明——模型只用领域工具，不再 read/write/
                 # exec_cmd/spec_append。用户 prompt.md 保持不动（兼容 legacy）。
@@ -303,7 +311,7 @@ class AgentRuntime:
                     "[MATERIALS] 中的共享 IR 为准；仅在声明脚本明确要求 source 时使用"
                     f"这些原始路径，不要再次 ingest：\n{files_list}"
                 )
-            materials_banner = self._materials_banner(catalog)
+            materials_banner = self._materials_banner(catalog, domain_mode=domain_mode)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
@@ -330,6 +338,7 @@ class AgentRuntime:
                     "phase": "model_turn",
                     "step": step,
                     "assistant_text": _truncate(turn.text, MAX_LOG_TEXT_CHARS),
+                    "response_metadata": getattr(turn, "response_metadata", {}),
                     "tool_calls": [
                         {
                             "id": call.id,
@@ -363,6 +372,10 @@ class AgentRuntime:
                                 "如果最终产物已经生成并验证完毕，请立即调用 "
                                 "finish_task 交付（只传产物相对路径）；否则请调用 "
                                 + (
+                                    "resume_prepare/resume_generate/resume_edit/resume_preview 继续；"
+                                    "完成检查后 resume_accept，再 finish_task。只有缺少必要事实时才补问，"
+                                    "不要询问用户是否满意或把草稿交给用户验收。"
+                                    if workflow_mode else
                                     "read_material/create_content_plan/本功能领域工具/"
                                     "ask_user_questions 继续。"
                                     if domain_mode
@@ -423,6 +436,8 @@ class AgentRuntime:
                             self._verify_domain_artifacts(
                                 finish, policy, domain_artifacts
                             )
+                        if workflow_mode:
+                            domain_services.resume_workflow.verify_delivery(finish.arguments["artifacts"])
                         published = self._publish(finish, policy, request.output_dir)
                         self._emit_qa_status(qa)
                     except (OSError, TypeError, ValueError) as exc:
@@ -584,7 +599,7 @@ class AgentRuntime:
         # contracts 层完成）；exec_cmd 前置 ContentPlan 校验仅 legacy 需要。
         # P2-3：dispatcher 同时返回内联预览图，由 ToolResult.images 进入模型
         # 视觉输入（附件关联 tool_call / artifact / revision）。
-        if domain_services is not None and call.name in _DOMAIN_TOOL_FACTORIES_INV:
+        if domain_services is not None and call.name in _DOMAIN_TOOL_NAMES:
             timeout = self._domain_timeout_for(call)
             try:
                 content, images, media_meta = await asyncio.wait_for(
@@ -593,7 +608,7 @@ class AgentRuntime:
                     ),
                     timeout=timeout,
                 )
-                success = _dispatch_ok(call.name, content)
+                success = bool(media_meta.get("ok", False))
                 result = self._tool_result(call, success, content, images)
                 if media_meta.get("revision") is not None or media_meta.get("preview_refs"):
                     self.emit({
@@ -622,22 +637,7 @@ class AgentRuntime:
                 result = self._tool_result(
                     call, False, f"Tool failed: {redact_secrets(str(exc))}"
                 )
-            self.emit(
-                {
-                    "type": "tool_finished",
-                    "tool": call.name,
-                    "success": result.success,
-                }
-            )
-            self.debug({
-                "phase": "tool_result",
-                "tool_call_id": call.id,
-                "tool": call.name,
-                "success": result.success,
-                "content": _truncate(result.content, MAX_LOG_RESULT_CHARS),
-                "image_count": len(result.images),
-            })
-            return result
+            return self._finish_tool(call, result)
         if call.name == "exec_cmd" and precheck is not None:
             try:
                 precheck(call)
@@ -645,16 +645,7 @@ class AgentRuntime:
                 result = self._tool_result(
                     call, False, f"ContentPlan 前置校验失败，exec_cmd 未执行: {exc}"
                 )
-                self.emit({"type": "tool_finished", "tool": call.name, "success": False})
-                self.debug({
-                    "phase": "tool_result",
-                    "tool_call_id": call.id,
-                    "tool": call.name,
-                    "success": False,
-                    "content": _truncate(result.content, MAX_LOG_RESULT_CHARS),
-                    "image_count": 0,
-                })
-                return result
+                return self._finish_tool(call, result)
         if call.name == "finish_task":
             result = self._tool_result(
                 call, False, "finish_task must be the only tool call in its model turn"
@@ -718,6 +709,10 @@ class AgentRuntime:
                     "error": f"{type(exc).__name__}: {safe_error}",
                 })
                 return result
+        return self._finish_tool(call, result)
+
+    def _finish_tool(self, call: ToolCall, result: ToolResult) -> ToolResult:
+        """统一工具完成事件和摘要日志，媒体内容不写入日志。"""
         self.emit(
             {
                 "type": "tool_finished",
@@ -1102,7 +1097,7 @@ class AgentRuntime:
             staged.append((f"sources/{bucket}/{src.name}", src))
         return staged
 
-    def _materials_banner(self, catalog: MaterialCatalog) -> str:
+    def _materials_banner(self, catalog: MaterialCatalog, *, domain_mode: bool = False) -> str:
         """生成 [MATERIALS] 横幅：只读预处理结果短摘要，不执行 ingest。
 
         阶段 3 起横幅不再自动萃取（实施计划 §12.1）。所有支持格式均列出
@@ -1130,6 +1125,11 @@ class AgentRuntime:
                 f"{len(ir.assets)} 资源）→ {document_rel}，"
                 f"顺序阅读 {content_rel}{prepared}"
             )
+            if domain_mode:
+                lines.append(
+                    f"  整篇读取：read_material(source_id=\"{material_id}\", "
+                    'view="blocks")；返回真实 block/asset ID，可按需继续读取。'
+                )
             for asset in ir.assets:
                 size = (
                     f"{asset.width}x{asset.height}"
@@ -1151,45 +1151,28 @@ class AgentRuntime:
 # 领域 schema；工具调用由 _execute_call 走 llm_tools.dispatcher → tools/ 内部
 # Service。旧 ToolRegistry/TOOL_SPECS 保留为兼容路径（tool_mode 默认 legacy）。
 
-# 领域工具名 → 是否由 dispatcher 处理（shared + 领域 schema 的并集）。
-_DOMAIN_TOOL_NAMES = {
-    # shared（§5.2）
-    "read_material", "create_content_plan",
-    # resume（§5.3）
-    "resume_prepare", "resume_generate", "resume_repair",
-    # resume v2（P2-3：版本化编辑 + 视觉闭环）
-    "resume_prepare_v2", "resume_generate_v2", "resume_repair_v2",
-    "resume_accept", "resume_restore", "resume_preview",
-    # docx（§5.4）
-    "docx_start", "docx_add_blocks", "docx_finalize", "docx_repair",
-    # ppt（§5.5）
-    "ppt_create_outline", "ppt_generate", "ppt_repair",
-    # pdf（§5.6）
-}
-_DOMAIN_TOOL_FACTORIES_INV = frozenset(_DOMAIN_TOOL_NAMES)
+# 以可见 schema 为准；交互和任务结束由 Runtime 自身处理。
+_DOMAIN_TOOL_NAMES = frozenset(
+    spec["name"]
+    for factory in (shared_tools, workflow_tools, *_DOMAIN_TOOL_FACTORIES.values())
+    for spec in factory()
+) - {"ask_user_questions", "finish_task", "task_failed"}
 
 
-def _domain_tool_specs(skill: Any, capabilities: dict[str, bool]) -> list[dict]:
+def _resume_workflow_enabled(skill: Any, request: TaskRequest) -> bool:
+    return (skill.id == "resume_pro" and request.template_id in SUPPORTED_TEMPLATES
+            and (request.tool_mode or skill.tool_mode) == "domain")
+
+
+def _domain_tool_specs(skill: Any, capabilities: dict[str, bool], *, workflow: bool = False) -> list[dict]:
     """按 Skill 组装领域工具 schema（shared + 领域）。普通任务不暴露底层工具。"""
     specs: list[dict] = list(shared_tools())
+    if workflow:
+        return [s for s in specs if s["name"] != "create_content_plan"] + workflow_tools()
     factory = _DOMAIN_TOOL_FACTORIES.get(skill.id)
     if factory is not None:
         specs.extend(factory())
     return specs
-
-
-def _dispatch_ok(name: str, content: str) -> bool:
-    """dispatcher 成功文本是 OperationResult 的 JSON（ok 字段）；错误是稳定
-    ToolError JSON（无 ok 字段，视为失败）。"""
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError):
-        return False
-    return (
-        isinstance(payload, dict)
-        and payload.get("ok") is True
-        and payload.get("status") != "failed"
-    )
 
 
 def _build_domain_services(
@@ -1199,7 +1182,7 @@ def _build_domain_services(
     request: TaskRequest,
     material_service: MaterialService,
 ) -> DomainServices:
-    """构造领域 Service 容器（四个领域按需装配；MaterialPlanService 恒有）。"""
+    """按任务装配领域服务；共享材料服务始终可用。"""
     capabilities = request.capabilities
     materials = MaterialPlanService(
         workspace, catalog, TASK_TYPE_BY_SKILL[skill.id], capabilities
@@ -1216,10 +1199,13 @@ def _build_domain_services(
         from skill_toolbox.tools.resume import ResumeEditService
 
         resume_v2 = ResumeEditService(
-            workspace, skill_dir / "templates", capabilities=capabilities
+            workspace, skill_dir / "templates", capabilities=capabilities,
+            template_id=request.template_id if _resume_workflow_enabled(skill, request) else "t109",
         )
     else:
         resume_v2 = None
+    workflow = (ResumeWorkflow(resume_v2, materials, request.template_id)
+                if _resume_workflow_enabled(skill, request) else None)
     docx = DocxService(
         workspace,
         skill_dir / "scripts",
@@ -1237,6 +1223,7 @@ def _build_domain_services(
         materials=materials,
         resume=resume,
         resume_v2=resume_v2,
+        resume_workflow=workflow,
         docx=docx,
         ppt=ppt,
         cancel_callbacks=[

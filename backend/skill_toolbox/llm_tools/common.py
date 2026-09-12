@@ -1,6 +1,6 @@
 """共享可见工具 schema、schema 工厂与固定错误格式（实施计划 §3.2/§5.2）。
 
-四个 Skill 只共享这些工具；普通任务不暴露 write/edit/exec_cmd/spec_append。
+三个 Skill 只共享这些工具；普通任务不暴露 write/edit/exec_cmd/spec_append。
 finish_task 由 Runtime 自动执行；如保留为 LLM 兜底，只接受已注册 artifact_id[]。
 """
 
@@ -45,15 +45,15 @@ def shared_tools() -> list[dict]:
     return [
         function_schema(
             "read_material",
-            "按 IR source_id 读取材料摘要、正文分页或 Asset 元数据。"
-            "source_id 必须从 document.json 的 blocks[].id / assets[].id 原样复制"
-            "（block-<材料id16>-<序号> / asset-<材料id16>-<hash>），不接受任意路径。"
-            "无 Vision 时图片只返回元数据（文件名/尺寸/aspect/bbox/caption），不返回图片字节。",
+            "优先用材料横幅的 material_id 配合 view=blocks 一次读取整篇正文（默认200块）；"
+            "has_more=true 时用 next_offset 继续。也可使用返回的真实 block/asset ID 单独读取。"
+            "材料ID配合 summary 查看摘要、assets 查看资源列表。"
+            "单独读取图片 asset 时有 Vision 返回实际图片，无 Vision 仅返回元数据。不接受任意路径。",
             {
-                "source_id": {"type": "string", "description": "IR block 或 asset 的真实 ID"},
+                "source_id": {"type": "string", "description": "材料 material_id，或 IR block/asset 的真实 ID"},
                 "view": {"type": "string", "enum": ["summary", "blocks", "assets"], "description": "读取视图（默认 summary）"},
-                "offset": {"type": "integer", "minimum": 0, "description": "正文分页偏移"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "正文分页行数"},
+                "offset": {"type": "integer", "minimum": 0, "description": "材料ID：块/资源列表偏移；单block ID：字符偏移"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "材料ID：块/资源数量；单block ID：字符数（默认200）"},
             },
             ["source_id"],
         ),

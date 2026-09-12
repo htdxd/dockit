@@ -22,6 +22,8 @@ _RESERVED_FIELD_KEYS = frozenset({"photo", "target_role"})
 class ResumeChange(BaseModel):
     """受限组件动作。resize_rows/move_rows 由后端换算为安全 pt 动作。"""
 
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
     action: ResumeAction
     component_id: str = ""
     text: str = ""
@@ -35,6 +37,8 @@ class ResumeChange(BaseModel):
 
 class ResumeGenerateRequest(BaseModel):
     """resume_generate 的内部契约。fields 由 llm_tools 做白名单校验后传入。"""
+
+    model_config = ConfigDict(coerce_numbers_to_str=True)
 
     template_id: str
     fields: dict[str, str] = Field(default_factory=dict)
@@ -68,7 +72,7 @@ ResumeLayoutMode = Literal["reflow", "local"]
 ResumeEditOpV2 = Literal[
     "update_entry", "insert_entry", "remove_entry", "move_entry",
     "insert_section", "remove_section", "update_section_title",
-    "set_entry_gap", "move_component", "resize_component",
+    "set_entry_gap", "move_component", "resize_component", "format_component",
 ]
 
 
@@ -84,6 +88,8 @@ class ResumeEntryV2(BaseModel):
     head: dict[str, str] = Field(default_factory=dict)
     bullets: list[str] = Field(default_factory=list)
     lines: list[str] = Field(default_factory=list)
+    font_size_pt: float | None = Field(default=None, ge=8, le=18)
+    scale: float | None = Field(default=None, ge=0.75, le=1.25)
 
 
 class ResumeSectionV2(BaseModel):
@@ -92,6 +98,15 @@ class ResumeSectionV2(BaseModel):
     prototype: ResumePrototype = "experience_v1"
     entries: list[ResumeEntryV2] = Field(default_factory=list)
     entry_gap_pt: float | None = None
+    scale: float | None = Field(default=None, ge=0.75, le=1.25)
+
+
+class ResumePersonalField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    value: str
 
 
 class ResumeHeaderV2(BaseModel):
@@ -106,6 +121,9 @@ class ResumeHeaderV2(BaseModel):
 
     fields: dict[str, str] = Field(default_factory=dict)
     photo_path: str = ""
+    hide_photo: bool = False
+    hidden_fields: list[str] = Field(default_factory=list)
+    custom_fields: list[ResumePersonalField] = Field(default_factory=list)
 
 
 class ResumeContentV2(BaseModel):
@@ -142,6 +160,8 @@ class ResumeEditV2(BaseModel):
     width_pt: float | None = None
     height_pt: float | None = None
     height_delta_pt: float | None = None
+    font_size_pt: float | None = Field(default=None, ge=8, le=18)
+    scale: float | None = Field(default=None, ge=0.75, le=1.25)
 
 
 class ResumeGenerateV2Request(BaseModel):
@@ -154,6 +174,7 @@ class ResumeGenerateV2Request(BaseModel):
 class ResumeRepairV2Request(BaseModel):
     artifact_id: str
     base_revision: int
+    header: ResumeHeaderV2 | None = None
     request_id: str
     changes: list[ResumeEditV2] = Field(default_factory=list)
     layout_mode: ResumeLayoutMode | None = None
@@ -162,7 +183,7 @@ class ResumeRepairV2Request(BaseModel):
 class ResumeAcceptRequest(BaseModel):
     artifact_id: str
     candidate_revision: int
-    expected_accepted_revision: int
+    expected_accepted_revision: int | None = None
     request_id: str = ""
 
 

@@ -18,10 +18,10 @@ import json
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from skill_toolbox.resume_layout import qa  # noqa: E402
 
@@ -82,10 +82,10 @@ def overlap_pairs(rows: list[dict]) -> list[dict]:
 
 def _strip_markers(text: str) -> str:
     """去掉渲染侧自动生成的项目符号/前导标记，用于内容匹配。"""
-    return text.lstrip("⚫•·▪◦‣⁃●○■□◆◇→").strip()
+    return text.lstrip("⚫➢•·▪◦‣⁃●○■□◆◇→").strip()
 
 
-def _paragraph_block_bottom(words: list, top: float) -> float | None:
+def _paragraph_block_bottom(words: list, top: float, continuation_pt: float = LINE_PITCH_CONTINUATION_PT) -> float | None:
     """从某段首行顶向下扩展**同一段落**的换行行，返回该段文字底。
 
     段内行距实测 18.0–18.05pt；相邻条目最小间距为「条目间距 + ink 高」
@@ -99,7 +99,7 @@ def _paragraph_block_bottom(words: list, top: float) -> float | None:
     block = [tops[0]]
     current = tops[0]
     for t in tops[1:]:
-        if t - current <= LINE_PITCH_CONTINUATION_PT:
+        if t - current <= continuation_pt:
             block.append(t)
             current = t
         else:
@@ -109,7 +109,8 @@ def _paragraph_block_bottom(words: list, top: float) -> float | None:
 
 
 def locate_entry_band(
-    words: list, head: str, tail: str, next_head: str | None = None
+    words: list, head: str, tail: str, next_head: str | None = None, *,
+    continuation_pt: float = LINE_PITCH_CONTINUATION_PT,
 ) -> dict:
     """定位一个条目在渲染页内的 y 区间：{y0, y_end, boundary} 或 {error}。
 
@@ -124,12 +125,12 @@ def locate_entry_band(
     if y0 is None:
         return {"error": "NOT FOUND"}
     if next_head:
-        nxt = locate_line_top(words, next_head)
+        nxt = locate_line_top([w for w in words if _top_of(w) > y0 + 0.5], next_head)
         if nxt is not None and nxt > y0:
             return {"y0": y0, "y_end": nxt - 0.05, "boundary": "next_entry"}
     tail_top = locate_line_top(words, tail)
     if tail_top is not None and tail_top >= y0 - 0.5:
-        block_bottom = _paragraph_block_bottom(words, tail_top)
+        block_bottom = _paragraph_block_bottom(words, tail_top, continuation_pt)
         if block_bottom is not None:
             return {
                 "y0": y0,
@@ -165,32 +166,70 @@ def _bottom_of(w) -> float:
     return float(w["y1"] if isinstance(w, dict) else w[3])
 
 
+def _rendered_lines(words: list) -> list[tuple[int, float, str]]:
+    """按页/行归并 PDF 分词；同行字体造成的小幅 y 差不改变阅读顺序。"""
+    groups: list[tuple[int, float, list]] = []
+    for word in sorted(words, key=lambda w: (
+        w.get("page", 0) if isinstance(w, dict) else 0, _top_of(w)
+    )):
+        page = word.get("page", 0) if isinstance(word, dict) else 0
+        if not groups or page != groups[-1][0] or _top_of(word) - groups[-1][1] > 2.0:
+            groups.append((page, _top_of(word), []))
+        groups[-1][2].append(word)
+    return [
+        (page, top, _strip_markers("".join(
+            "".join(_text_of(w).split())
+            for w in sorted(row, key=lambda w: w["x0"] if isinstance(w, dict) else w[0])
+        )))
+        for page, top, row in groups
+    ]
+
+
 def locate_line_top(words: list, line: str) -> float | None:
-    """在渲染词序列中定位某一行文字的首行顶 y；找不到返回 None。
-
-    同时兼容 fitz 的 tuple（`get_text("words")`：index 4 = 文本）与 dict
-    （`rendered_words()`：`text` / `y0`）。PDF 会按字体内部分词（如
-    「熟练使用 Python/SQL」被切成两段），单一 10 字前缀匹配会漏——这里逐级
-    缩短前缀（10→2 字），任一匹配即命中；仍无命中返回 None。
-    """
-    needle = _strip_markers(str(line or ""))
-    if not needle or not words:
+    """先完整匹配正文（含 PDF 分词/换行），不以共享的短前缀猜测条目。"""
+    needle = "".join(_strip_markers(str(line or "")).split())
+    rows = _rendered_lines(words)
+    if not needle or not rows:
         return None
+    stream = "".join(text for _, _, text in rows)
+    pos = stream.find(needle)
+    if pos >= 0:
+        offset = 0
+        for _, top, text in rows:
+            offset += len(text)
+            if pos < offset:
+                return top
+    # 部分 PDF 提取省略句末标点或段落尾部；仅接受足够长且唯一的前缀。
+    # 内容完整性仍由独立全文检查负责，定位不能退化到两个字首次命中。
+    matches = []
+    for _, top, text in rows:
+        count = 0
+        for left, right in zip(needle, text):
+            if left != right:
+                break
+            count += 1
+        matches.append((count, top))
+    best = max(count for count, _ in matches)
+    hits = [top for count, top in matches if count == best]
+    return hits[0] if best >= min(10, len(needle)) and len(hits) == 1 else None
 
-    for n in (10, 8, 6, 4, 2):
-        prefix = needle[:n]
-        hits = [
-            w for w in words
-            if _text_of(w).startswith(prefix)
-            or _strip_markers(_text_of(w)).startswith(prefix)
-        ]
-        if hits:
-            return min(_top_of(w) for w in hits)
-    return None
+
+def check_title_uniqueness(words: list, titles: list[str]) -> list:
+    rendered = [text for _, _, text in _rendered_lines(words)]
+    issues = []
+    for title in titles:
+        normalized = "".join(title.split())
+        count = rendered.count(normalized)
+        if count != 1:
+            issues.append(qa.QAIssue(
+                "title_uniqueness", "error",
+                f"栏目标题 {title[:12]}… 出现 {count} 次（应为 1）",
+            ))
+    return issues
 
 
 def extract_rendered_entries(
-    pdf_path: Path, scenario: dict, plan: dict
+    pdf_path: Path, scenario: dict, plan: dict, *, template_id: str = "t109",
 ) -> list[dict]:
     """渲染侧独立提取每条目的首行顶、wrap 行数、**真实占用高度**（R2 Fix2）。
 
@@ -213,14 +252,21 @@ def extract_rendered_entries(
                 text_lines[0], text_lines[-1],
             ))
     out = []
+    consumed_bottom: dict[int, float] = {}
     for idx, (page, sec_id, eid, head, tail) in enumerate(flat_entries):
-        pw = doc[page].get_text("words")
+        pw = [w for w in doc[page].get_text("words")
+              if w[1] > consumed_bottom.get(page, float("-inf"))]
         next_head = None
         for p2, s2, e2, h2, _t2 in flat_entries[idx + 1:]:
             if s2 == sec_id and p2 == page:
                 next_head = h2
                 break
-        band = locate_entry_band(pw, head, tail, next_head)
+        from skill_toolbox.resume_layout.typography import factors
+        source_section = next(s for s in scenario["sections"] if s["id"] == sec_id)
+        source_entry = next(e for e in source_section["entries"] if e["id"] == eid)
+        font_factor, _ = factors(source_entry, source_section, template_id)
+        band = locate_entry_band(pw, head, tail, next_head,
+                                  continuation_pt=18.0 * font_factor + 0.6)
         if band.get("error"):
             out.append({"entry_id": eid, "error": band["error"]})
             continue
@@ -233,6 +279,7 @@ def extract_rendered_entries(
             out.append({"entry_id": eid, "error": "NOT FOUND"})
             continue
         last_bottom = max(w[3] for w in own)
+        consumed_bottom[page] = last_bottom
         span = y_end - y0
         # 行数：按渲染行顶 y 聚类（容差 4pt）——行距不均匀（如 numPr 段
         # 与普通段混排）时除法失准；聚类直接数真实行数
@@ -251,16 +298,30 @@ def extract_rendered_entries(
         # COM text_height = lines × 18.0（行框口径）；渲染侧行框口径换算：
         # ink 跨度 + (行框余量) —— 单行行框高实测 18.0，ink 高 13.8，
         # 余量 4.2；行框跨度 = ink跨度 + 4.2（首行顶到末行底的单侧余量）
-        INK_TO_LINEBOX_PAD = 4.2
+        INK_TO_LINEBOX_PAD = 4.2 * font_factor
         occupied = (last_bottom - y0) + INK_TO_LINEBOX_PAD
         # 实测渲染行距（lines>1 时）：末行顶-首行顶 / (lines-1)。
         # 不假设 18pt——行距异常（如 21pt）通过 pitch 进入失败门。
-        line_tops = sorted({t for t in tops})
+        # 字号不同会改变 ink 顶（t001 10.5pt标题/10pt正文）；行距应比较
+        # PDF 真实基线，不能把项目符号较低的 ink 顶当作末行行距。
+        baselines = sorted({
+            round(span["origin"][1], 2)
+            for block in doc[page].get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+            if _strip_markers(span["text"]) and y0 - 0.5 <= span["bbox"][1] < y_end
+        })
+        text_spans = [
+            span for block in doc[page].get_text("dict")["blocks"]
+            for line in block.get("lines", []) for span in line["spans"]
+            if _strip_markers(span["text"]) and y0 - 0.5 <= span["bbox"][1] < y_end
+        ]
+        line_tops = baselines
         pitch = (
             (line_tops[-1] - line_tops[0]) / (lines - 1)
             if lines > 1 and line_tops else None
         )
-        out.append({
+        row = {
             "entry_id": eid,
             "page": page + 1,
             "first_line_top_pt": round(y0, 2),
@@ -270,13 +331,33 @@ def extract_rendered_entries(
             "render_span_pt": round(span, 2),
             "text_bottom_pt": round(last_bottom, 2),
             "boundary_source": boundary,
-        })
+            "render_font_sizes_pt": sorted({round(s["size"], 2) for s in text_spans if "size" in s}),
+        }
+        if any(source_entry.get(k) is not None for k in ("font_size_pt", "scale")) or source_section.get("scale"):
+            base_size = 10.0 if template_id == "t001" else 10.5
+            head_size = base_size
+            if template_id == "t001":
+                from skill_toolbox.resume_layout.t001 import source_key
+                if source_key(source_section) in ("education", "work"):
+                    head_size = 10.5
+            paragraphs = source_entry["text"].split("\n")
+            duty_top = locate_line_top(pw, paragraphs[1]) if len(paragraphs) > 1 else None
+            for span_info in text_spans:
+                is_head = source_entry.get("has_heading") and (
+                    duty_top is None or span_info["bbox"][1] < duty_top - 0.5)
+                expected = round((head_size if is_head else base_size) * font_factor * 2) / 2
+                if abs(span_info.get("size", 0) - expected) > 0.15:
+                    row["error"] = f"TEXT_STYLE_MISMATCH: 实际字号 {span_info.get('size')}pt 与预期 {expected}pt 不符"
+                    break
+        out.append(row)
     return out
 
 
 def qa_scenario(
     scen_dir: Path, scenario: dict, plan: dict, measured: dict, *, pdf_name: str,
     header_values: list[str] | None = None,
+    template_id: str = "t109", template: Path | None = None,
+    header_components: dict | None = None,
 ) -> dict:
     """header_values：本版实际写入个人信息区的值（v2 header.fields）。
 
@@ -285,6 +366,20 @@ def qa_scenario(
     """
     pdf = next(scen_dir.glob(f"render/{pdf_name}.pdf"))
     words = rendered_words(pdf)
+    footer_top = FOOTER_TOP
+    fixed_texts = _HEADER_WHITELIST
+    if template_id == "t001":
+        from skill_toolbox.resume_layout.profiles import get_profile
+        from skill_toolbox.resume_layout.t001 import fixed_texts as template_fixed_texts
+        footer_top = get_profile(template_id).geometry.page_bottom_pt
+        fixed_texts = template_fixed_texts(template, pages=len({r["page"] for r in words}),
+                                          include_fields=header_components is None)
+    elif header_components is not None:
+        fixed_texts = ["个人信息（Personal Info）"]
+    if header_components is not None:
+        fixed_texts = fixed_texts + [
+            f"{field['label']}：{field['after']}" for field in header_components.values()
+        ]
     issues: list[qa.QAIssue] = []
 
     # 1. 内容完整性（完整文本 + 顺序 + 重复，游标式）
@@ -306,7 +401,7 @@ def qa_scenario(
     # 3. 底部越界
     for page in {r["page"] for r in words}:
         for r in words:
-            if r["page"] == page and r["y1"] > FOOTER_TOP + 0.5:
+            if r["page"] == page and r["y1"] > footer_top + 0.5:
                 issues.append(qa.QAIssue(
                     "within_page", "error",
                     f"第 {page+1} 页文字底 {r['y1']:.1f}pt 侵入底部装饰条",
@@ -321,23 +416,17 @@ def qa_scenario(
         ))
 
     # 5. 标题唯一性
-    title_texts = [r["text"] for r in words if any(t in r["text"] for t in TITLES)]
-    for t in [s["title"] for s in scenario["sections"]]:
-        cnt = sum(1 for x in title_texts if x.startswith(t[:4]))
-        if cnt != 1:
-            issues.append(qa.QAIssue(
-                "title_uniqueness", "error",
-                f"栏目标题 {t[:12]}… 出现 {cnt} 次（应为 1）",
-            ))
+    issues += check_title_uniqueness(words, [s["title"] for s in scenario["sections"]])
 
     # 6. 测量 vs 渲染独立对照（失败门；三方 ID 集合校验 + 真实高度对照）
-    rendered_entries = extract_rendered_entries(pdf, scenario, plan)
+    rendered_entries = extract_rendered_entries(pdf, scenario, plan, template_id=template_id)
     measured_list = [
         {
             "entry_id": eid,
             "wrapped_lines": m.get("wrapped_lines"),
             "text_height_pt": m.get("text_height_pt"),
             "first_line_top_pt": m.get("first_line_top_pt"),
+            "line_pitch_pt": m.get("line_pitch_pt", 18.0),
         }
         for eid, m in measured.items()
     ]
@@ -357,8 +446,9 @@ def qa_scenario(
         content_stream,
         entries_in_order,
         allowed_extra_needles=[s["title"] for s in scenario["sections"]]
-        + _HEADER_WHITELIST
-        + [v for v in (header_values or []) if str(v).strip()],
+        + fixed_texts
+        + ([v for v in (header_values or []) if str(v).strip()]
+           if header_components is None else []),
     )
 
     # 8. 个人信息值必须真的渲染出来（v2 header.fields 的正面校验）
@@ -473,7 +563,6 @@ def build_preview(scen_dir: Path, baseline_png: Path, pages: list[Path]) -> Path
 
 def main() -> None:
     ev_root = Path(sys.argv[1]).resolve()
-    sys.path.insert(0, str(PROJECT_ROOT / "backend"))
     from skill_toolbox.resume_layout import generate as G
     from skill_toolbox.resume_layout import spacing as S
 

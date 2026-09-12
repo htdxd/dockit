@@ -15,6 +15,40 @@ EMPTY_DOCX_PLAN = (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "template_id, expected",
+    [("t109", "t109"), (" t001 ", "t001"), ("", None), (None, None), (109, None)],
+)
+async def test_sidecar_passes_structured_resume_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, template_id: object, expected: str | None
+) -> None:
+    captured = []
+
+    async def capture_run(request_id, runtime, request, log_path):
+        captured.append(request)
+
+    monkeypatch.setattr("skill_toolbox.sidecar._mineru_preflight", lambda: None)
+    service = SidecarService(lambda event: None, provider_factory=lambda _: ScriptedProvider([]))
+    service._mineru_key = "test-token"
+    monkeypatch.setattr(service, "_run", capture_run)
+    await service.handle({
+        "id": "template-selection",
+        "type": "start_task",
+        "payload": {
+            "provider": {"kind": "mock", "model": "mock"},
+            "skill_id": "resume_pro",
+            "template_id": template_id,
+            "user_prompt": "简历模板：t109",
+            "output_dir": str(tmp_path),
+        },
+    })
+    await service.wait_all()
+    assert len(captured) == 1
+    assert captured[0].template_id == expected
+    assert captured[0].user_prompt == "简历模板：t109"
+
+
+@pytest.mark.asyncio
 async def test_sidecar_runs_task_and_emits_correlated_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

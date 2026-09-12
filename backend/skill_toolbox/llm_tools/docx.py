@@ -7,9 +7,12 @@ docx_finalize 自动生成/目录/机械检查 → docx_repair 只修被点名 i
 
 from __future__ import annotations
 
+from typing import get_args
+
+from skill_toolbox.contracts.docx import DocxBlockType, DocxComplexity, MAX_BLOCKS_PER_CALL
 from skill_toolbox.llm_tools.common import function_schema
 
-_BLOCK_TYPES = ["heading", "paragraph", "image", "table", "formula"]
+_BLOCK_TYPES = list(get_args(DocxBlockType))
 
 
 def _block_schema() -> dict:
@@ -37,7 +40,7 @@ def docx_tools() -> list[dict]:
             "创建内部文档草稿（不要求模型写 spec.json）。",
             {
                 "title": {"type": "string"},
-                "complexity": {"type": "string", "enum": ["simple", "standard", "academic", "gongwen", "form", "template"]},
+                "complexity": {"type": "string", "enum": list(get_args(DocxComplexity))},
                 "scene": {"type": "string", "description": "可选：设计场景"},
                 "author": {"type": "string"},
                 "date": {"type": "string"},
@@ -50,7 +53,7 @@ def docx_tools() -> list[dict]:
             "图片只传 asset_id（从 document.json 复制真实 ID）。",
             {
                 "document_id": {"type": "string", "description": "docx_start 返回的 document_id"},
-                "blocks": {"type": "array", "items": _block_schema(), "minItems": 1, "maxItems": 8},
+                "blocks": {"type": "array", "items": _block_schema(), "minItems": 1, "maxItems": MAX_BLOCKS_PER_CALL},
             },
             ["document_id", "blocks"],
         ),

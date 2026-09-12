@@ -45,7 +45,7 @@ class SectionBox:
     bottom_pt: float
 
 
-_BULLET_CHARS = "⚫•·▪◦‣⁃●○■□–—-–*✦✧►▸·。：（）():;；,，、"
+_BULLET_CHARS = "⚫➢•·▪◦‣⁃●○■□–—-–*✦✧►▸·。：（）():;；,，、"
 
 
 def _norm(s: str) -> str:
@@ -314,12 +314,17 @@ def check_measurement_vs_render(
             ))
         # 行距门：渲染实测行距 vs COM 常数（校准系统差后收紧为 1pt）
         if _is_valid_num(r.get("render_pitch_pt")) and m["wrapped_lines"] > 1:
-            dp = r["render_pitch_pt"] - MEASURED_LINE_PITCH_PT
+            measured_pitch = m.get("line_pitch_pt", MEASURED_LINE_PITCH_PT)
+            if not _is_valid_num(measured_pitch):
+                issues.append(QAIssue("measurement_vs_render", "error",
+                                      f"条目 {m['entry_id']} 测量行距无效"))
+                continue
+            dp = r["render_pitch_pt"] - measured_pitch
             if abs(dp) > PITCH_TOL_PT:
                 issues.append(QAIssue(
                     "measurement_vs_render", "error",
                     f"条目 {m['entry_id']} 渲染行距异常：实测 {r['render_pitch_pt']:.1f}pt vs "
-                    f"测量 {MEASURED_LINE_PITCH_PT:.1f}pt（差 {dp:+.1f}pt，容差 {PITCH_TOL_PT}pt）",
+                    f"测量 {measured_pitch:.1f}pt（差 {dp:+.1f}pt，容差 {PITCH_TOL_PT}pt）",
                 ))
         # 高度门（R3 收紧）：固定总容差 = 基础 + 行级 0.25×行数，上限 4pt
         dh = r["occupied_height_pt"] - m["text_height_pt"]
@@ -391,6 +396,8 @@ def measurement_error_rows(
                 lines_m is not None and lines_r is not None and lines_m == lines_r
             ),
             "render_pitch_pt": r.get("render_pitch_pt"),
+            "measured_pitch_pt": m.get("line_pitch_pt"),
+            "render_font_sizes_pt": r.get("render_font_sizes_pt"),
             "height_measured_pt": height_m,
             "height_rendered_pt": height_r,
             "height_delta_pt": (

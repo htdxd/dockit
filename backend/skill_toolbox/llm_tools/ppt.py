@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
+from skill_toolbox.contracts.ppt import MAX_REPAIR_CHANGES, MAX_SLIDES, PptLayout
 from skill_toolbox.llm_tools.common import function_schema
 
-_LAYOUTS = [
-    "title", "section", "bullets", "two_column", "image_text", "image_full",
-    "table", "agenda", "quote", "end",
-]
+_LAYOUTS = list(get_args(PptLayout))
 
 
 def _slide_schema() -> dict:
@@ -42,7 +42,7 @@ def ppt_tools() -> list[dict]:
             {
                 "topic": {"type": "string"},
                 "audience": {"type": "string"},
-                "page_count": {"type": "integer", "minimum": 1, "maximum": 30},
+                "page_count": {"type": "integer", "minimum": 1, "maximum": MAX_SLIDES},
                 "style": {"type": "string"},
                 "selected_source_ids": {"type": "array", "items": {"type": "string"}},
             },
@@ -54,7 +54,7 @@ def ppt_tools() -> list[dict]:
             "后端运行结构门；结构失败不会交付。",
             {
                 "outline_id": {"type": "string", "description": "ppt_create_outline 返回的 outline_id"},
-                "slides": {"type": "array", "items": _slide_schema(), "minItems": 1, "maxItems": 30},
+                "slides": {"type": "array", "items": _slide_schema(), "minItems": 1, "maxItems": MAX_SLIDES},
                 "template_id": {"type": "string", "description": "预留（V1 无模板）"},
             },
             ["outline_id", "slides"],
@@ -65,7 +65,7 @@ def ppt_tools() -> list[dict]:
             {
                 "artifact_id": {"type": "string", "description": "outline_id"},
                 "issues": {"type": "array", "items": {"type": "string"}},
-                "changes": {"type": "array", "items": {"type": "object"}, "maxItems": 8},
+                "changes": {"type": "array", "items": {"type": "object"}, "maxItems": MAX_REPAIR_CHANGES},
             },
             ["artifact_id", "issues"],
         ),

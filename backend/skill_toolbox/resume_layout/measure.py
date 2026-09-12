@@ -14,9 +14,6 @@ COM 打开读每段 top/lines → 计算条目真实高度。单实例批量测�
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +39,10 @@ class EntryMeasurement:
     line_pitch_pt: float
     # 文本占用高度（首行顶到末行底）：lines*pitch 与 top 差取大者（保守）
     text_height_pt: float
+    text_top_offset_pt: float | None = None
+    body_width_pt: float | None = None
+    body_offset_pt: float | None = None
+    body_pad_pt: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +53,9 @@ class EntryMeasurement:
             "last_line_top_pt": round(self.last_line_top_pt, 2),
             "line_pitch_pt": round(self.line_pitch_pt, 2),
             "text_height_pt": round(self.text_height_pt, 2),
+            **{key: getattr(self, key) for key in (
+                "text_top_offset_pt", "body_width_pt", "body_offset_pt", "body_pad_pt")
+               if getattr(self, key) is not None},
         }
 
 
@@ -94,6 +98,8 @@ class WordMeasureProbe:
                 tr.Text = item["text"]
                 paras = tr.Paragraphs
                 n = paras.Count
+                for i, bold in enumerate(item.get("paragraph_bold", []), 1):
+                    paras(i).Range.Font.Bold = -1 if bold else 0
                 tops: list[float] = []
                 line_total = 0
                 for i in range(1, n + 1):
@@ -130,6 +136,48 @@ def sum_pitch_denominator(tops: list[float], pitch: float) -> int:
     for prev, cur in zip(tops, tops[1:]):
         total += max(1, round((cur - prev) / pitch))
     return max(1, total)
+
+
+def measure_documents(entries: list[dict]) -> list[EntryMeasurement]:
+    """读取已按 emit 规则写好完整样式的宿主；COM 不再重写文字或猜测字体。"""
+    if not _COM_OK:
+        raise RuntimeError("Word COM 测量需要 Windows + pywin32")
+    results = []
+    pythoncom.CoInitialize()
+    word = client.DispatchEx("Word.Application")
+    word.Visible = False
+    word.DisplayAlerts = 0
+    try:
+        for item in entries:
+            doc = word.Documents.Open(str(item["host"]), False, True)
+            try:
+                shape = doc.Shapes("ResumeMeasureBody")
+                body = shape.GroupItems(item["body_item"]) if item.get("body_item") else shape
+                tr = body.TextFrame.TextRange
+                paragraphs = tr.Paragraphs
+                tops, paragraph_lines = [], []
+                for i in range(1, paragraphs.Count + 1):
+                    rng = paragraphs(i).Range
+                    tops.append(float(rng.Information(WD_VERTICAL_POS)))
+                    paragraph_lines.append(int(rng.ComputeStatistics(WD_STAT_LINES)))
+                lines = sum(paragraph_lines)
+                pitch = float(item.get("line_pitch_pt", 18.0))
+                if len(tops) > 1:
+                    pitch = (tops[-1] - tops[0]) / max(1, sum(paragraph_lines[:-1]))
+                results.append(EntryMeasurement(
+                    item["id"], paragraphs.Count, lines, tops[0], tops[-1],
+                    pitch, lines * pitch,
+                    text_top_offset_pt=round(tops[0] - item["body_top_pt"], 3) if "body_top_pt" in item else None,
+                    body_width_pt=item.get("body_width_pt"),
+                    body_offset_pt=item.get("body_offset_pt"),
+                    body_pad_pt=item.get("body_pad_pt"),
+                ))
+            finally:
+                doc.Close(False)
+    finally:
+        word.Quit()
+        pythoncom.CoUninitialize()
+    return results
 
 
 def run_probe(host_docx: Path, spec_path: Path, out_path: Path) -> None:

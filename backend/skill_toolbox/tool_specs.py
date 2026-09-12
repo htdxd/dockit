@@ -1,21 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
-
-
-def _function(
-    name: str, description: str, properties: dict[str, Any], required: list[str]
-) -> dict[str, Any]:
-    return {
-        "name": name,
-        "description": description,
-        "input_schema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
-    }
+from skill_toolbox.llm_tools.common import function_schema as _function
 
 
 TOOL_SPECS = [

@@ -6,6 +6,9 @@ move_rows/resize_rows 由后端换算为安全几何动作。
 
 from __future__ import annotations
 
+from typing import get_args
+
+from skill_toolbox.contracts.resume import CONTENT_SCHEMA_V2, ResumeEditOpV2, ResumeLayoutMode, ResumePrototype
 from skill_toolbox.llm_tools.common import function_schema
 
 
@@ -94,7 +97,7 @@ def _section_schema() -> dict:
         "properties": {
             "key": {"type": "string", "description": "栏目实例键（稳定、可复现，不用数组下标）"},
             "title": {"type": "string", "description": "栏目标题（含括号英文，如 实习经历（Internship））"},
-            "prototype": {"type": "string", "enum": ["experience_v1", "plain_lines_v1"],
+            "prototype": {"type": "string", "enum": list(get_args(ResumePrototype)),
                           "description": "组件原型：经历型（标题槽位+项目符号）/ 连排型"},
             "entry_gap_pt": {"type": "number", "description": "可选：本栏条目间距（2-24pt）"},
             "entries": {"type": "array", "items": _entry_schema()},
@@ -108,11 +111,7 @@ def _edit_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "op": {"type": "string", "enum": [
-                "update_entry", "insert_entry", "remove_entry", "move_entry",
-                "insert_section", "remove_section", "update_section_title",
-                "set_entry_gap", "move_component", "resize_component",
-            ]},
+            "op": {"type": "string", "enum": list(get_args(ResumeEditOpV2))},
             "instance_id": {"type": "string", "description": "目标实例，形如 internship#intern-1（来自 resume_prepare_v2）"},
             "section_key": {"type": "string", "description": "栏目 key（新增/删除栏目、改标题、设间距时用）"},
             "entry_id": {"type": "string", "description": "条目 id（部分动作可直接给）"},
@@ -178,9 +177,9 @@ def resume_v2_tools() -> list[dict]:
                     "type": "object",
                     "description": "v2 内容：{schema_version:'resume-content-v2', template_id, layout_mode, header, sections:[…]}",
                     "properties": {
-                        "schema_version": {"type": "string", "enum": ["resume-content-v2"]},
+                        "schema_version": {"type": "string", "enum": [CONTENT_SCHEMA_V2]},
                         "template_id": {"type": "string"},
-                        "layout_mode": {"type": "string", "enum": ["reflow", "local"]},
+                        "layout_mode": {"type": "string", "enum": list(get_args(ResumeLayoutMode))},
                         "header": _header_schema(),
                         "sections": {"type": "array", "items": _section_schema()},
                     },
@@ -188,7 +187,7 @@ def resume_v2_tools() -> list[dict]:
                     "additionalProperties": False,
                 },
                 "request_id": {"type": "string", "description": "幂等键；同 id 同载荷重试返回原结果"},
-                "layout_mode": {"type": "string", "enum": ["reflow", "local"], "description": "默认 reflow"},
+                "layout_mode": {"type": "string", "enum": list(get_args(ResumeLayoutMode)), "description": "默认 reflow"},
             },
             ["template_id", "content"],
         ),
@@ -202,7 +201,7 @@ def resume_v2_tools() -> list[dict]:
                 "base_revision": {"type": "integer", "description": "必须是当前可编辑版本（过期返回 VERSION_CONFLICT）"},
                 "request_id": {"type": "string", "description": "幂等键（必填）"},
                 "changes": {"type": "array", "items": _edit_schema(), "description": "动作列表"},
-                "layout_mode": {"type": "string", "enum": ["reflow", "local"], "description": "可选：覆盖默认重排模式"},
+                "layout_mode": {"type": "string", "enum": list(get_args(ResumeLayoutMode)), "description": "可选：覆盖默认重排模式"},
             },
             ["artifact_id", "base_revision", "request_id", "changes"],
         ),

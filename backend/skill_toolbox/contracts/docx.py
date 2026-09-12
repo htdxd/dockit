@@ -8,12 +8,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DocxBlockType = Literal["heading", "paragraph", "image", "table", "formula"]
+DocxComplexity = Literal["simple", "standard", "academic", "gongwen", "form", "template"]
+MAX_BLOCKS_PER_CALL = 8
 
 
 class DocxBlock(BaseModel):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
     type: DocxBlockType
     text: str = ""
     level: int = 1
@@ -34,7 +38,7 @@ class DocxBlock(BaseModel):
 
 class DocxStartRequest(BaseModel):
     title: str
-    complexity: Literal["simple", "standard", "academic", "gongwen", "form", "template"] = "standard"
+    complexity: DocxComplexity = "standard"
     scene: str = ""
     author: str = ""
     date: str = ""
@@ -42,7 +46,7 @@ class DocxStartRequest(BaseModel):
 
 class DocxAddBlocksRequest(BaseModel):
     document_id: str
-    blocks: list[DocxBlock] = Field(default_factory=list, max_length=8)
+    blocks: list[DocxBlock] = Field(default_factory=list, max_length=MAX_BLOCKS_PER_CALL)
 
 
 class DocxFinalizeRequest(BaseModel):

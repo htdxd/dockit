@@ -6,14 +6,16 @@ V1 不让模型自由编辑 SVG：只允许固定布局、文本、图片和表�
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 PptLayout = Literal[
     "title", "section", "bullets", "two_column", "image_text", "image_full",
     "table", "agenda", "quote", "end",
 ]
+MAX_SLIDES = 30
+MAX_REPAIR_CHANGES = 8
 
 
 class SlideSpec(BaseModel):
@@ -22,6 +24,8 @@ class SlideSpec(BaseModel):
     layout 是 Pydantic 字面量：非法布局在 typed 参数校验层直接被拒
     （ValidationError），不会到达 Service。
     """
+
+    model_config = ConfigDict(coerce_numbers_to_str=True)
 
     layout: PptLayout = "bullets"
     title: str = ""
@@ -37,7 +41,7 @@ class SlideSpec(BaseModel):
 class DeckOutline(BaseModel):
     topic: str
     audience: str = ""
-    page_count: int = Field(default=8, ge=1, le=30)
+    page_count: int = Field(default=8, ge=1, le=MAX_SLIDES)
     style: str = "clean"
     selected_source_ids: list[str] = Field(default_factory=list)
     slides: list[SlideSpec] = Field(default_factory=list)
@@ -45,7 +49,7 @@ class DeckOutline(BaseModel):
 
 class PptGenerateRequest(BaseModel):
     outline_id: str
-    slides: list[SlideSpec] = Field(default_factory=list, max_length=30)
+    slides: list[SlideSpec] = Field(default_factory=list, max_length=MAX_SLIDES)
     template_id: str = ""
 
 
@@ -53,4 +57,4 @@ class PptRepairRequest(BaseModel):
     artifact_id: str
     issues: list[str] = Field(default_factory=list)
     # 有限文本/布局修改（模型不传坐标/EMU/SVG）
-    changes: list[dict] = Field(default_factory=list, max_length=8)
+    changes: list[dict] = Field(default_factory=list, max_length=MAX_REPAIR_CHANGES)

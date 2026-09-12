@@ -146,7 +146,7 @@ def test_inflight_request_id_rejects_different_artifact_payload(svc, monkeypatch
         finally:
             release.set()
         result = first.result(timeout=10)
-    assert svc._request_index()["shared-inflight"]["artifact_id"] == result.artifact_id
+    assert svc.store.request_index()["shared-inflight"]["artifact_id"] == result.artifact_id
     assert len(_new_revision_calls) == 1
 
 
@@ -205,7 +205,7 @@ def test_restore_creates_new_traceable_revision(svc: ResumeEditService) -> None:
         artifact_id=gen.artifact_id, target_revision=1,
         expected_accepted_revision=0, request_id="res-1"))
     assert restored.revision == rep.revision + 1, "恢复必须新建版本，不复用旧号"
-    rec = svc._load_revision(gen.artifact_id, restored.revision)
+    rec = svc.store.load_revision(gen.artifact_id, restored.revision)
     assert rec["changes"][0]["op"] == "restore"
     assert rec["changes"][0]["from_revision"] == 1
 
@@ -220,7 +220,7 @@ def test_update_entry_only_touches_provided_fields(svc: ResumeEditService) -> No
         changes=[ResumeEditV2(op="update_entry", instance_id="internship#intern-1",
                               entry={"id": "intern-1", "bullets": ["只有要点被替换；"]})]))
     assert rep.ok
-    rec = svc._load_revision(gen.artifact_id, rep.revision)
+    rec = svc.store.load_revision(gen.artifact_id, rep.revision)
     entry = rec["content"]["sections"][0]["entries"][0]
     assert entry["bullets"] == ["只有要点被替换；"]
     assert entry["head"]["org"] == "广州某公司", "未提供的 head 字段必须保留"
@@ -240,7 +240,7 @@ def test_insert_move_remove_entry_order(svc: ResumeEditService) -> None:
                          before="internship#intern-1"),
             ResumeEditV2(op="remove_entry", instance_id="internship#intern-2"),
         ]))
-    entries = svc._load_revision(gen.artifact_id, rep.revision)["content"]["sections"][0]["entries"]
+    entries = svc.store.load_revision(gen.artifact_id, rep.revision)["content"]["sections"][0]["entries"]
     assert [e["id"] for e in entries] == ["intern-3", "intern-1"]
 
 
@@ -255,7 +255,7 @@ def test_atomic_failure_leaves_no_new_revision(svc: ResumeEditService) -> None:
                 ResumeEditV2(op="remove_entry", instance_id="internship#no-such"),
             ]))
     assert exc.value.code == "TARGET_NOT_FOUND"
-    assert svc._index(gen.artifact_id)["current"] == 1
+    assert svc.store.index(gen.artifact_id)["current"] == 1
     assert len(_new_revision_calls) == 1, "失败批次不得写任何 revision"
 
 
@@ -292,10 +292,10 @@ def test_empty_changes_rejected(svc: ResumeEditService) -> None:
 def test_accept_requires_full_visual_coverage_when_vision(svc: ResumeEditService) -> None:
     """超过单次投递预算的页未补看前，accept 必须被拒（VISUAL_PENDING）。"""
     gen = _gen(svc)
-    svc._load_revision  # noqa: B018 - 语义说明：多页版本才有剩余页
+    svc.store.load_revision  # noqa: B018 - 语义说明：多页版本才有剩余页
     # 把该 revision 伪造成 4 页（预算 3 页），投递只覆盖 1-3 页 → 第 4 页待补看
-    rec = svc._load_revision(gen.artifact_id, 1)
-    rec_dir = svc._revision_dir(gen.artifact_id, 1)
+    rec = svc.store.load_revision(gen.artifact_id, 1)
+    rec_dir = svc.store.revision_dir(gen.artifact_id, 1)
     for n in (2, 3, 4):
         p = rec_dir / "render" / f"page-{n}.png"
         p.write_bytes(b"\x89PNG\r\n\x1a\nstub")
@@ -337,7 +337,7 @@ def test_accept_updates_pointer_and_logs_notes(svc: ResumeEditService) -> None:
         artifact_id=gen.artifact_id, candidate_revision=1, expected_accepted_revision=0),
         visual_notes="第 1 页：五栏齐全、无重叠、无越界。")
     assert acc.ok and acc.data["accepted_revision"] == 1
-    index = svc._index(gen.artifact_id)
+    index = svc.store.index(gen.artifact_id)
     assert index["accepted"] == 1
     assert index["accepted_log"][-1]["notes"].startswith("第 1 页")
     with pytest.raises(ToolError) as exc:
@@ -493,7 +493,7 @@ def test_e2e_v2_full_cycle_with_real_render(tmp_path: Path) -> None:
                                      "bullets": ["负责增长实验设计与复盘；",
                                                  "搭建渠道数据看板。"]})]))
     assert rep.ok is True, rep.issues
-    record = svc._load_revision(aid, rep.revision)
+    record = svc.store.load_revision(aid, rep.revision)
     docx = svc.workspace / record["docx"]
     assert docx.is_file() and record["docx_sha256"]
     with zipfile.ZipFile(docx) as z:
@@ -537,7 +537,7 @@ def test_accept_stale_candidate_rejected_and_no_cross_version_qa(
         qa = json.loads(qa_path.read_text(encoding="utf-8"))
         assert qa.get("visual") != "passed", "过期候选不得把 QA 标成视觉通过"
         assert int(qa.get("accepted_revision") or 0) == 0
-    assert svc._index(gen.artifact_id)["accepted"] == 0
+    assert svc.store.index(gen.artifact_id)["accepted"] == 0
 
 
 def test_accept_current_version_writes_same_version_delivery_report(
@@ -555,7 +555,7 @@ def test_accept_current_version_writes_same_version_delivery_report(
     assert report["revision"] == 2
     assert report["visual"]["status"] == "passed"
     assert report["mechanical"]["passed"] is True
-    assert report["docx"] == svc._load_revision(gen.artifact_id, 2)["docx"]
+    assert report["docx"] == svc.store.load_revision(gen.artifact_id, 2)["docx"]
     qa = json.loads((svc.workspace / "work" / "qa" / "resume.json").read_text(encoding="utf-8"))
     assert qa["revision"] == 2 and qa["accepted_revision"] == 2 and qa["visual"] == "passed"
 
@@ -572,7 +572,7 @@ def test_repair_successful_retry_is_idempotent(svc: ResumeEditService) -> None:
         changes=changes))
     assert second.ok and second.revision == first.revision
     assert second.data["idempotent_replay"] is True
-    assert svc._index(gen.artifact_id)["current"] == first.revision, "重试不得新建版本"
+    assert svc.store.index(gen.artifact_id)["current"] == first.revision, "重试不得新建版本"
 
 
 def test_repair_retry_with_different_payload_conflicts(svc: ResumeEditService) -> None:
@@ -751,7 +751,7 @@ def test_resize_parameters_are_honored_or_rejected(svc: ResumeEditService) -> No
         changes=[ResumeEditV2(op="resize_component", instance_id="internship#intern-2",
                               width_pt=300.0)]))
     assert rep2.ok
-    entry = svc._load_revision(gen.artifact_id, rep2.revision)["content"]["sections"][0]["entries"][1]
+    entry = svc.store.load_revision(gen.artifact_id, rep2.revision)["content"]["sections"][0]["entries"][1]
     assert entry["width_pt"] == pytest.approx(300.0)
     # height_pt 绝对高度生效
     rep3 = svc.repair(ResumeRepairV2Request(
@@ -812,7 +812,7 @@ def test_header_unknown_key_and_missing_photo_rejected(svc: ResumeEditService) -
     gen = svc.generate(ResumeGenerateV2Request(
         template_id="t109", content=ResumeContentV2(**ok), request_id="g-head-ok"))
     assert gen.ok is True
-    record = svc._load_revision(gen.artifact_id, gen.revision)
+    record = svc.store.load_revision(gen.artifact_id, gen.revision)
     assert record["content"]["header"]["fields"]["name"] == "张三"
 
 
@@ -834,7 +834,7 @@ def test_e2e_header_fields_and_photo_applied(tmp_path: Path) -> None:
     gen = svc.generate(ResumeGenerateV2Request(
         template_id="t109", content=ResumeContentV2(**content), request_id="g-head-e2e"))
     assert gen.ok is True, gen.issues
-    record = svc._load_revision(gen.artifact_id, gen.revision)
+    record = svc.store.load_revision(gen.artifact_id, gen.revision)
     applied = record["header"]["fields"]
     assert applied["name"]["after"] == "张三" and applied["name"]["before"] == "简历模板资源网"
     assert applied["phone"]["after"] == "138-0000-0000"
@@ -887,7 +887,7 @@ def test_concurrent_identical_repair_is_idempotent(svc: ResumeEditService) -> No
     assert not errors, f"并发相同重试不应失败：{[e.code for e in errors]}"
     revisions = {r.revision for r in results}
     assert revisions == {2}, f"两个请求必须指向同一版本：{revisions}"
-    assert svc._index(gen.artifact_id)["current"] == 2, "只允许新建一个版本"
+    assert svc.store.index(gen.artifact_id)["current"] == 2, "只允许新建一个版本"
     idempotent = [r.data.get("idempotent_replay") for r in results]
     assert sorted(idempotent) == [False, True], f"恰好一个真实执行 + 一个重放：{idempotent}"
 
@@ -910,9 +910,9 @@ def test_concurrent_identical_accept_is_idempotent(svc: ResumeEditService) -> No
     errors = [r for r in results if isinstance(r, ToolError)]
     assert not errors, f"并发相同 accept 不应失败：{[e.code for e in errors]}"
     assert {r.data["accepted_revision"] for r in results} == {1}
-    assert svc._index(gen.artifact_id)["accepted"] == 1
+    assert svc.store.index(gen.artifact_id)["accepted"] == 1
     # accept 返回后幂等记录必须**立即可见**（提交与登记同锁）
-    entry = svc._request_index()["acc-concurrent"]
+    entry = svc.store.request_index()["acc-concurrent"]
     assert entry["kind"] == "accept" and entry["revision"] == 1
 
 
@@ -929,7 +929,7 @@ def test_concurrent_generate_different_artifacts_keeps_all_request_records(
 
     results = _concurrently_many([make("a"), make("b"), make("c"), make("d")])
     assert all(r.ok for r in results)
-    index = svc._request_index()
+    index = svc.store.request_index()
     for suffix in ("a", "b", "c", "d"):
         assert f"req-{suffix}" in index, f"请求记录丢失：req-{suffix}"
 
@@ -945,11 +945,11 @@ def test_request_index_lock_is_separate_from_artifact_lock(svc: ResumeEditServic
     """请求索引锁是独立文件，且不与 artifact 锁互相嵌套加锁（无死锁）。"""
     gen = _gen(svc)
     locks = svc.workspace / "work" / "resume" / "_locks"
-    with svc._request_lock():
+    with svc.store.request_lock():
         assert (locks / "_requests.lock").is_file()
-    with svc._artifact_lock(gen.artifact_id):
+    with svc.store.artifact_lock(gen.artifact_id):
         assert (locks / f"{gen.artifact_id}.lock").is_file()
-        with svc._request_lock():      # 锁序：artifact → request（不允许反向）
+        with svc.store.request_lock():      # 锁序：artifact → request（不允许反向）
             assert True
     assert not (locks / "_requests.lock").exists()
 
@@ -1031,7 +1031,7 @@ def test_e2e_reflow_moves_subsequent_sections(tmp_path: Path) -> None:
     gen = svc.generate(ResumeGenerateV2Request(
         template_id="t109", content=ResumeContentV2(**content), request_id="r2-gen"))
     assert gen.ok is True, gen.issues
-    base = svc._load_revision(gen.artifact_id, gen.revision)
+    base = svc.store.load_revision(gen.artifact_id, gen.revision)
     before = {s["section_key"]: s["anchor_y_pt"] for s in base["instance_model"]}
     before_edu_bottom = max(
         e["region"]["y_pt"] + e["region"]["h_pt"]
@@ -1044,7 +1044,7 @@ def test_e2e_reflow_moves_subsequent_sections(tmp_path: Path) -> None:
         layout_mode="reflow",
         changes=[ResumeEditV2(op="move_component", instance_id="edu#e1", dy_pt=80.0)]))
     assert rep.ok is True, rep.issues
-    rec = svc._load_revision(gen.artifact_id, rep.revision)
+    rec = svc.store.load_revision(gen.artifact_id, rep.revision)
     after = {s["section_key"]: s["anchor_y_pt"] for s in rec["instance_model"]}
     after_edu_bottom = max(
         e["region"]["y_pt"] + e["region"]["h_pt"]
@@ -1060,7 +1060,7 @@ def test_e2e_reflow_moves_subsequent_sections(tmp_path: Path) -> None:
     intern_title_top = after["intern"] + 10.55
     assert intern_title_top > after_edu_bottom
     plan = json.loads(
-        (svc._revision_dir(gen.artifact_id, rep.revision) / "layout_plan.json")
+        (svc.store.revision_dir(gen.artifact_id, rep.revision) / "layout_plan.json")
         .read_text(encoding="utf-8")
     )
     assert plan["pages"] >= 1
@@ -1089,7 +1089,7 @@ def test_e2e_reflow_repaginates_when_pushed_out(tmp_path: Path) -> None:
     gen = svc.generate(ResumeGenerateV2Request(
         template_id="t109", content=ResumeContentV2(**content), request_id="r2-gen2"))
     assert gen.ok is True, gen.issues
-    base = svc._load_revision(gen.artifact_id, gen.revision)
+    base = svc.store.load_revision(gen.artifact_id, gen.revision)
     assert base["page_count"] == 1
     rep = svc.repair(ResumeRepairV2Request(
         artifact_id=gen.artifact_id, base_revision=gen.revision, request_id="r2-push",
@@ -1104,7 +1104,7 @@ def test_e2e_reflow_repaginates_when_pushed_out(tmp_path: Path) -> None:
                          height_delta_pt=200.0),
         ]))
     assert rep.ok is True, rep.issues
-    rec = svc._load_revision(gen.artifact_id, rep.revision)
+    rec = svc.store.load_revision(gen.artifact_id, rep.revision)
     assert rec["page_count"] == 2, (
         f"内容被推出第 1 页时必须真实分页，实际 {rec['page_count']} 页"
     )
@@ -1144,7 +1144,7 @@ def test_request_index_survives_concurrent_writers(tmp_path: Path,
     with ThreadPoolExecutor(max_workers=5) as pool:
         results = list(pool.map(lambda f: f(), fns))
     assert all(r.ok for r in results), [r.issues for r in results if not r.ok]
-    index = svc._request_index()
+    index = svc.store.request_index()
     for t in ("a", "b", "c", "d", "e"):
         assert f"req-{t}" in index, f"请求记录丢失: req-{t}"
     # 没有残留临时文件

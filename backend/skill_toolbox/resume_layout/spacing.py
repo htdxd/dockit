@@ -35,18 +35,11 @@ SCHEMA_VERSION = "spacing-archive-1"
 TITLE_TEXT_TOP_OFF_PT = 10.55   # frame_top → 标题文字渲染顶（模板包同值）
 LINE_PITCH_PT = 18.0
 
-# 原件 5 栏 anchor 的 docPr name（P0 解析）；COM Shapes 序号同 generate.py
-SECTION_ANCHOR_NAMES: dict[str, str] = {
-    "education": "组合 215",
-    "internship": "组合 216",
-    "campus": "组合 218",
-    "skills": "组合 219",
-    "summary": "组合 220",
-}
-SECTION_SHAPE_INDEX: dict[str, int] = {
-    "education": 3, "internship": 4, "campus": 5, "skills": 6, "summary": 7,
-}
-SECTION_ORDER = ["education", "internship", "campus", "skills", "summary"]
+from skill_toolbox.resume_layout.t109 import (
+    SOURCE_SECTION_NAMES as SECTION_ANCHOR_NAMES,
+    MEASURE_SHAPE_BY_SECTION as SECTION_SHAPE_INDEX,
+)
+SECTION_ORDER = list(SECTION_ANCHOR_NAMES)
 
 
 @dataclass

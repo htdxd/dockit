@@ -193,6 +193,7 @@ def set_box_text(
     *,
     style_roles: dict[str, list[dict]] | None = None,
     style_snaps: list[dict] | None = None,
+    first_is_header: bool | None = None,
 ) -> None:
     """整框替换文本，**按段落角色复用源样式**（P2-1）。
 
@@ -214,7 +215,7 @@ def set_box_text(
             raise RuntimeError("角色样式桶为空（空原型？）")
 
         def snap_for(i: int, line: str) -> dict:
-            if i == 0 and looks_like_entry_header(line):
+            if i == 0 and (first_is_header if first_is_header is not None else looks_like_entry_header(line)):
                 return head[min(0, len(head) - 1)]
             return duty[min(max(i - 1, 0), len(duty) - 1)]
     else:
@@ -251,9 +252,12 @@ def set_box_text(
         r = etree.SubElement(p, W + "r")
         if snap["rPr"] is not None:
             r.append(copy.deepcopy(snap["rPr"]))
-        t = etree.SubElement(r, W + "t")
-        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        t.text = line
+        for index, chunk in enumerate(line.split("\t")):
+            if index:
+                etree.SubElement(r, W + "tab")
+            t = etree.SubElement(r, W + "t")
+            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            t.text = chunk
         prev_p = p
 
 
@@ -302,7 +306,8 @@ def _split_label_value(text: str) -> tuple[str, str] | None:
     return None
 
 
-def set_info_fields(anchor, fields: dict[str, str]) -> dict[str, dict[str, str]]:
+def set_info_fields(anchor, fields: dict[str, str], *,
+                    labels: dict[str, str] | None = None) -> dict[str, dict[str, str]]:
     """替换母版个人信息区「标签：值」段落的值，保留标签与字体样式。
 
     返回 `{key: {"label":…, "before":…, "after":…}}`（供交付报告核对）。
@@ -325,7 +330,7 @@ def set_info_fields(anchor, fields: dict[str, str]) -> dict[str, dict[str, str]]
             if split is None:
                 continue
             label_raw, value = split
-            key = INFO_FIELD_LABELS.get("".join(label_raw.split()))
+            key = (labels or INFO_FIELD_LABELS).get("".join(label_raw.split()))
             if key is None or key not in fields:
                 continue
             new_value = str(fields[key])
@@ -339,16 +344,14 @@ def set_info_fields(anchor, fields: dict[str, str]) -> dict[str, dict[str, str]]
                 continue
             sep = "：" if "：" in texts[colon_idx] else ":"
             label_part = texts[colon_idx].split(sep, 1)[0] + sep
-            value_runs = [colon_idx]
-            if colon_idx + 1 < len(runs):
-                value_runs.append(colon_idx + 1)
-            else:
-                value_runs.append(colon_idx)
+            if colon_idx + 1 == len(runs):
+                value_run = copy.deepcopy(runs[colon_idx])
+                runs[colon_idx].addnext(value_run)
+                runs.append(value_run)
+            value_run = runs[colon_idx + 1]
             _set_run_text(runs[colon_idx], label_part)
-            _set_run_text(runs[value_runs[1]], new_value)
-            for r in runs:
-                if r is runs[colon_idx] or r is runs[value_runs[1]]:
-                    continue
+            _set_run_text(value_run, new_value)
+            for r in runs[colon_idx + 2:]:
                 _set_run_text(r, "")
             applied[key] = {"label": label_raw.strip(), "before": value, "after": new_value}
     return applied
@@ -367,60 +370,42 @@ def _set_run_text(run, text: str) -> None:
 
 def replace_photo(anchor, image_bytes: bytes, *, frame_cx_pt: float | None = None,
                   frame_cy_pt: float | None = None) -> dict:
-    """按原照片框等比缩放并居中放置新图（不改模板照片框尺寸）。
-
-    返回 {width_pt, height_pt, off_x_pt, off_y_pt, resized}；仅在图片纵横比
-    与框不一致时才会改变显示尺寸（与 legacy 行为一致：不裁切、不拉伸变形）。
-    """
+    """只调整组内照片，补偿父组缩放；保留外框并等比居中，不裁切。"""
     import io
 
     from PIL import Image
 
     with Image.open(io.BytesIO(image_bytes)) as im:
         img_w, img_h = im.size
-    ext = anchor.find(WP + "extent")
-    cx_pt = frame_cx_pt or emu2pt(ext.get("cx"))
-    cy_pt = frame_cy_pt or emu2pt(ext.get("cy"))
-    aspect = img_w / img_h if img_h else 1.0
-    box_aspect = cx_pt / cy_pt if cy_pt else 1.0
-    if abs(aspect - box_aspect) < 1e-3:
-        new_cx, new_cy = cx_pt, cy_pt
-    elif aspect > box_aspect:      # 更宽：按宽贴合，高度留白
-        new_cx, new_cy = cx_pt, cx_pt / aspect
-    else:                          # 更高：按高贴合，宽度留白
-        new_cy, new_cx = cy_pt, cy_pt * aspect
-    off_x = (cx_pt - new_cx) / 2.0
-    off_y = (cy_pt - new_cy) / 2.0
-    _set_picture_frame(anchor, new_cx, new_cy, off_x, off_y, cx_pt, cy_pt)
+    pic_ns = "{http://schemas.openxmlformats.org/drawingml/2006/picture}"
+    picture = anchor.find(".//" + pic_ns + "pic")
+    transform = picture.find(pic_ns + "spPr/" + A + "xfrm")
+    ext, off = transform.find(A + "ext"), transform.find(A + "off")
+    scale_x = scale_y = 1.0
+    for parent in picture.iterancestors():
+        group = parent.find(WPG + "grpSpPr/" + A + "xfrm")
+        if group is not None:
+            outer, inner = group.find(A + "ext"), group.find(A + "chExt")
+            scale_x *= int(outer.get("cx")) / int(inner.get("cx"))
+            scale_y *= int(outer.get("cy")) / int(inner.get("cy"))
+    cx_pt = frame_cx_pt or emu2pt(ext.get("cx")) * scale_x
+    cy_pt = frame_cy_pt or emu2pt(ext.get("cy")) * scale_y
+    fit = min(cx_pt / img_w, cy_pt / img_h)
+    new_cx, new_cy = img_w * fit, img_h * fit
+    off_x, off_y = (cx_pt - new_cx) / 2.0, (cy_pt - new_cy) / 2.0
+    ext.set("cx", str(pt2emu(new_cx / scale_x)))
+    ext.set("cy", str(pt2emu(new_cy / scale_y)))
+    off.set("x", str(int(off.get("x")) + pt2emu(off_x / scale_x)))
+    off.set("y", str(int(off.get("y")) + pt2emu(off_y / scale_y)))
+    fill = picture.find(pic_ns + "blipFill")
+    crop = fill.find(A + "srcRect")
+    if crop is not None:
+        fill.remove(crop)
     return {
         "width_pt": round(new_cx, 2), "height_pt": round(new_cy, 2),
         "off_x_pt": round(off_x, 2), "off_y_pt": round(off_y, 2),
         "resized": (round(new_cx, 2), round(new_cy, 2)) != (round(cx_pt, 2), round(cy_pt, 2)),
     }
-
-
-def _set_picture_frame(anchor, cx_pt: float, cy_pt: float,
-                       off_x_pt: float, off_y_pt: float,
-                       frame_cx_pt: float, frame_cy_pt: float) -> None:
-    anchor.find(WP + "extent").set("cx", str(pt2emu(cx_pt)))
-    anchor.find(WP + "extent").set("cy", str(pt2emu(cy_pt)))
-    for sp in anchor.iter(A + "xfrm"):
-        e = sp.find(A + "ext")
-        if e is not None and e.get("cx") is not None:
-            e.set("cx", str(pt2emu(cx_pt)))
-            e.set("cy", str(pt2emu(cy_pt)))
-        o = sp.find(A + "off")
-        if o is not None and o.get("x") is not None:
-            o.set("x", str(pt2emu(off_x_pt)))
-            o.set("y", str(pt2emu(off_y_pt)))
-    if off_x_pt or off_y_pt:
-        ph = anchor.find(WP + "positionH/" + WP + "posOffset")
-        pv = anchor.find(WP + "positionV/" + WP + "posOffset")
-        if ph is not None and ph.text:
-            ph.text = str(int(ph.text) + pt2emu(off_x_pt))
-        if pv is not None and pv.text:
-            pv.text = str(int(pv.text) + pt2emu(off_y_pt))
-    del frame_cx_pt, frame_cy_pt
 
 
 def resize_group_child_bottom(anchor, wsp, new_child_cy_pt: float) -> None:
@@ -467,18 +452,6 @@ def set_anchor_pos_v(anchor, y_pt: float) -> None:
 
 
 # ---------------- ID 唯一化 ----------------
-
-def _max_int_attr(root, xpath: str, attr: str) -> int:
-    mx = 0
-    for el in root.iter():
-        if etree.QName(el).localname == "anchor":
-            continue
-    # 简化：遍历所有元素按 tag 过滤
-    tag = None
-    for t in ("docPr", "cNvPr"):
-        pass
-    return _scan_max(root, "docPr", "id")
-
 
 def _scan_max(root, localname: str, attr: str) -> int:
     mx = 0
@@ -530,7 +503,7 @@ def insert_proto(root, proto_ac) -> etree._Element:
     sect = body.find(W + "sectPr")
     if sect is not None:
         body.remove(p)
-        sect.addprevious(p)  # noqa: 保持 sectPr 最后
+        sect.addprevious(p)  # 保持 sectPr 最后
     return proto_ac.find(".//" + WP + "anchor")
 
 

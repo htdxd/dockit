@@ -12,11 +12,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
+import json
+
 from skill_toolbox.llm_tools.common import error_text, operation_text
 from skill_toolbox.tools.docx import DocxService
 from skill_toolbox.tools.materials import MaterialPlanService
 from skill_toolbox.tools.ppt import PptService
-from skill_toolbox.tools.resume import ResumeService
+from skill_toolbox.tools.resume import ResumeEditService, ResumeService
+from skill_toolbox.tools.resume_workflow import ResumeWorkflow
 
 Handler = Callable[[dict[str, Any]], OperationResult]
 
@@ -28,7 +31,8 @@ class DomainServices:
     materials: MaterialPlanService | None = None
     resume: ResumeService | None = None
     # 简历 v2（P2-3）：版本化编辑服务；与 legacy resume 并存，按请求形态分流
-    resume_v2: Any | None = None
+    resume_v2: ResumeEditService | None = None
+    resume_workflow: ResumeWorkflow | None = None
     docx: DocxService | None = None
     ppt: PptService | None = None
     cancel_callbacks: list[Callable[[bool], None]] = field(default_factory=list, repr=False)
@@ -40,7 +44,7 @@ class DomainServices:
         会让 ProcessRunner 拒绝再启动新进程。
         """
         seen: set[int] = set()
-        for service in (self.resume, self.docx, self.ppt):
+        for service in (self.resume, self.resume_v2, self.docx, self.ppt):
             runner = getattr(service, "runner", None)
             if runner is None or id(runner) in seen:
                 continue
@@ -86,41 +90,21 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
         _require(services.resume, "ResumeService")
         from skill_toolbox.contracts.resume import ResumeGenerateRequest
 
-        request = ResumeGenerateRequest(
-            template_id=str(args["template_id"]),
-            fields={str(k): str(v) for k, v in args.get("fields", {}).items()},
-            photo_asset_id=str(args.get("photo_asset_id", "")),
-            target_role=str(args.get("target_role", "")),
-            formats=[str(f) for f in args.get("formats", ["docx"])],
-        )
+        request = ResumeGenerateRequest.model_validate(args)
         return services.resume.generate(request)
 
     def _resume_repair(args: dict[str, Any]) -> OperationResult:
         _require(services.resume, "ResumeService")
-        from skill_toolbox.contracts.resume import ResumeChange, ResumeChangeRequest
+        from skill_toolbox.contracts.resume import ResumeChangeRequest
 
-        changes = []
-        for item in args.get("changes", []):
-            changes.append(
-                ResumeChange(
-                    action=str(item["action"]),
-                    component_id=str(item.get("component_id", "")),
-                    text=str(item.get("text", "")),
-                    move_rows=int(item.get("move_rows", 0)),
-                    resize_rows=int(item.get("resize_rows", 0)),
-                    asset_id=str(item.get("asset_id", "")),
-                )
-            )
-        return services.resume.repair(
-            ResumeChangeRequest(artifact_id=str(args["artifact_id"]), changes=changes)
-        )
+        return services.resume.repair(ResumeChangeRequest.model_validate(args))
 
     handlers["resume_prepare"] = _resume_prepare
     handlers["resume_generate"] = _resume_generate
     handlers["resume_repair"] = _resume_repair
 
     # ---------- 简历 v2（P2-3：版本化编辑 + 多模态预览） ----------
-    def _resume_service_v2() -> Any:
+    def _resume_service_v2() -> ResumeEditService:
         service = services.resume_v2
         _require(service, "ResumeEditService")
         return service
@@ -133,48 +117,26 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
         )
 
     def _resume_generate_v2(args: dict[str, Any]) -> OperationResult:
-        from skill_toolbox.contracts.resume import (
-            ResumeContentV2,
-            ResumeGenerateV2Request,
-        )
+        from skill_toolbox.contracts.resume import ResumeGenerateV2Request
 
         service = _resume_service_v2()
         content_payload = args.get("content") or {}
         mode = args.get("layout_mode") or content_payload.get("layout_mode") or "reflow"
-        request = ResumeGenerateV2Request(
-            template_id=str(args["template_id"]),
-            content=ResumeContentV2(**content_payload),
-            request_id=str(args.get("request_id", "")),
-            layout_mode=str(mode),  # type: ignore[arg-type]
-        )
+        request = ResumeGenerateV2Request.model_validate({**args, "layout_mode": mode})
         return service.generate(request)
 
     def _resume_repair_v2(args: dict[str, Any]) -> OperationResult:
-        from skill_toolbox.contracts.resume import ResumeEditV2, ResumeRepairV2Request
+        from skill_toolbox.contracts.resume import ResumeRepairV2Request
 
         service = _resume_service_v2()
-        changes = [ResumeEditV2(**item) for item in args.get("changes", [])]
-        return service.repair(
-            ResumeRepairV2Request(
-                artifact_id=str(args["artifact_id"]),
-                base_revision=int(args["base_revision"]),
-                request_id=str(args["request_id"]),
-                changes=changes,
-                layout_mode=args.get("layout_mode"),
-            )
-        )
+        return service.repair(ResumeRepairV2Request.model_validate(args))
 
     def _resume_accept(args: dict[str, Any]) -> OperationResult:
         from skill_toolbox.contracts.resume import ResumeAcceptRequest
 
         service = _resume_service_v2()
         return service.accept(
-            ResumeAcceptRequest(
-                artifact_id=str(args["artifact_id"]),
-                candidate_revision=int(args["candidate_revision"]),
-                expected_accepted_revision=int(args["expected_accepted_revision"]),
-                request_id=str(args.get("request_id", "")),
-            ),
+            ResumeAcceptRequest.model_validate(args),
             visual_notes=str(args.get("visual_notes", "")),
         )
 
@@ -182,26 +144,13 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
         from skill_toolbox.contracts.resume import ResumeRestoreRequest
 
         service = _resume_service_v2()
-        return service.restore(
-            ResumeRestoreRequest(
-                artifact_id=str(args["artifact_id"]),
-                target_revision=int(args["target_revision"]),
-                expected_accepted_revision=int(args["expected_accepted_revision"]),
-                request_id=str(args.get("request_id", "")),
-            )
-        )
+        return service.restore(ResumeRestoreRequest.model_validate(args))
 
     def _resume_preview(args: dict[str, Any]) -> OperationResult:
         from skill_toolbox.contracts.resume import ResumePreviewRequest
 
         service = _resume_service_v2()
-        return service.preview(
-            ResumePreviewRequest(
-                artifact_id=str(args["artifact_id"]),
-                revision=int(args["revision"]),
-                pages=[int(p) for p in args.get("pages", [])],
-            )
-        )
+        return service.preview(ResumePreviewRequest.model_validate(args))
 
     handlers["resume_prepare_v2"] = _resume_prepare_v2
     handlers["resume_generate_v2"] = _resume_generate_v2
@@ -210,65 +159,44 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
     handlers["resume_restore"] = _resume_restore
     handlers["resume_preview"] = _resume_preview
 
+    if services.resume_workflow is not None:
+        from skill_toolbox.llm_tools.resume_workflow import REQUEST_MODELS
+
+        for name in tuple(handlers):
+            if name.startswith("resume_") and name not in REQUEST_MODELS:
+                del handlers[name]
+        for name, method in {
+            "resume_prepare": "prepare", "resume_generate": "generate", "resume_edit": "edit",
+            "resume_preview": "preview", "resume_accept": "accept",
+        }.items():
+            model = REQUEST_MODELS[name]
+            operation = getattr(services.resume_workflow, method)
+            handlers[name] = lambda args, model=model, operation=operation: operation(model.model_validate(args))
+
     # ---------- DOCX（阶段 5） ----------
     def _docx_start(args: dict[str, Any]) -> OperationResult:
         _require(services.docx, "DocxService")
         from skill_toolbox.contracts.docx import DocxStartRequest
 
-        return services.docx.start(
-            DocxStartRequest(
-                title=str(args["title"]),
-                complexity=str(args.get("complexity", "standard")),  # type: ignore[arg-type]
-                scene=str(args.get("scene", "")),
-                author=str(args.get("author", "")),
-                date=str(args.get("date", "")),
-            )
-        )
+        return services.docx.start(DocxStartRequest.model_validate(args))
 
     def _docx_add_blocks(args: dict[str, Any]) -> OperationResult:
         _require(services.docx, "DocxService")
-        from skill_toolbox.contracts.docx import DocxAddBlocksRequest, DocxBlock
+        from skill_toolbox.contracts.docx import DocxAddBlocksRequest
 
-        blocks = []
-        for item in args.get("blocks", []):
-            blocks.append(
-                DocxBlock(
-                    type=str(item["type"]),  # type: ignore[arg-type]
-                    text=str(item.get("text", "")),
-                    level=int(item.get("level", 1)),
-                    asset_id=str(item.get("asset_id", "")),
-                    caption=str(item.get("caption", "")),
-                    headers=[str(h) for h in item.get("headers", [])],
-                    rows=[[str(c) for c in row] for row in item.get("rows", [])],
-                    latex=str(item.get("latex", "")),
-                )
-            )
-        return services.docx.add_blocks(
-            DocxAddBlocksRequest(document_id=str(args["document_id"]), blocks=blocks)
-        )
+        return services.docx.add_blocks(DocxAddBlocksRequest.model_validate(args))
 
     def _docx_finalize(args: dict[str, Any]) -> OperationResult:
         _require(services.docx, "DocxService")
         from skill_toolbox.contracts.docx import DocxFinalizeRequest
 
-        return services.docx.finalize(
-            DocxFinalizeRequest(
-                document_id=str(args["document_id"]),
-                output_name=str(args.get("output_name", "")),
-            )
-        )
+        return services.docx.finalize(DocxFinalizeRequest.model_validate(args))
 
     def _docx_repair(args: dict[str, Any]) -> OperationResult:
         _require(services.docx, "DocxService")
         from skill_toolbox.contracts.docx import DocxRepairRequest
 
-        return services.docx.repair(
-            DocxRepairRequest(
-                artifact_id=str(args["artifact_id"]),
-                issue_id=str(args["issue_id"]),
-                fix=args.get("fix", {}),
-            )
-        )
+        return services.docx.repair(DocxRepairRequest.model_validate(args))
 
     handlers["docx_start"] = _docx_start
     handlers["docx_add_blocks"] = _docx_add_blocks
@@ -288,42 +216,15 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
 
     def _ppt_generate(args: dict[str, Any]) -> OperationResult:
         _require(services.ppt, "PptService")
-        from skill_toolbox.contracts.ppt import PptGenerateRequest, SlideSpec
+        from skill_toolbox.contracts.ppt import PptGenerateRequest
 
-        slides = []
-        for item in args.get("slides", []):
-            slides.append(
-                SlideSpec(
-                    layout=str(item.get("layout", "bullets")),  # type: ignore[arg-type]
-                    title=str(item.get("title", "")),
-                    bullets=[str(b) for b in item.get("bullets", [])],
-                    body=str(item.get("body", "")),
-                    asset_id=str(item.get("asset_id", "")),
-                    columns=[str(c) for c in item.get("columns", [])],
-                    table_headers=[str(h) for h in item.get("table_headers", [])],
-                    table_rows=[[str(c) for c in row] for row in item.get("table_rows", [])],
-                    notes=str(item.get("notes", "")),
-                )
-            )
-        return services.ppt.generate(
-            PptGenerateRequest(
-                outline_id=str(args["outline_id"]),
-                slides=slides,
-                template_id=str(args.get("template_id", "")),
-            )
-        )
+        return services.ppt.generate(PptGenerateRequest.model_validate(args))
 
     def _ppt_repair(args: dict[str, Any]) -> OperationResult:
         _require(services.ppt, "PptService")
         from skill_toolbox.contracts.ppt import PptRepairRequest
 
-        return services.ppt.repair(
-            PptRepairRequest(
-                artifact_id=str(args["artifact_id"]),
-                issues=[str(i) for i in args.get("issues", [])],
-                changes=[dict(c) for c in args.get("changes", [])],
-            )
-        )
+        return services.ppt.repair(PptRepairRequest.model_validate(args))
 
     handlers["ppt_create_outline"] = _ppt_create_outline
     handlers["ppt_generate"] = _ppt_generate
@@ -343,6 +244,14 @@ def dispatch_with_media(
     模型视觉输入，而不是只在文本里给路径）。元数据含 revision / preview_refs，
     由 Runtime 记录日志与事件。
     """
+    if "_invalid_json" in arguments:
+        truncated = arguments.get("_finish_reason") == "length"
+        return error_text(ToolError(
+            "MODEL_OUTPUT_TRUNCATED" if truncated else "TOOL_JSON_INVALID",
+            "模型工具参数因输出长度限制被截断。" if truncated else "模型返回了不完整或非法的 JSON 工具参数。",
+            retryable=True,
+            suggestion="完整重发这次工具调用；保持 JSON 完整，必要时减少单次内容或拆分编辑操作。",
+        )), [], {}
     handlers = build_dispatcher(services)
     handler = handlers.get(name)
     if handler is None:
@@ -376,21 +285,22 @@ def dispatch_with_media(
     meta = {
         "revision": result.revision,
         "preview_refs": list(result.preview_refs),
-        "ok": result.ok,
+        "ok": result.ok and result.status != "failed",
     }
     if result.ok:
         return operation_text(result), list(result.images), meta
     issue = result.issues[0] if result.issues else {}
     suggestion = issue.get("suggestion")
+    error = ToolError(
+        str(issue.get("code", "TOOL_FAILED")), str(issue.get("message", "操作失败")),
+        retryable=bool(issue.get("retryable", False)),
+        suggestion=str(suggestion) if suggestion is not None else result.next_action,
+    ).to_dict()
+    if result.artifact_id:
+        error.update(artifact_id=result.artifact_id, revision=result.revision,
+                     data=result.data, issues=result.issues, next_action=result.next_action)
     return (
-        error_text(
-            ToolError(
-                str(issue.get("code", "TOOL_FAILED")),
-                str(issue.get("message", "操作失败")),
-                retryable=bool(issue.get("retryable", False)),
-                suggestion=str(suggestion) if suggestion is not None else None,
-            )
-        ),
+        json.dumps(error, ensure_ascii=False),
         list(result.images),
         meta,
     )

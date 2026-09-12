@@ -284,6 +284,11 @@ class SidecarService:
         request = TaskRequest(
             skill_id=skill.id,
             user_prompt=str(payload.get("user_prompt", "")),
+            template_id=(
+                payload["template_id"].strip()
+                if isinstance(payload.get("template_id"), str) and payload["template_id"].strip()
+                else None
+            ),
             output_dir=output_dir,
             materials=materials,
             capabilities=capabilities,
