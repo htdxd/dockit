@@ -740,7 +740,7 @@ element<HTMLButtonElement>("#choose-dir").addEventListener("click", async () => 
 });
 
 /* ===== 每工具材料 ===== */
-const materialsByTool: Record<string, string[]> = { ppt: [], resume: [], docx: [], pdf: [] };
+const materialsByTool: Record<string, string[]> = { ppt: [], resume: [], docx: [] };
 
 function renderFileRows(tool: string): void {
   const list = document.getElementById(`materials-list-${tool}`);
@@ -815,7 +815,7 @@ document.querySelectorAll<HTMLElement>("[data-pick]").forEach((zone) => {
 });
 
 /* ===== 任务 ===== */
-const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", pdf: "pdf_docx_routing", resume: "resume_pro" };
+const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", resume: "resume_pro" };
 let taskState: TaskState = initialTaskState;
 let taskId = "";
 const backendLogs: string[] = [];
@@ -886,19 +886,6 @@ function toolPrompt(tool: string): { title: string; prompt: string } | null {
     const vision = capabilityEffective("vision");
     const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，将走机械检查流程，不进行视觉版式核验。";
     return { title: use, prompt: `文档用途：${use}\n结构化要求：${req}\n生成复杂度：${complexity}${visionNote}` };
-  }
-  if (tool === "pdf") {
-    const pdfs = materialsByTool["pdf"];
-    if (!pdfs.length) {
-      toast("请先选择要转换的 PDF 文件", "warn");
-      return null;
-    }
-    const vision = capabilityEffective("vision");
-    const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，无法进行视觉版式检查，仅报告机械检查结果。";
-    return {
-      title: `PDF 转 DOCX（${pdfs.length} 个文件）`,
-      prompt: `共 ${pdfs.length} 个 PDF 待转换，文件已暂存到工作区 sources/ 下（见材料列表）。${visionNote}`,
-    };
   }
   if (tool === "resume") {
     const role = val("resume-role");
@@ -980,6 +967,8 @@ document.querySelectorAll<HTMLButtonElement>("[data-start]").forEach((btn) => {
         user_prompt: built.prompt,
         output_dir: element<HTMLInputElement>("#output-dir").value.trim(),
         materials: materialsByTool[tool],
+        // UI 生产路径显式启用领域工具；未带该字段的旧 Sidecar 调用仍走 legacy。
+        tool_mode: "domain",
       },
     }).catch((error) => {
       setState(reduceTaskEvent(taskState, { type: "task_failed", error: String(error) }));
@@ -1175,12 +1164,12 @@ type ArtifactBuckets = Record<string, string[]>;
 
 /** 纯扩展名分类（用于无 skill 标记的历史产物兜底）。md/txt 归属不明确，不放入任何功能页。 */
 function classifyByExt(files: string[]): ArtifactBuckets {
-  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [], pdf: [] };
+  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [] };
   for (const f of files) {
     const name = f.toLowerCase();
     if (name.endsWith(".pptx") || name.endsWith(".ppt")) buckets.ppt.push(f);
     else if (name.endsWith(".docx") || name.endsWith(".doc")) buckets.docx.push(f);
-    else if (name.endsWith(".pdf")) buckets.pdf.push(f);
+    else if (name.endsWith(".pdf")) buckets.docx.push(f);
   }
   return buckets;
 }
@@ -1190,15 +1179,14 @@ function classifyByExt(files: string[]): ArtifactBuckets {
  * （resume 页从此也会被填充）；unmarked（升级前的历史产物）按扩展名兜底，
  * 不进入简历页。每个文件只归一个桶，杜绝串检/多检。 */
 async function setArtifacts(bySkill: ArtifactBuckets): Promise<void> {
-  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [], pdf: [] };
+  const buckets: ArtifactBuckets = { ppt: [], resume: [], docx: [] };
   buckets.ppt.push(...(bySkill.ppt ?? []));
   buckets.resume.push(...(bySkill.resume ?? []));
   buckets.docx.push(...(bySkill.docx ?? []));
-  buckets.pdf.push(...(bySkill.pdf ?? []));
+  buckets.docx.push(...(bySkill.pdf ?? []));
   const fallback = classifyByExt(bySkill.unmarked ?? []);
   buckets.ppt.push(...fallback.ppt);
   buckets.docx.push(...fallback.docx);
-  buckets.pdf.push(...fallback.pdf);
 
   // 按修改时间降序（新产物在前）——list_artifacts 已按 mtime 排序
   for (const tool of Object.keys(buckets) as Array<keyof typeof buckets>) {
@@ -1213,7 +1201,7 @@ async function setArtifacts(bySkill: ArtifactBuckets): Promise<void> {
         const badge = ext === "PDF" ? "P" : "W";
         return `<div class="vrow ${i === 0 ? "cur" : ""}">
           <div class="v-badge ${badgeCls}">${badge}</div>
-          <div><div class="v-title">${escapeHtml(name)}</div><div class="v-sub">${escapeHtml(p)} · 可在默认专业软件中打开</div></div>
+          <div><div class="v-title">${escapeHtml(name)}</div><div class="v-sub">${escapeHtml(p)} · ${p.includes(".pdf_docx_routing.") ? "历史 PDF 转 DOCX（功能已下线） · " : ""}可在默认专业软件中打开</div></div>
           <div class="v-open" data-artifact-path="${escapeHtml(p)}">打开</div>
         </div>`;
       })

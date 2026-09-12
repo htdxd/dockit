@@ -9,7 +9,6 @@
 | PPT 生成 | 主题、材料、风格、页数 | `.pptx` |
 | 简历生成 | 经历、目标岗位、材料 | `.docx` / `.pdf` |
 | DOCX 生成 | 结构化要求、参考材料、复杂度档位 | `.docx` |
-| PDF 转 DOCX | PDF 文件 | 可编辑 `.docx` |
 
 ## 架构
 
@@ -19,7 +18,7 @@ backend/             Python skill-toolbox sidecar（AgentRuntime + Skill 运行�
   skill_toolbox/
     runtime.py       极简 Agent tool-call loop（受控 workspace、超时、可审计日志）
     capabilities.py  模型能力解析（vision 静态表 + 用户覆盖 + 真实能力探测）
-    skill_defs/      Skill 清单：docx_pro / pdf_docx_routing / ppt-master（上游单独跟踪）
+    skill_defs/      Skill 清单：docx_pro / resume_pro / ppt-master（上游单独跟踪）
 tests/               pytest（运行时、能力路由、能力探测、docx_pro 端到端）
 src-tauri/           Rust 宿主：spawn sidecar、stdin/stdout JSON-lines 协议
 ```
@@ -43,11 +42,11 @@ src-tauri/           Rust 宿主：spawn sidecar、stdin/stdout JSON-lines 协�
 
 ### 共享材料理解（统一 IR）
 
-四个功能（PPT / 简历 / DOCX / PDF 转 DOCX）共用同一套材料事实：
+三个功能（PPT / 简历 / DOCX）共用同一套材料事实：
 
 - **MaterialService 预处理**：任务进入 Agent loop 前完成 hash 暂存（`sources/<id16>/`）、格式路由与 DocumentIR 解析（md/txt 原生；PPTX 复用 ppt-master parser；PDF/DOCX 富解析继续走 read/ingest）；同 hash 只解析一次。
 - **DocumentIR**（`work/materials/<id16>/document.json`）：版本化 block/asset 模型，图片块保留资产位置引用；`content.md` 由 IR 单向投影，供 Agent 顺序阅读。
-- **ContentPlan 纪律**：四个 Prompt 都要求先读材料摘要 → 写 `work/plans/content-plan.json`（selections/exclusions 留痕）→ 再生成。
+- **ContentPlan 纪律**：三个 Prompt 都要求先读材料摘要 → 写 `work/plans/content-plan.json`（selections/exclusions 留痕）→ 再生成。
 - **双模式**：`vision=true` 智能读取候选图并渲染复核；`vision=false` 保守模式（高置信度资源 + 单次批量提问 + 机械门），QA 明确标注「视觉检查未执行」。
 - **MinerU 强依赖**：启动前全局 preflight（CLI/Token），不可用直接以稳定错误码失败，不静默降级。
 - **简历组件能力**：5 套精选模板 manifest 带 `template_sha256` + components/白名单动作（replace_text/replace_asset/resize/shift/clone），hash 不匹配即失败。
@@ -68,7 +67,9 @@ npm run tauri dev
 
 ## 模型接入
 
-OpenAI / Anthropic / OpenAI-compatible 网关均可：在设置页填写 `base_url`、`api_key`、模型名，任务开始前校验能力。MinerU 是四个功能的强依赖，Token 在设置页「第三方服务」配置，设置页显示 CLI 可解析状态。
+OpenAI / Anthropic / OpenAI-compatible 网关均可：在设置页填写 `base_url`、`api_key`、模型名，任务开始前校验能力。MinerU 是三个生成功能的强依赖，Token 在设置页「第三方服务」配置，设置页显示 CLI 可解析状态。
+
+独立 PDF 转 DOCX 功能已下线；PDF 仍可作为生成材料，内部解析适配器位于 `backend/skill_toolbox/parsers/mineru_pdf.py`。历史转换成果保留在原输出目录，并在 DOCX 产物页显示。
 
 ## 许可证
 

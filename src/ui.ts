@@ -27,6 +27,7 @@ export function setTaskMeta(meta: { tool: string; title: string; taskId: string 
 
 /* ===== 导航 ===== */
 function goTool(tool: string): void {
+  if (!document.getElementById(`page-${tool}`)) tool = "docx";
   document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
     p.hidden = p.id !== `page-${tool}`;
   });
@@ -37,6 +38,7 @@ function goTool(tool: string): void {
 }
 
 export function goSub(tool: string, sub: string): void {
+  if (tool === "pdf") { tool = "docx"; sub = "art"; }
   goTool(tool);
   const page = document.getElementById(`page-${tool}`);
   if (!page) return;
@@ -140,7 +142,6 @@ export function mountLayout(root: HTMLElement): void {
       <div class="nav-item active" data-tool="ppt"><span class="nav-icon">📊</span><span>PPT 生成</span></div>
       <div class="nav-item" data-tool="resume"><span class="nav-icon">📄</span><span>简历生成</span></div>
       <div class="nav-item" data-tool="docx"><span class="nav-icon">📝</span><span>DOCX 生成</span></div>
-      <div class="nav-item" data-tool="pdf"><span class="nav-icon">🔄</span><span>PDF 转 DOCX</span></div>
       <div class="nav-label">其他</div>
       <div class="nav-item" data-tool="settings"><span class="nav-icon">⚙</span><span>设置</span></div>
       <div class="nav-item" data-tool="logs"><span class="nav-icon">🪵</span><span>运行日志</span></div>
@@ -379,39 +380,7 @@ export function mountLayout(root: HTMLElement): void {
         </div>
       </section>
 
-      <!-- ============ PDF→DOCX ============ -->
-      <section class="page" id="page-pdf" hidden>
-        <nav class="subtabs">
-          <div class="subtab active" data-sub="new">新建任务</div>
-          <div class="subtab" data-sub="run">进行中 <span class="badge" hidden>1</span></div>
-          <div class="subtab" data-sub="art">产物版本 <span class="badge" hidden>0</span></div>
-        </nav>
-        <div class="subpage" id="sub-pdf-new">
-          <div class="card">
-            <div class="card-title"><span class="no">1</span> 选择 PDF <span class="sub">必填 · 仅支持 .pdf</span></div>
-            <div class="upload-big" data-pick="pdf" tabindex="0" role="button" aria-label="选择 PDF 文件">
-              <div class="u-ic">⭳</div>
-              <div class="u-t">拖入 PDF 文件，或点击选择</div>
-              <div class="u-optional req">必填 · 转换需要源文件</div>
-              <span class="fmt">仅 .pdf · 单文件 ≤ 200MB · ≤ 600 页（MinerU 限制）</span>
-            </div>
-            <input id="materials-input-pdf" type="file" multiple hidden>
-            <div id="materials-list-pdf"></div>
-          </div>
-          <div class="card">
-            <div class="cta-row">
-              <button class="btn" data-start="pdf">开始转换</button>
-              <span class="btn-note">转换结果保存到输出目录，不覆盖原文件。类型与修复策略由系统按 PDF 内容自动判断。</span>
-            </div>
-          </div>
-        </div>
-        <div class="subpage" id="sub-pdf-run" hidden>
-          <div id="run-pdf"><div class="empty">暂无进行中的任务 —— <a data-go="pdf:new">去新建任务</a></div></div>
-        </div>
-        <div class="subpage" id="sub-pdf-art" hidden>
-          <div id="art-pdf"><div class="empty">暂无产物，转换后的 .docx 会出现并保留在这里</div></div>
-        </div>
-      </section>
+
 
       <!-- ============ 设置 ============ -->
       <section class="page" id="page-settings" hidden>
@@ -497,9 +466,9 @@ export function mountLayout(root: HTMLElement): void {
                 <input class="inp mono" id="mineru-key" type="password" placeholder="粘贴 MinerU API Token" autocomplete="off">
               </div>
             </div>
-            <div class="sec-note">MinerU 是本产品四个功能（PPT / 简历 / DOCX / PDF 转 DOCX）的<b>强依赖</b>：
+            <div class="sec-note">MinerU 是本产品三个功能（PPT / 简历 / DOCX）的<b>强依赖</b>：
               任务开始前会校验 CLI 与 Token，不可用时任务直接失败并给出恢复指引，不会静默降级。
-              用于 PDF → DOCX 的文档解析（扫描件 OCR / 公式识别）。请在
+              用于 PDF 输入材料的文档解析（扫描件 OCR / 公式识别）。请在
               <a href="https://mineru.net/apiManage/token" target="_blank" rel="noopener">https://mineru.net/apiManage/token</a>
               登录并创建 Token，复制到此处。
             </div>
