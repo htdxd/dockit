@@ -1,11 +1,4 @@
-"""阶段 4 强制测试：DOCX 顺序 block + PDF 固定抽样与失败语义。
-
-覆盖实施计划 §15.3 关键回归：
-- 图片/表格/公式能通过顺序 blocks 放入指定 section/段落之间（非全局尾部）
-- inspect_pdf 固定最多 3 页抽样（首/中/末），不凭第一页决定整份文档
-- PDF 转换失败走 task_failed，不伪造 finish_task artifact
-- render_docx 多文档独立 PNG 前缀（回归防护，覆盖已改实现）
-"""
+"""DOCX 顺序 block 与通用失败语义回归。独立转换专用测试随功能移除。"""
 
 from __future__ import annotations
 
@@ -18,7 +11,6 @@ from pathlib import Path
 import pytest
 
 DOCX_SCRIPTS = Path("backend/skill_toolbox/skill_defs/docx_pro/scripts")
-PDF_SCRIPTS = Path("backend/skill_toolbox/skill_defs/pdf_docx_routing/scripts")
 
 
 def _run_script(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -138,183 +130,22 @@ def test_build_docx_backward_compat_global_tail_arrays(tmp_path: Path) -> None:
 
 # ---------------- PDF 固定抽样 ----------------
 
-def test_inspect_pdf_sample_pages_never_exceeds_three() -> None:
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "inspect_pdf", PDF_SCRIPTS / "inspect_pdf.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    assert module._sample_pages(1) == [1]
-    assert module._sample_pages(2) == [1, 2]
-    assert module._sample_pages(3) == [1, 2, 3]
-    assert module._sample_pages(10) == [1, 5, 10]  # 首/中/末，固定 3 页
-    assert module._sample_pages(100) == [1, 50, 100]
-    assert module._sample_pages(None) == [1]
-    for pages in [1, 2, 3, 10, 100]:
-        assert len(module._sample_pages(pages)) <= 3
-        assert all(1 <= p <= pages for p in module._sample_pages(pages))
 
 
-def test_inspect_pdf_classification_uses_all_samples(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """分类不能只凭第一页：首页有字但中/末页为空的稀疏文档归 mixed。
-
-    （实施计划 §10.3：固定抽样首/中/末，样本页都要参与判定。）
-    """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "inspect_pdf", PDF_SCRIPTS / "inspect_pdf.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    captured: list[list[str]] = []
-
-    def fake_run(cmd: list[str]) -> str:
-        captured.append(cmd)
-        if cmd[0] == "pdffonts":
-            return "name type emb sub uni object ID\nA+SimSun TrueType yes yes no  1  0\n"
-        if cmd[0] == "pdftotext":
-            page = int(cmd[2])
-            return "x" * 120 if page == 1 else ""
-        return ""
-
-    module.run_text = fake_run
-    module._count_pages = lambda _p: 10
-    monkeypatch.chdir(tmp_path)
-    module.workspace_path = lambda v, must_exist=True: (Path.cwd() / v).resolve()
-    module.sys.argv = ["inspect_pdf.py", "sample.pdf"]
-
-    module.main()
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["classification"] == "mixed_or_uncertain"
-    assert payload["sample_pages"] == [1, 5, 10]
-    sampled = [int(command[2]) for command in captured if command[0] == "pdftotext"]
-    assert sampled == [1, 5, 10]
 
 
 # ---------------- PDF DOCX mechanical audit ----------------
 
-def test_audit_docx_accepts_valid_package(tmp_path: Path) -> None:
-    from docx import Document
-
-    source = tmp_path / "valid.docx"
-    document = Document()
-    document.add_paragraph("Converted content")
-    document.save(source)
-
-    result = _run_script(PDF_SCRIPTS / "audit_docx.py", str(source), cwd=tmp_path)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)["ok"] is True
 
 
-def test_audit_docx_rejects_visible_conversion_markers(tmp_path: Path) -> None:
-    from docx import Document
-
-    source = tmp_path / "markers.docx"
-    document = Document()
-    document.add_paragraph(r"Residual $$ \\frac{a}{b} <|box_start|>")
-    document.save(source)
-
-    result = _run_script(PDF_SCRIPTS / "audit_docx.py", str(source), cwd=tmp_path)
-
-    report = json.loads(result.stdout)
-    assert result.returncode == 2
-    assert report["latex_markers"] > 0
-    assert report["layout_tokens"] > 0
 
 
-def test_audit_docx_rejects_broken_image_relationship(tmp_path: Path) -> None:
-    from docx import Document
-    from PIL import Image
-
-    image = tmp_path / "figure.png"
-    Image.new("RGB", (20, 20), (10, 20, 30)).save(image)
-    valid = tmp_path / "with-image.docx"
-    document = Document()
-    document.add_picture(str(image))
-    document.save(valid)
-    broken = tmp_path / "broken.docx"
-    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(
-        broken, "w", zipfile.ZIP_DEFLATED
-    ) as target:
-        for item in source.infolist():
-            if not item.filename.startswith("word/media/"):
-                target.writestr(item, source.read(item.filename))
-
-    result = _run_script(PDF_SCRIPTS / "audit_docx.py", str(broken), cwd=tmp_path)
-
-    assert result.returncode == 2
-    assert any(
-        "broken image relationship" in issue
-        for issue in json.loads(result.stdout)["issues"]
-    )
 
 
-def test_audit_docx_checks_header_image_relationships(tmp_path: Path) -> None:
-    from docx import Document
-    from PIL import Image
-
-    image = tmp_path / "header.png"
-    Image.new("RGB", (20, 20), (30, 40, 50)).save(image)
-    valid = tmp_path / "header-image.docx"
-    document = Document()
-    document.add_paragraph("Body")
-    header = document.sections[0].header
-    header.paragraphs[0].add_run().add_picture(str(image))
-    document.save(valid)
-    broken = tmp_path / "header-broken.docx"
-    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(
-        broken, "w", zipfile.ZIP_DEFLATED
-    ) as target:
-        for item in source.infolist():
-            if not item.filename.startswith("word/media/"):
-                target.writestr(item, source.read(item.filename))
-
-    result = _run_script(PDF_SCRIPTS / "audit_docx.py", str(broken), cwd=tmp_path)
-
-    report = json.loads(result.stdout)
-    assert result.returncode == 2
-    assert any("header" in issue and "broken image relationship" in issue for issue in report["issues"])
 
 
 # ---------------- 渲染隔离回归 ----------------
 
-def test_render_docx_page_prefix_isolation(tmp_path: Path) -> None:
-    """每个文档渲染使用 <stem>-page- 前缀，文档间 PNG 不混用。"""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "render_docx", PDF_SCRIPTS / "render_docx.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    out_dir = tmp_path / "artifacts"
-    out_dir.mkdir(parents=True)
-    # 旧全局命名残留（跨文档污染场景）：page-1.png 不应命中新前缀
-    (out_dir / "page-1.png").write_bytes(b"stale")
-    (out_dir / "报告-page-1.png").write_bytes(b"png")
-    matches = sorted(p.name for p in out_dir.glob("*-page-*.png"))
-    assert "报告-page-1.png" in matches
-    assert "page-1.png" not in matches
-    source = tmp_path / "报告.docx"
-    source.write_bytes(b"PK")  # 仅用于派生前缀名
-    prefix = f"{source.stem}-page"
-    assert prefix == "报告-page"
-    assert prefix != "page"
 
 
 # ---------------- 失败语义（task_failed，不回退 finish_task） ----------------

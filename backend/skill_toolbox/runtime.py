@@ -7,9 +7,9 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from skill_toolbox.material_models import ContentPlan, QAReport
+from skill_toolbox.material_models import ContentPlan, QAReport, SCHEMA_VERSION
 from skill_toolbox.materials import (
     MaterialCatalog,
     MaterialError,
@@ -20,9 +20,28 @@ from skill_toolbox.materials import (
 from skill_toolbox.models import ConversationMessage, ToolCall, ToolResult
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.providers.base import ModelProvider
-from skill_toolbox.skills import load_skill
+from skill_toolbox.skills import load_skill, RETIRED_PDF_IDS, FEATURE_RETIRED_MESSAGE
 from skill_toolbox.tool_specs import TOOL_SPECS
 from skill_toolbox.tools import ToolRegistry
+
+# 受控工具与 Skill 适配重构（实施计划）：领域工具（LLM-facing）与底层
+# Service 分离。skill_defs 的 manifest 新增 "tool_mode": "domain" 时，Runtime
+# 进入领域模式：LLM 只见领域 schema，工具调用走 llm_tools dispatcher →
+# tools/ 内部 Service；旧 ToolRegistry 仍保留为兼容路径（普通模式默认）。
+from skill_toolbox.llm_tools.common import shared_tools
+from skill_toolbox.llm_tools.dispatcher import (  # noqa: E402
+    DomainServices,
+    dispatch,  # noqa: F401 - 兼容路径/测试
+    dispatch_with_media,
+)
+from skill_toolbox.llm_tools.docx import docx_tools
+from skill_toolbox.llm_tools.ppt import ppt_tools
+from skill_toolbox.llm_tools.resume import resume_tools
+from skill_toolbox.tools.docx import DocxService
+from skill_toolbox.tools.materials import MaterialPlanService
+from skill_toolbox.tools.ppt import PptService
+from skill_toolbox.tools.resume import ResumeService
+from skill_toolbox.unicode_utils import redact_secrets
 
 EventEmitter = Callable[[dict[str, Any]], None]
 DebugLogger = Callable[[dict[str, Any]], None]
@@ -32,16 +51,51 @@ MAX_LOG_RESULT_CHARS = 4_000
 MAX_LOG_TEXT_CHARS = 2_000
 # 外层超时 = 声明的 action 超时 + 清理余量（给子进程退出留时间）。
 ACTION_TIMEOUT_CLEANUP = 30
+DOMAIN_TOOL_TIMEOUTS = {
+    "resume_generate": 210.0,
+    "resume_repair": 210.0,
+    # v2：一次调用含测量(Word COM)+布局+落盘+渲染(COM→PDF→PNG)+QA
+    "resume_prepare_v2": 60.0,
+    "resume_generate_v2": 420.0,
+    "resume_repair_v2": 420.0,
+    "resume_accept": 60.0,
+    "resume_restore": 420.0,
+    "resume_preview": 60.0,
+    "docx_finalize": 330.0,
+    "docx_repair": 330.0,
+    "ppt_generate": 210.0,
+    "ppt_repair": 210.0,
+}
+DOMAIN_ARTIFACT_TOOLS = frozenset(
+    {
+        "resume_generate",
+        "resume_repair",
+        # v2（P2-3）：候选版本本身即登记产物；accept 只更新已接受指针，
+        # 不产生新文件（避免绕过 hash 校验的“伪产物”）。
+        "resume_generate_v2",
+        "resume_repair_v2",
+        "resume_restore",
+        "docx_finalize",
+        "docx_repair",
+        "ppt_generate",
+    }
+)
+PENDING_VISUAL_REVIEW = "pending-visual-review.json"
 TASK_TYPE_BY_SKILL = {
     "ppt-master": "ppt",
     "resume_pro": "resume",
     "docx_pro": "docx",
-    "pdf_docx_routing": "pdf_to_docx",
 }
 DOCUMENT_QUALITY_PATH_ARG = {
     "postcheck_docx": "source",
-    "audit_docx": "source",
     "fill_resume": "output",
+}
+# 领域工具 schema 路由（skill_id → 领域 schema 工厂）。普通任务不暴露
+# write/edit/exec_cmd/spec_append 等底层工具（计划 §2.1/§5）。
+_DOMAIN_TOOL_FACTORIES: dict[str, Callable[[], list[dict]]] = {
+    "resume_pro": resume_tools,
+    "docx_pro": docx_tools,
+    "ppt-master": ppt_tools,
 }
 
 
@@ -51,7 +105,20 @@ def _truncate(value: Any, limit: int) -> str:
         text = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
         text = repr(value)
+    text = redact_secrets(text)
     return text if len(text) <= limit else text[:limit] + f"…<+{len(text) - limit} bytes>"
+
+
+def _redact_debug(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {key: _redact_debug(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_debug(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_debug(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -70,6 +137,10 @@ class TaskRequest:
     # 路径：仅 MaterialService 的 PDF adapter 使用；所有 Agent exec_cmd
     # 子进程均拿不到（实施计划 §3.1/§12.1）。
     mineru_token: str | None = None
+    # 受控工具模式覆盖（"domain" 启用领域级 LLM tools，普通任务不暴露
+    # write/edit/exec_cmd/spec_append——实施计划 §8）。None 时回落 Skill
+    # manifest 的 tool_mode（默认 legacy，渐进迁移不破坏现有接口）。
+    tool_mode: Literal["domain", "legacy"] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,9 +181,13 @@ class AgentRuntime:
         self.input_broker = input_broker
         self.model_timeout_seconds = model_timeout_seconds
         self.tool_timeout_seconds = tool_timeout_seconds
-        self.debug = debug_logger or (lambda _entry: None)
+        sink = debug_logger or (lambda _entry: None)
+        self.debug = lambda entry: sink(_redact_debug(entry))
 
     async def run(self, request: TaskRequest) -> TaskResult:
+        if request.skill_id in RETIRED_PDF_IDS:
+            self.emit({"type": "task_failed", "error": FEATURE_RETIRED_MESSAGE})
+            return TaskResult(status="failed", error=FEATURE_RETIRED_MESSAGE)
         skill = load_skill(request.skill_id)
         self.skill_id = skill.id  # _publish 用它给产物文件名打来源标记
         request.output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,7 +251,7 @@ class AgentRuntime:
                     self.emit({"type": "material_progress", "path": rel, "phase": "done"})
             finally:
                 # 取消/异常时终止仍活动的解析子进程（MinerU/PPT parser）
-                material_service.terminate_all()
+                material_service.terminate_active()
             catalog = material_service.catalog()
             policy = WorkspacePolicy(workspace, read_roots=(skill.dir,))
             tools = ToolRegistry(
@@ -187,8 +262,37 @@ class AgentRuntime:
                 script_timeouts=skill.script_timeouts,
                 capabilities=request.capabilities,
             )
+            # 领域模式（受控工具与 Skill 适配重构）：LLM 只见领域 schema，
+            # 工具调用走 dispatcher → tools/ 内部 Service（计划 §3.1/§8）。
+            # 有效模式 = TaskRequest.tool_mode 覆盖，否则 Skill manifest tool_mode
+            # （默认 legacy，渐进迁移不破坏现有接口）。
+            domain_mode = (request.tool_mode or skill.tool_mode) == "domain"
+            domain_services = _build_domain_services(
+                workspace,
+                skill,
+                catalog,
+                request,
+                material_service,
+            )
+            domain_tool_specs = _domain_tool_specs(skill, request.capabilities)
+            tool_specs = domain_tool_specs if domain_mode else TOOL_SPECS
+            if domain_mode:
+                # 领域模式（实施计划 §8）：注入领域工具指引，覆盖 prompt.md 中
+                # 残留的底层工具说明——模型只用领域工具，不再 read/write/
+                # exec_cmd/spec_append。用户 prompt.md 保持不动（兼容 legacy）。
+                system_prompt = f"{system_prompt}\n\n{_DOMAIN_MODE_BANNER}"
             passed_quality_actions: set[str] = set()
             quality_hashes: dict[str, set[str]] = {}
+            domain_artifacts: dict[str, str] = {}
+
+            def validate_content_plan(_call: ToolCall) -> None:
+                self._load_content_plan(
+                    workspace,
+                    TASK_TYPE_BY_SKILL[skill.id],
+                    request.capabilities,
+                    catalog,
+                )
+
             messages: list[ConversationMessage] = []
             user_text = request.user_prompt or "按默认内容生成测试文档"
             if staged:
@@ -208,7 +312,7 @@ class AgentRuntime:
                 self.emit({"type": "model_started", "step": step})
                 try:
                     turn = await asyncio.wait_for(
-                        self.provider.complete(system_prompt, messages, TOOL_SPECS),
+                        self.provider.complete(system_prompt, messages, tool_specs),
                         timeout=self.model_timeout_seconds,
                     )
                 except TimeoutError:
@@ -258,7 +362,12 @@ class AgentRuntime:
                                 "你上一轮没有调用任何工具，任务无法推进。"
                                 "如果最终产物已经生成并验证完毕，请立即调用 "
                                 "finish_task 交付（只传产物相对路径）；否则请调用 "
-                                "read/write/edit/exec_cmd/ask_user_questions 继续。"
+                                + (
+                                    "read_material/create_content_plan/本功能领域工具/"
+                                    "ask_user_questions 继续。"
+                                    if domain_mode
+                                    else "read/write/edit/exec_cmd/ask_user_questions 继续。"
+                                )
                             ),
                         )
                     )
@@ -283,32 +392,44 @@ class AgentRuntime:
                             request.capabilities,
                             catalog,
                         )
-                        qa = self._load_qa_report(workspace, request.capabilities)
+                        qa = self._load_qa_report(
+                            workspace,
+                            request.capabilities,
+                            allow_visual_not_run=domain_mode,
+                        )
                         if qa.mechanical != "passed":
                             raise ValueError(
                                 "机械检查未通过（mechanical=failed），不能交付。"
                                 "请先修复机械检查问题或调用 task_failed 明确失败。"
                             )
-                        missing_quality = skill.quality_actions - passed_quality_actions
-                        if skill.quality_actions and not (
-                            skill.quality_actions & passed_quality_actions
-                        ):
-                            raise ValueError(
-                                "缺少可信机械检查结果：必须成功执行以下 action 之一后再交付："
-                                + ", ".join(sorted(missing_quality))
+                        if not domain_mode:
+                            # legacy 模式：必须存在本轮成功的机械质量 action 证据，
+                            # 且交付 DOCX hash 与最近一次机械检查一致（§8.3/§15.3）。
+                            missing_quality = skill.quality_actions - passed_quality_actions
+                            if skill.quality_actions and not (
+                                skill.quality_actions & passed_quality_actions
+                            ):
+                                raise ValueError(
+                                    "缺少可信机械检查结果：必须成功执行以下 action 之一后再交付："
+                                    + ", ".join(sorted(missing_quality))
+                                )
+                            self._verify_quality_artifacts(
+                                finish,
+                                policy,
+                                skill.quality_actions,
+                                quality_hashes,
                             )
-                        self._verify_quality_artifacts(
-                            finish,
-                            policy,
-                            skill.quality_actions,
-                            quality_hashes,
-                        )
+                        else:
+                            self._verify_domain_artifacts(
+                                finish, policy, domain_artifacts
+                            )
                         published = self._publish(finish, policy, request.output_dir)
-                        self.emit({"type": "qa_status", "qa": self._qa_event(qa)})
+                        self._emit_qa_status(qa)
                     except (OSError, TypeError, ValueError) as exc:
                         # 机械门/QA 未过：不发 task_completed，把失败原因回给
                         # 模型继续修复（模型若无法修复应调用 task_failed 结束）。
-                        result = self._tool_result(finish, False, str(exc))
+                        safe_error = redact_secrets(str(exc))
+                        result = self._tool_result(finish, False, safe_error)
                         self.emit(
                             {
                                 "type": "tool_finished",
@@ -316,20 +437,8 @@ class AgentRuntime:
                                 "success": False,
                             }
                         )
-                        self.emit(
-                            {
-                                "type": "qa_status",
-                                "qa": {
-                                    "mechanical": "failed",
-                                    "mechanical_issues": [str(exc)],
-                                    "visual": "not_run",
-                                    "visual_issues": [],
-                                    "repair_rounds": 0,
-                                    "used_assets": 0,
-                                    "skipped_assets": 0,
-                                },
-                            }
-                        )
+                        self.debug({"phase": "finish_rejected", "error": safe_error})
+                        self._emit_latest_qa_status(workspace)
                         messages.append(
                             ConversationMessage(role="tool", tool_results=[result])
                         )
@@ -360,20 +469,7 @@ class AgentRuntime:
                     self.emit(
                         {"type": "tool_finished", "tool": abort.name, "success": True}
                     )
-                    self.emit(
-                        {
-                            "type": "qa_status",
-                            "qa": {
-                                "mechanical": "failed",
-                                "mechanical_issues": [error or "Task aborted by the model"],
-                                "visual": "not_run",
-                                "visual_issues": [],
-                                "repair_rounds": 0,
-                                "used_assets": 0,
-                                "skipped_assets": 0,
-                            },
-                        }
-                    )
+                    self._emit_latest_qa_status(workspace)
                     return self._failed(error or "Task aborted by the model")
                 # 单轮工具调用中出现 task_failed 或 finish_task（多个工具并行）：
                 # 按 tool_specs 契约，这两个工具必须是唯一调用。task_failed 出现
@@ -393,24 +489,13 @@ class AgentRuntime:
                         # task_failed 是唯一合法终止信号：即使与其它调用同轮，
                         # 也按放弃处理，不执行同轮其它调用（Tool Spec 契约）。
                         error = str(invalid.arguments.get("error", "")).strip()
-                        self.emit(
-                            {
-                                "type": "qa_status",
-                                "qa": {
-                                    "mechanical": "failed",
-                                    "mechanical_issues": [error or "Task aborted by the model"],
-                                    "visual": "not_run",
-                                    "visual_issues": [],
-                                    "repair_rounds": 0,
-                                    "used_assets": 0,
-                                    "skipped_assets": 0,
-                                },
-                            }
-                        )
+                        self._emit_latest_qa_status(workspace)
                         return self._failed(error or "Task aborted by the model")
                     # finish_task 混入多调用：按普通失败工具执行（执行链会返回
                     # "must be the only tool call"），模型据此修正。
-                    results = await self._execute_calls(turn.tool_calls, tools)
+                    results = await self._execute_calls(
+                        turn.tool_calls, tools, validate_content_plan, domain_services
+                    )
                     self._record_quality_results(
                         turn.tool_calls,
                         results,
@@ -419,11 +504,17 @@ class AgentRuntime:
                         quality_hashes,
                         policy,
                     )
+                    if domain_mode:
+                        self._record_domain_artifacts(
+                            turn.tool_calls, results, policy, domain_artifacts
+                        )
                     messages.append(
                         ConversationMessage(role="tool", tool_results=results)
                     )
                     continue
-                results = await self._execute_calls(turn.tool_calls, tools)
+                results = await self._execute_calls(
+                    turn.tool_calls, tools, validate_content_plan, domain_services
+                )
                 self._record_quality_results(
                     turn.tool_calls,
                     results,
@@ -432,19 +523,28 @@ class AgentRuntime:
                     quality_hashes,
                     policy,
                 )
+                if domain_mode:
+                    self._record_domain_artifacts(
+                        turn.tool_calls, results, policy, domain_artifacts
+                    )
                 messages.append(ConversationMessage(role="tool", tool_results=results))
+            self._emit_latest_qa_status(workspace)
             return self._failed(f"Task exceeded the {skill.max_steps}-step limit")
 
     async def _execute_calls(
-        self, calls: list[ToolCall], tools: ToolRegistry
+        self,
+        calls: list[ToolCall],
+        tools: ToolRegistry,
+        precheck: Callable[[ToolCall], None] | None = None,
+        domain_services: DomainServices | None = None,
     ) -> list[ToolResult]:
         if all(call.name == "read" for call in calls):
             return await asyncio.gather(
-                *(self._execute_call(call, tools) for call in calls)
+                *(self._execute_call(call, tools, precheck, domain_services) for call in calls)
             )
         results: list[ToolResult] = []
         for call in calls:
-            results.append(await self._execute_call(call, tools))
+            results.append(await self._execute_call(call, tools, precheck, domain_services))
         return results
 
     def _timeout_for(self, call: ToolCall, tools: ToolRegistry) -> float:
@@ -462,7 +562,17 @@ class AgentRuntime:
                 return max(self.tool_timeout_seconds, declared + ACTION_TIMEOUT_CLEANUP)
         return self.tool_timeout_seconds
 
-    async def _execute_call(self, call: ToolCall, tools: ToolRegistry) -> ToolResult:
+    def _domain_timeout_for(self, call: ToolCall) -> float:
+        declared = DOMAIN_TOOL_TIMEOUTS.get(call.name, 0.0)
+        return max(self.tool_timeout_seconds, declared)
+
+    async def _execute_call(
+        self,
+        call: ToolCall,
+        tools: ToolRegistry,
+        precheck: Callable[[ToolCall], None] | None = None,
+        domain_services: DomainServices | None = None,
+    ) -> ToolResult:
         self.emit({"type": "tool_started", "tool": call.name})
         self.debug({
             "phase": "tool_call",
@@ -470,6 +580,81 @@ class AgentRuntime:
             "tool": call.name,
             "arguments": _truncate(call.arguments, MAX_LOG_ARG_CHARS),
         })
+        # 领域模式：领域工具走 dispatcher → 内部 Service（typed 参数校验在
+        # contracts 层完成）；exec_cmd 前置 ContentPlan 校验仅 legacy 需要。
+        # P2-3：dispatcher 同时返回内联预览图，由 ToolResult.images 进入模型
+        # 视觉输入（附件关联 tool_call / artifact / revision）。
+        if domain_services is not None and call.name in _DOMAIN_TOOL_FACTORIES_INV:
+            timeout = self._domain_timeout_for(call)
+            try:
+                content, images, media_meta = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        dispatch_with_media, call.name, dict(call.arguments), domain_services
+                    ),
+                    timeout=timeout,
+                )
+                success = _dispatch_ok(call.name, content)
+                result = self._tool_result(call, success, content, images)
+                if media_meta.get("revision") is not None or media_meta.get("preview_refs"):
+                    self.emit({
+                        "type": "resume_preview",
+                        "tool": call.name,
+                        "revision": media_meta.get("revision"),
+                        "preview_refs": media_meta.get("preview_refs", []),
+                        "image_count": len(images),
+                    })
+            except TimeoutError:
+                domain_services.cancel_all()
+                result = self._tool_result(
+                    call, False, f"Tool timed out after {timeout:g} seconds"
+                )
+                self.emit(
+                    {
+                        "type": "tool_timeout",
+                        "tool": call.name,
+                        "timeout_seconds": timeout,
+                    }
+                )
+            except asyncio.CancelledError:
+                domain_services.cancel_all(permanent=True)
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep one bad tool from killing the task
+                result = self._tool_result(
+                    call, False, f"Tool failed: {redact_secrets(str(exc))}"
+                )
+            self.emit(
+                {
+                    "type": "tool_finished",
+                    "tool": call.name,
+                    "success": result.success,
+                }
+            )
+            self.debug({
+                "phase": "tool_result",
+                "tool_call_id": call.id,
+                "tool": call.name,
+                "success": result.success,
+                "content": _truncate(result.content, MAX_LOG_RESULT_CHARS),
+                "image_count": len(result.images),
+            })
+            return result
+        if call.name == "exec_cmd" and precheck is not None:
+            try:
+                precheck(call)
+            except (OSError, TypeError, ValueError) as exc:
+                result = self._tool_result(
+                    call, False, f"ContentPlan 前置校验失败，exec_cmd 未执行: {exc}"
+                )
+                self.emit({"type": "tool_finished", "tool": call.name, "success": False})
+                self.debug({
+                    "phase": "tool_result",
+                    "tool_call_id": call.id,
+                    "tool": call.name,
+                    "success": False,
+                    "content": _truncate(result.content, MAX_LOG_RESULT_CHARS),
+                    "image_count": 0,
+                })
+                return result
         if call.name == "finish_task":
             result = self._tool_result(
                 call, False, "finish_task must be the only tool call in its model turn"
@@ -522,14 +707,15 @@ class AgentRuntime:
                 })
                 return result
             except Exception as exc:  # noqa: BLE001 - keep one bad tool from killing the task
-                result = self._tool_result(call, False, f"Tool failed: {exc}")
-                self.emit({"type": "tool_failed", "tool": call.name, "error": str(exc)})
+                safe_error = redact_secrets(str(exc))
+                result = self._tool_result(call, False, f"Tool failed: {safe_error}")
+                self.emit({"type": "tool_failed", "tool": call.name, "error": safe_error})
                 self.debug({
                     "phase": "tool_result",
                     "tool_call_id": call.id,
                     "tool": call.name,
                     "success": False,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error": f"{type(exc).__name__}: {safe_error}",
                 })
                 return result
         self.emit(
@@ -550,9 +736,26 @@ class AgentRuntime:
         return result
 
     @staticmethod
-    def _tool_result(call: ToolCall, success: bool, content: str) -> ToolResult:
+    def _tool_result(
+        call: ToolCall,
+        success: bool,
+        content: str,
+        images: list[dict[str, Any]] | None = None,
+    ) -> ToolResult:
+        from skill_toolbox.models import ImageContent
+
+        payload: list[ImageContent] = []
+        for img in images or []:
+            media_type = str(img.get("media_type", "")) if isinstance(img, dict) else ""
+            data = str(img.get("base64_data", "")) if isinstance(img, dict) else ""
+            if media_type and data:
+                payload.append(ImageContent(media_type=media_type, base64_data=data))
         return ToolResult(
-            tool_call_id=call.id, name=call.name, success=success, content=content
+            tool_call_id=call.id,
+            name=call.name,
+            success=success,
+            content=content,
+            images=payload,
         )
 
     @staticmethod
@@ -564,11 +767,49 @@ class AgentRuntime:
     ) -> ContentPlan:
         path = workspace / "work" / "plans" / "content-plan.json"
         if not path.is_file():
-            raise ValueError("缺少 ContentPlan（work/plans/content-plan.json）")
+            # 模型常把计划写到 work/ 下的错误文件名/目录（content-plan.json、
+            # content_plan.json、work/plans/ 缺失等），检测并直接提示挽救路径，
+            # 避免"缺少 ContentPlan"反复往返烧步。
+            candidates = [
+                workspace / "work" / "content-plan.json",
+                workspace / "work" / "content_plan.json",
+                workspace / "work" / "plans" / "content_plan.json",
+            ]
+            found = [str(p.relative_to(workspace)) for p in candidates if p.is_file()]
+            hint = (
+                f"；检测到疑似写错位置的计划文件: {found}，请用 write 重写到 "
+                "work/plans/content-plan.json"
+                if found
+                else ""
+            )
+            raise ValueError(
+                "缺少 ContentPlan（必须写到 work/plans/content-plan.json，"
+                f"目录 work/plans/ 且文件名 content-plan.json）{hint}"
+            )
+        # 宽松化：task_type/mode/schema_version 由任务上下文自动派生，模型无需填写。
+        # 先读 dict 补派生字段再校验，其余语义校验（枚举/重复/未知 id/资源覆盖）不变。
         try:
-            plan = ContentPlan.model_validate_json(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            raise ValueError(f"ContentPlan 无效: {exc}") from None
+            raise ValueError(f"ContentPlan 不是合法 JSON: {exc}") from None
+        if not isinstance(raw, dict):
+            raise ValueError("ContentPlan 顶层必须是 JSON 对象")
+        raw.setdefault("task_type", task_type)
+        raw.setdefault(
+            "mode", "vision" if capabilities.get("vision", False) else "conservative"
+        )
+        raw["schema_version"] = SCHEMA_VERSION
+        try:
+            plan = ContentPlan.model_validate(raw)
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"ContentPlan 无效: {exc}；请重写 work/plans/content-plan.json "
+                "(只需填写 selections/exclusions 的 source_id，其余字段后端自动补充；"
+                "selections[].transform 只能是 preserve|summarize|crop|table|formula，"
+                "exclusions[].reason 只能是 "
+                "irrelevant|duplicate|low_confidence|unsupported|user_rejected，"
+                "两者不要混淆)"
+            ) from None
         if plan.task_type != task_type:
             raise ValueError(
                 f"ContentPlan.task_type 应为 {task_type}，实际为 {plan.task_type}"
@@ -590,7 +831,12 @@ class AgentRuntime:
         }
         unknown = (set(selected) | set(excluded)) - known_ids
         if unknown:
-            raise ValueError(f"ContentPlan 引用了未知 source_id: {sorted(unknown)}")
+            raise ValueError(
+                f"ContentPlan 引用了未知 source_id: {sorted(unknown)}。"
+                "真实 source_id 必须从 work/materials/<id>/document.json 的 "
+                "blocks[].id（形如 block-<材料id16>-<序号>）与 assets[].id"
+                "（形如 asset-<材料id16>-<hash>）复制，禁止自造/改写前缀。"
+            )
         asset_ids = {
             asset.id for ir in catalog.irs.values() for asset in ir.assets
         }
@@ -603,9 +849,7 @@ class AgentRuntime:
         return plan
 
     @staticmethod
-    def _load_qa_report(
-        workspace: Path, capabilities: dict[str, bool] | None = None
-    ) -> QAReport:
+    def _read_qa_report(workspace: Path) -> QAReport:
         """读取 Skill 写入的 QAReport（work/qa/*.json，§8.3）。
 
         按文件 mtime 取最新的一个并用共享 Pydantic schema 校验；缺失或非法
@@ -613,7 +857,11 @@ class AgentRuntime:
         """
         qa_root = workspace / "work" / "qa"
         files = sorted(
-            qa_root.glob("*.json"),
+            (
+                path
+                for path in qa_root.glob("*.json")
+                if path.name != PENDING_VISUAL_REVIEW
+            ),
             key=lambda p: (p.stat().st_mtime_ns, p.name),
             reverse=True,
         )
@@ -625,10 +873,20 @@ class AgentRuntime:
             raise ValueError(f"QAReport 无效: {exc}") from None
         if qa.mechanical == "passed" and qa.mechanical_issues:
             raise ValueError("mechanical=passed 时 mechanical_issues 必须为空")
+        return qa
+
+    @staticmethod
+    def _load_qa_report(
+        workspace: Path,
+        capabilities: dict[str, bool] | None = None,
+        *,
+        allow_visual_not_run: bool = False,
+    ) -> QAReport:
+        qa = AgentRuntime._read_qa_report(workspace)
         vision = (capabilities or {}).get("vision", False)
         if not vision and qa.visual != "not_run":
             raise ValueError("vision=false 时 QAReport.visual 必须为 not_run")
-        if vision and qa.visual != "passed":
+        if vision and qa.visual != "passed" and not allow_visual_not_run:
             raise ValueError("vision=true 时 QAReport.visual 必须为 passed")
         return qa
 
@@ -638,6 +896,18 @@ class AgentRuntime:
         payload["used_assets"] = len(qa.used_assets)
         payload["skipped_assets"] = len(qa.skipped_assets)
         return payload
+
+    def _emit_qa_status(self, qa: QAReport) -> None:
+        payload = self._qa_event(qa)
+        self.emit({"type": "qa_status", "qa": payload})
+        self.debug({"phase": "qa_status", "qa": payload})
+
+    def _emit_latest_qa_status(self, workspace: Path) -> None:
+        try:
+            qa = self._read_qa_report(workspace)
+        except (OSError, ValueError):
+            return
+        self._emit_qa_status(qa)
 
     @staticmethod
     def _record_quality_results(
@@ -684,6 +954,62 @@ class AgentRuntime:
             else:
                 passed.discard(action)
                 quality_hashes.pop(action, None)
+
+    @staticmethod
+    def _record_domain_artifacts(
+        calls: list[ToolCall],
+        results: list[ToolResult],
+        policy: WorkspacePolicy,
+        registered: dict[str, str],
+    ) -> None:
+        """登记领域 Service 本轮机械门通过后的真实产物路径与内容 hash。"""
+        for call, result in zip(calls, results, strict=True):
+            if call.name not in DOMAIN_ARTIFACT_TOOLS or not result.success:
+                continue
+            try:
+                payload = json.loads(result.content)
+                data = payload["data"]
+                # v2 返回候选版本的 docx/pdf（多产物）；legacy 返回单个 path
+                relative = str(
+                    data.get("path")
+                    or data.get("docx")
+                    or data.get("pdf")
+                    or ""
+                )
+                if not relative:
+                    continue
+                artifact = policy.require_file(relative)
+                normalized = artifact.relative_to(policy.root).as_posix()
+                registered[normalized] = sha256_file(artifact)
+                pdf_rel = str(data.get("pdf") or "")
+                if pdf_rel and pdf_rel != relative:
+                    pdf_artifact = policy.require_file(pdf_rel)
+                    registered[pdf_artifact.relative_to(policy.root).as_posix()] = (
+                        sha256_file(pdf_artifact)
+                    )
+            except (KeyError, OSError, TypeError, ValueError):
+                # 返回契约不完整时不登记；finish 门会给出明确拒绝。
+                continue
+
+    @staticmethod
+    def _verify_domain_artifacts(
+        call: ToolCall,
+        policy: WorkspacePolicy,
+        registered: dict[str, str],
+    ) -> None:
+        artifacts = call.arguments.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError("finish_task requires at least one artifact")
+        for relative in artifacts:
+            artifact = policy.require_file(str(relative))
+            normalized = artifact.relative_to(policy.root).as_posix()
+            expected = registered.get(normalized)
+            if expected is None:
+                raise ValueError(
+                    f"产物未由本轮成功的领域生成工具登记: {normalized}"
+                )
+            if sha256_file(artifact) != expected:
+                raise ValueError(f"领域产物登记后已被修改，必须重新生成或修复: {normalized}")
 
     @staticmethod
     def _verify_quality_artifacts(
@@ -804,5 +1130,139 @@ class AgentRuntime:
                 f"{len(ir.assets)} 资源）→ {document_rel}，"
                 f"顺序阅读 {content_rel}{prepared}"
             )
+            for asset in ir.assets:
+                size = (
+                    f"{asset.width}x{asset.height}"
+                    if asset.width is not None and asset.height is not None
+                    else "未知尺寸"
+                )
+                lines.append(
+                    f"  候选 Asset: id={asset.id}; path="
+                    f"{asset.path.replace(chr(92), '/')}; "
+                    f"type={asset.mime_type}; size={size}"
+                )
         return "\n".join(lines)
 
+
+
+# ---------------- 受控工具与 Skill 适配重构：领域模式装配（实施计划 §8） ----------------
+#
+# skill.tool_mode == "domain" 时，Runtime 构造领域 Service 容器并按 Skill 组装
+# 领域 schema；工具调用由 _execute_call 走 llm_tools.dispatcher → tools/ 内部
+# Service。旧 ToolRegistry/TOOL_SPECS 保留为兼容路径（tool_mode 默认 legacy）。
+
+# 领域工具名 → 是否由 dispatcher 处理（shared + 领域 schema 的并集）。
+_DOMAIN_TOOL_NAMES = {
+    # shared（§5.2）
+    "read_material", "create_content_plan",
+    # resume（§5.3）
+    "resume_prepare", "resume_generate", "resume_repair",
+    # resume v2（P2-3：版本化编辑 + 视觉闭环）
+    "resume_prepare_v2", "resume_generate_v2", "resume_repair_v2",
+    "resume_accept", "resume_restore", "resume_preview",
+    # docx（§5.4）
+    "docx_start", "docx_add_blocks", "docx_finalize", "docx_repair",
+    # ppt（§5.5）
+    "ppt_create_outline", "ppt_generate", "ppt_repair",
+    # pdf（§5.6）
+}
+_DOMAIN_TOOL_FACTORIES_INV = frozenset(_DOMAIN_TOOL_NAMES)
+
+
+def _domain_tool_specs(skill: Any, capabilities: dict[str, bool]) -> list[dict]:
+    """按 Skill 组装领域工具 schema（shared + 领域）。普通任务不暴露底层工具。"""
+    specs: list[dict] = list(shared_tools())
+    factory = _DOMAIN_TOOL_FACTORIES.get(skill.id)
+    if factory is not None:
+        specs.extend(factory())
+    return specs
+
+
+def _dispatch_ok(name: str, content: str) -> bool:
+    """dispatcher 成功文本是 OperationResult 的 JSON（ok 字段）；错误是稳定
+    ToolError JSON（无 ok 字段，视为失败）。"""
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("ok") is True
+        and payload.get("status") != "failed"
+    )
+
+
+def _build_domain_services(
+    workspace: Path,
+    skill: Any,
+    catalog: MaterialCatalog,
+    request: TaskRequest,
+    material_service: MaterialService,
+) -> DomainServices:
+    """构造领域 Service 容器（四个领域按需装配；MaterialPlanService 恒有）。"""
+    capabilities = request.capabilities
+    materials = MaterialPlanService(
+        workspace, catalog, TASK_TYPE_BY_SKILL[skill.id], capabilities
+    )
+    skill_dir = skill.dir
+    resume = ResumeService(
+        workspace,
+        skill_dir / "templates",
+        catalog=catalog,
+        capabilities=capabilities,
+    ) if skill.id == "resume_pro" else None
+    # v2（P2-3）：版本化编辑服务与 legacy 并存；dispatcher 按请求形态分流
+    if skill.id == "resume_pro":
+        from skill_toolbox.tools.resume import ResumeEditService
+
+        resume_v2 = ResumeEditService(
+            workspace, skill_dir / "templates", capabilities=capabilities
+        )
+    else:
+        resume_v2 = None
+    docx = DocxService(
+        workspace,
+        skill_dir / "scripts",
+        catalog=catalog,
+        capabilities=capabilities,
+    ) if skill.id == "docx_pro" else None
+    ppt = PptService(
+        workspace,
+        skill_dir,
+        catalog=catalog,
+        capabilities=capabilities,
+    ) if skill.id == "ppt-master" else None
+
+    return DomainServices(
+        materials=materials,
+        resume=resume,
+        resume_v2=resume_v2,
+        docx=docx,
+        ppt=ppt,
+        cancel_callbacks=[
+            lambda permanent: (
+                material_service.terminate_all()
+                if permanent
+                else material_service.terminate_active()
+            )
+        ],
+    )
+
+
+# 领域模式 Prompt 指引（计划 §8：删除 Prompt 中的底层 exec_cmd 说明）。
+# 该段在领域模式下注入 system prompt，明确模型只用领域工具。
+_DOMAIN_MODE_BANNER = """\
+## 领域工具模式（当前任务启用）
+
+本次任务运行在**领域工具模式**：你只能使用上方列出的领域工具
+（read_material / create_content_plan / 本功能领域生成工具 /
+ask_user_questions / task_failed / finish_task）。
+
+- **不要**调用 read/write/edit/exec_cmd/spec_append/ingest 等底层工具
+  （当前 schema 中没有它们，调用会被拒绝）。
+- 材料内容通过 `read_material` 读取（source_id 必须从 [MATERIALS] 的
+  document.json 原样复制）；ContentPlan 用 `create_content_plan` 写入。
+- 最终产物由领域生成工具在 `artifacts/` 生成并登记；交付时 `finish_task`
+  只传领域工具返回的产物相对路径。
+- 无 Vision（vision: false）时不要读取图片字节，只按 asset 元数据保守决策。
+"""

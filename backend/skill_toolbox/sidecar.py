@@ -20,7 +20,7 @@ from skill_toolbox.models import CapabilityProbeReport, ProbeResult, ProviderCon
 from skill_toolbox.providers import create_provider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest, UserInputBroker
-from skill_toolbox.skills import load_skill
+from skill_toolbox.skills import load_skill, RETIRED_PDF_IDS, FEATURE_RETIRED_MESSAGE
 from skill_toolbox.tools import resolve_mineru_cli
 from skill_toolbox.unicode_utils import redact_secrets, sanitize_data
 
@@ -214,9 +214,12 @@ class SidecarService:
                     },
                 )
         except (KeyError, TypeError, ValueError) as exc:
-            self._emit(request_id, {"type": "protocol_error", "error": str(exc)})
+            self._emit(request_id, {"type": "protocol_error", "error": _redact(str(exc))})
 
     async def _start_task(self, request_id: str, payload: dict[str, Any]) -> None:
+        if payload.get("skill_id") in RETIRED_PDF_IDS or payload.get("task_type") in RETIRED_PDF_IDS:
+            self._emit(request_id, {"type": "task_failed", "error": FEATURE_RETIRED_MESSAGE})
+            return
         if request_id in self.tasks and not self.tasks[request_id].done():
             self._emit(
                 request_id,
@@ -233,7 +236,7 @@ class SidecarService:
                 {"type": "task_failed", "error": _capability_failure(skill.id, missing, config.model)},
             )
             return
-        # MinerU 全局 preflight（实施计划 §3.1/§9.1）：四个功能都是 MinerU
+        # MinerU 全局 preflight（实施计划 §3.1/§9.1）：三个生成功能都是 MinerU
         # 强依赖，CLI 不可用或 Token 未配置直接在 Agent loop 前失败，不进入
         # 运行时（Token 缺失返回 MINERU_TOKEN_MISSING 稳定码）。
         if not self._mineru_key:
@@ -249,7 +252,7 @@ class SidecarService:
         try:
             _mineru_preflight()
         except RuntimeError as exc:
-            self._emit(request_id, {"type": "task_failed", "error": str(exc)})
+            self._emit(request_id, {"type": "task_failed", "error": _redact(str(exc))})
             return
         provider = self.provider_factory(config)
         broker = UserInputBroker()
@@ -286,6 +289,13 @@ class SidecarService:
             capabilities=capabilities,
             env=self._task_env(skill.id),
             mineru_token=self._mineru_key,
+            # 领域模式是 opt-in：调用方显式传 tool_mode="domain" 才切换；
+            # 未传时交给 Runtime 回落 Skill manifest，保持 legacy 请求契约。
+            tool_mode=(
+                str(payload["tool_mode"])
+                if payload.get("tool_mode") in {"domain", "legacy"}
+                else None
+            ),
         )
         self._emit(request_id, {"type": "debug_log_path", "path": str(log_path)})
         task = asyncio.create_task(self._run(request_id, runtime, request, log_path))
@@ -304,7 +314,7 @@ class SidecarService:
             self._emit(request_id, {"type": "task_cancelled"})
             raise
         except Exception as exc:  # noqa: BLE001 - task failures must not terminate the Sidecar
-            self._emit(request_id, {"type": "task_failed", "error": str(exc)})
+            self._emit(request_id, {"type": "task_failed", "error": _redact(str(exc))})
         finally:
             self.brokers.pop(request_id, None)
             self.tasks.pop(request_id, None)
@@ -320,7 +330,7 @@ class SidecarService:
         try:
             broker.answer(dict(payload.get("answers", {})))
         except RuntimeError as exc:
-            self._emit(request_id, {"type": "protocol_error", "error": str(exc)})
+            self._emit(request_id, {"type": "protocol_error", "error": _redact(str(exc))})
 
     def _cancel_task(self, request_id: str) -> None:
         task = self.tasks.get(request_id)
@@ -611,7 +621,7 @@ async def _serve() -> None:
             message = json.loads(line)
             await service.handle(message)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            emit({"id": "", "event": {"type": "protocol_error", "error": str(exc)}})
+            emit({"id": "", "event": {"type": "protocol_error", "error": _redact(str(exc))}})
     await service.wait_all()
 
 

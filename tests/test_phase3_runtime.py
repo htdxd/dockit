@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from skill_toolbox.materials import MaterialService
 from skill_toolbox.models import AssistantTurn, ToolCall, ToolResult
 from skill_toolbox.policy import WorkspacePolicy
@@ -89,6 +90,23 @@ async def test_material_preprocessed_before_agent_loop(tmp_path: Path) -> None:
     assert "content.md" in prompt
     # 无 Vision：横幅不包含图片（该材料无图），CAPABILITIES 明确 false
     assert "vision: false" in prompt
+
+
+def test_materials_banner_lists_candidate_asset_metadata(tmp_path: Path) -> None:
+    """候选 Asset 的真实 ID、路径和尺寸在首轮 Prompt 中可见。"""
+    source = tmp_path / "portrait.jpg"
+    Image.new("RGB", (206, 210), (20, 80, 140)).save(source)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = MaterialService(workspace)
+    ir = service.prepare_material(source)
+
+    banner = AgentRuntime.__new__(AgentRuntime)._materials_banner(service.catalog())
+
+    asset = ir.assets[0]
+    assert asset.id in banner
+    assert asset.path.replace("\\", "/") in banner
+    assert "206x210" in banner
 
 
 @pytest.mark.asyncio
@@ -192,10 +210,10 @@ async def test_same_basename_materials_not_overwritten(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_prompts_require_content_plan_discipline() -> None:
-    """四个 Prompt 都包含统一材料协议关键词：先读材料摘要、写 ContentPlan。"""
+    """三个 Prompt 都包含统一材料协议关键词：先读材料摘要、写 ContentPlan。"""
     from skill_toolbox.skills import load_skill
 
-    for skill_id in ["docx_pro", "pdf_docx_routing", "resume_pro", "ppt-master"]:
+    for skill_id in ["docx_pro", "resume_pro", "ppt-master"]:
         prompt = load_skill(skill_id).system_prompt
         assert "[MATERIALS]" in prompt or "材料" in prompt, f"{skill_id} 缺材料协议"
         assert "ContentPlan" in prompt or "content-plan" in prompt, (
@@ -204,6 +222,12 @@ async def test_prompts_require_content_plan_discipline() -> None:
         assert "conservative" in prompt or "保守" in prompt, (
             f"{skill_id} 缺无 Vision 保守模式规则"
         )
+        assert "真实 source_id" in prompt, f"{skill_id} 未要求使用真实 source_id"
+        assert "严禁自造" in prompt, f"{skill_id} 未禁止伪造 source_id"
+        assert "每个候选 Asset" in prompt, f"{skill_id} 未要求处理每个候选 Asset"
+
+    resume_prompt = load_skill("resume_pro").system_prompt
+    assert "禁止询问" in resume_prompt
 
 
 @pytest.mark.asyncio
@@ -357,6 +381,13 @@ def test_qa_report_enforces_vision_mode(tmp_path: Path) -> None:
     )
     assert AgentRuntime._load_qa_report(tmp_path, {"vision": True}).visual == "passed"
 
+    report.write_text(
+        '{"mechanical":"passed","visual":"passed","repair_rounds":4}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="less than or equal to 3"):
+        AgentRuntime._load_qa_report(tmp_path, {"vision": True})
+
 
 def test_qa_report_tie_break_is_deterministic(tmp_path: Path) -> None:
     qa_dir = tmp_path / "work" / "qa"
@@ -484,11 +515,156 @@ async def test_runtime_requires_content_plan_without_materials(tmp_path: Path) -
         and event.get("success") is False
         for event in events
     )
-    assert any(
-        event.get("type") == "qa_status"
-        and "ContentPlan" in str(event.get("qa", {}))
-        for event in events
+    qa_events = [event["qa"] for event in events if event.get("type") == "qa_status"]
+    assert qa_events
+    assert all(qa["mechanical"] == "passed" for qa in qa_events)
+    assert all(qa["mechanical_issues"] == [] for qa in qa_events)
+
+
+@pytest.mark.asyncio
+async def test_exec_cmd_rejects_invalid_content_plan_before_action(
+    tmp_path: Path,
+) -> None:
+    """Renderer 不得在非法 ContentPlan 下执行，错误应立即返回模型。"""
+    invalid_plan = json.dumps(
+        {
+            "schema_version": "1",
+            "task_type": "docx",
+            "mode": "conservative",
+            "selections": [
+                {
+                    "source_id": "invented-block-id",
+                    "purpose": "正文",
+                    "target": "section/1",
+                    "transform": "preserve",
+                }
+            ],
+            "exclusions": [],
+            "questions_asked": False,
+        }
     )
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="plan",
+                        name="write",
+                        arguments={
+                            "path": "work/plans/content-plan.json",
+                            "content": invalid_plan,
+                        },
+                    ),
+                    ToolCall(
+                        id="spec",
+                        name="write",
+                        arguments={
+                            "path": "work/spec.json",
+                            "content": _docx_spec("不应生成"),
+                        },
+                    ),
+                ]
+            ),
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="build",
+                        name="exec_cmd",
+                        arguments={
+                            "action": "build_docx",
+                            "args": {
+                                "source": "work/spec.json",
+                                "output": "artifacts/rejected.docx",
+                            },
+                        },
+                    )
+                ]
+            ),
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="abort",
+                        name="task_failed",
+                        arguments={"error": "invalid plan"},
+                    )
+                ]
+            ),
+        ]
+    )
+    debug: list[dict[str, object]] = []
+
+    result = await AgentRuntime(
+        provider, lambda _event: None, debug_logger=debug.append
+    ).run(TaskRequest("docx_pro", "test", tmp_path / "out"))
+
+    assert result.status == "failed"
+    assert not any((tmp_path / "out").glob("rejected*.docx"))
+    assert any(
+        entry.get("phase") == "tool_result"
+        and entry.get("tool") == "exec_cmd"
+        and entry.get("success") is False
+        and "ContentPlan 前置校验失败" in str(entry.get("content", ""))
+        for entry in debug
+    )
+
+
+@pytest.mark.asyncio
+async def test_step_limit_emits_latest_real_qa_report(tmp_path: Path) -> None:
+    """耗尽步骤时保留 Agent 最后写入的真实 QA，而不是遗留伪失败状态。"""
+    turns = [
+        AssistantTurn(
+            tool_calls=[
+                ToolCall(
+                    id="plan",
+                    name="write",
+                    arguments={
+                        "path": "work/plans/content-plan.json",
+                        "content": _empty_content_plan("resume", "vision"),
+                    },
+                )
+            ]
+        ),
+        AssistantTurn(
+            tool_calls=[
+                ToolCall(
+                    id="qa",
+                    name="write",
+                    arguments={
+                        "path": "work/qa/report.json",
+                        "content": '{"mechanical":"passed","visual":"passed"}',
+                    },
+                )
+            ]
+        ),
+    ]
+    turns.extend(
+        AssistantTurn(
+            tool_calls=[
+                ToolCall(
+                    id=f"tick-{index}",
+                    name="write",
+                    arguments={"path": f"work/tick-{index}.txt", "content": "x"},
+                )
+            ]
+        )
+        for index in range(22)
+    )
+    events: list[dict[str, object]] = []
+
+    result = await AgentRuntime(ScriptedProvider(turns), events.append).run(
+        TaskRequest(
+            "resume_pro",
+            "test",
+            tmp_path / "out",
+            capabilities={"vision": True},
+        )
+    )
+
+    assert result.status == "failed"
+    assert "24-step limit" in (result.error or "")
+    qa_events = [event["qa"] for event in events if event.get("type") == "qa_status"]
+    assert qa_events[-1]["mechanical"] == "passed"
+    assert qa_events[-1]["visual"] == "passed"
 
 
 @pytest.mark.parametrize(

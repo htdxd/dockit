@@ -9,6 +9,63 @@
 - `vision: true` → 生成后调用 `render_pages`，用 `read` 检查渲染 PNG，逐页核对版式（封面、TOC 页码、表格跨页、图片比例、空白页）。
 - `vision: false` → **禁止声称已做视觉检查**。只能报告 `postcheck_docx` 的机械检查结果，并在交付说明中明确标注"未进行视觉版式检查"。
 
+## 0.5 统一材料协议（先读摘要 → 写 ContentPlan → 再生成）
+
+任务开始时系统注入 `[MATERIALS]` 横幅：列出每个上传材料的共享 IR 路径
+（`work/materials/<id>/document.json` 与顺序阅读投影 `content.md`）。必须按
+以下顺序推进，**禁止跳过规划直接生成**：
+
+1. **读材料摘要**：用 `read` 读取 `[MATERIALS]` 横幅中列出的 `content.md`（长文档
+   用 offset/limit 分页）。**写 ContentPlan 前必须再读对应 `document.json` 的相关
+   分页，取得要引用 block/asset 的真实 source_id；严禁自造 ID。**
+2. **写 ContentPlan**：先 `write` 合法 JSON 到 **`work/plans/content-plan.json`**（目录 `work/plans/`、文件名 `content-plan.json`，不要写到 `content_plan.json` 等其它位置）。**只需填写 source_id 清单**——`task_type`/`mode`/`schema_version` 后端自动补充，`purpose`/`target`/`transform`/`reason` 均可省略（有默认值）。结构如下（所有选择/舍弃必须留痕，不能静默丢弃高价值资源）：
+   ```json
+   {
+     "selections": [{"source_id": "block-<材料id16>-<序号>"}],
+     "exclusions": [{"source_id": "asset-<材料id16>-<hash>"}]
+   }
+   ```
+   - `source_id` 从 `document.json` 的 `blocks[].id`/`assets[].id` **原样复制**（block 前缀 `block-`、asset 前缀 `asset-`），禁止自造或改写前缀（如把 `block-` 写成 `docx-`）。
+   - 每个候选 Asset 必须出现在 `selections` 或 `exclusions`；每个被读取且有迁移价值的 block 也必须留痕。
+   - 校验失败时按返回消息**修正同一文件**后重写再跑，不要新开文件。
+   - 图片等候选资源：`vision: true` 时 `read` 候选图确认后决定；`vision: false`
+     时只按文件名/图注/相邻正文高置信度复用，歧义资源**不猜**——一次
+     `ask_user_questions` 批量询问或舍弃。
+3. **按 ContentPlan 生成**：用 `spec_append` 把选中的图片、表格、公式以
+   **顺序 block** 分小批追加进规格 `work/spec.json` 的 `blocks[]`
+   （见 `references/spec-schema.md`「顺序 block 规格」，流程见第 2 节第 1 步），
+   使资源出现在指定 section/段落之间（如"第 2 段后插图"），而不是只能放文档尾部。
+   - **远端图片（md 材料里 `![Alt](https://…)` 的图）**：这些图没有本地
+     asset。先调一次 `download_assets`（`args.source=<md 路径>`，如
+     `work/materials/<id>/content.md`），脚本会把所有 http(s) 图片下载到
+     `work/assets/` 并返回 `{"downloaded": [{"path": "work/assets/..."}]}`
+     （**直接用返回的 path，不要自己拼文件名**）；然后用这些 `path` 作为
+     spec.json image block 的 `source`（如
+     `{"type": "image", "source": "work/assets/abc12345-fig1.png", "caption": "…"}`）。
+     **spec_append 会校验图片 source 存在**：路径自造/抄漏 hash 前缀（如少了
+     8 位前缀）会被当场拒绝，并按文件名给出 `work/assets/` 下的相近候选——照
+     候选抄即可，不要自己猜文件名。
+     **图片宽不用写 `width_mm`**：超宽会自动收窄到可用页宽，postcheck 不会报
+     溢出；下载失败的图在交付说明中列出即可，**不要**为此手写 Python 脚本或
+     反复重试下载。
+4. **机械门 → （vision）视觉门 → QAReport → finish_task**：
+   - `postcheck_docx` 未通过前不得 `finish_task`；
+   - 机械门通过后，把机械/视觉状态写入 `work/qa/mechanical.json`。**只填变化字段**：
+     `{"mechanical": "passed"}`（`vision: true` 时加 `"visual": "passed"`）；
+     `repair_rounds` 仅在视觉修复次数 >0 时写；`used_assets`/`skipped_assets` 可把
+     ContentPlan 里选中/排除的 asset id 抄入（可选，仅供前端计数）。
+     **缺这份 QAReport 或 mechanical 不是 passed 时，Runtime 会拒绝交付**（
+     `finish_task` 返回失败并提示先写 QA）；Runtime 还会核对本轮确实成功执行过
+     `postcheck_docx`，仅写 JSON 不能绕过机械门。`vision: false` 时 `visual`
+     **不写即默认 `not_run`**（写 `passed` 会被 Runtime 拒绝）；`vision: true`
+     时必须实际渲染检查并写 `passed`，若为 `failed` 则先修复或调用 `task_failed`。
+   - QAReport 写完且所有门通过后，下一步立即 `finish_task`，不要再进行无关读取或写入。
+
+无 Vision 模式（`vision: false`，ContentPlan `mode` 自动为 conservative）：
+- 只用高置信度资源（用户单独上传、明确图注、稳定相邻关系）；
+- 采用单栏、居中、保持比例的保守布局，禁止自由裁剪/浮动图；
+- 交付说明必须标注「未进行视觉版式检查」，不得声称完成视觉验证。
+
 ## 1. 复杂度路由（依据 initial_form 的 complexity 字段）
 
 | complexity | 处理流程 |
@@ -24,7 +81,10 @@
 
 ## 2. 标准生成工作流（standard/academic/gongwen）
 
-1. **规格先行**：先用 `write` 把文档规格写成 UTF-8 JSON 到 `work/spec.json`。规格结构见下方 Schema。生成器只读取规格，不读取对话。
+1. **规格先行**：用 **`spec_append`** 增量构建 `work/spec.json`，**不要一次 `write` 塞整个巨型 JSON**（单次工具参数过大在生成/传输中会被截断 → write 失败 → 反复重试烧步）。做法：
+   - 第一次 `spec_append`：传顶层元信息（`title`/`subtitle`/`complexity`/`scene`/`cover`/`sections`）+ 开头几个 `blocks`；
+   - 之后每次 `spec_append`：只传 1-8 个 `blocks`（如一个 heading + 一个 paragraph，或一张 image）——后端自动合并进 `work/spec.json` 并校验（返回 `total_blocks`），每次调用都很小、不会出错；
+   - 每个 block 形如 `{"type": "heading|paragraph|image|table|formula", ...}`，字段见下方 Schema。规格结构见 `references/spec-schema.md`。生成器只读取规格，不读取对话。
 2. **生成**：调用 `exec_cmd`，action=`build_docx`，`args.source=work/spec.json`，`args.output=artifacts/<名称>.docx`。
 3. **目录注入**（standard/academic 且 H1 ≥ 3）：action=`inject_toc`，`args.source=<docx>`，`args.output=<docx>`（原地覆盖）。
 4. **机械质量门**：action=`postcheck_docx`，`args.source=<docx>`。**exit_code=0 且无 ❌ 才能继续**；有 ❌ 则修正规格后重新生成，直到通过。⚠️ 注意 `postcheck_docx` 报的目录引用是 Zip 内部路径，不是工作区路径。
@@ -47,59 +107,13 @@
 
 ## 5. officecli 增强（可选）
 
-先调用 `officecli_gate` 检测环境（幂等，无参数）。若输出 `"available": true`，且当前需求属于 officecli 强项（原生图表、水印、邮件合并 MERGEFIELD、批注/修订），可用 `exec_cmd` 的 `args.env` 传递环境变量调用它：
+写完 ContentPlan 后，可先调用 `officecli_gate` 检测环境（幂等，无参数）。若输出 `"available": true`，且当前需求属于 officecli 强项（原生图表、水印、邮件合并 MERGEFIELD、批注/修订），可用 `exec_cmd` 的 `args.env` 传递环境变量调用它：
 
 ```json
 {"action": "officecli_gate", "args": {"env": {"DOCX_PRO_CLI": "officecli", "FILE": "artifacts/x.docx"}}}
 ```
 
 若 `"available": false`，**保持纯 python-docx 路线**，不得谎报能力。交付说明中注明所用引擎。
-
-## 0.5 统一材料协议（先读摘要 → 写 ContentPlan → 再生成）
-
-任务开始时系统注入 `[MATERIALS]` 横幅：列出每个上传材料的共享 IR 路径
-（`work/materials/<id>/document.json` 与顺序阅读投影 `content.md`）。必须按
-以下顺序推进，**禁止跳过规划直接生成**：
-
-1. **读材料摘要**：用 `read` 读取 `[MATERIALS]` 横幅中列出的 `content.md`（长文档
-   用 offset/limit 分页）；需要精确结构（表格合并、图片 bbox）再读对应
-   `document.json`。
-2. **写 ContentPlan**：先 `write` 一个合法 JSON 到 `work/plans/content-plan.json`，
-   结构如下（所有选择/舍弃必须留痕，不能静默丢弃高价值资源）：
-   ```json
-   {
-     "schema_version": "1",
-     "task_type": "docx",
-     "mode": "vision | conservative",
-     "selections": [{"source_id": "<block或asset id>", "purpose": "用途", "target": "section/段落位", "transform": "preserve|summarize|crop|table|formula"}],
-     "exclusions": [{"source_id": "<id>", "reason": "irrelevant|duplicate|low_confidence|unsupported|user_rejected"}],
-     "questions_asked": false
-   }
-   ```
-   - `mode` 由 `[CAPABILITIES]` 横幅的 `vision` 决定：`vision: true` → `vision`；
-     `vision: false` → `conservative`（无视觉模式）。
-   - 图片等候选资源：`vision: true` 时 `read` 候选图确认后决定；`vision: false`
-     时只按文件名/图注/相邻正文高置信度复用，歧义资源**不猜**——一次
-     `ask_user_questions` 批量询问或舍弃。
-   - 每个被读取且有迁移价值的资源必须出现在 `selections` 或 `exclusions`。
-3. **按 ContentPlan 生成**：调用本 prompt 第 1-4 节的 action 流程，把选中的
-   图片、表格、公式以**顺序 block** 写入规格 `work/spec.json` 的 `blocks[]`
-   （见 `references/spec-schema.md`「顺序 block 规格」），使资源出现在指定
-   section/段落之间（如"第 2 段后插图"），而不是只能放文档尾部。
-4. **机械门 → （vision）视觉门 → QAReport → finish_task**：
-   - `postcheck_docx` 未通过前不得 `finish_task`；
-   - 机械门通过后，把机械/视觉状态写入 `work/qa/mechanical.json`：
-     `{"mechanical": "passed", "mechanical_issues": [], "visual": "not_run"|"passed"|"failed", "visual_issues": [], "repair_rounds": 0, "used_assets": ["<asset id>"], "skipped_assets": ["<asset id>"]}`。
-     **缺这份 QAReport 或 mechanical 不是 passed 时，Runtime 会拒绝交付**（
-     `finish_task` 返回失败并提示先写 QA）；Runtime 还会核对本轮确实成功执行过
-     `postcheck_docx`，仅写 JSON 不能绕过机械门。`vision: false` 时 `visual`
-     必须是 `not_run`，不得伪造 passed；`vision: true` 时必须实际渲染检查并写
-     `passed`，若为 `failed/not_run` 则先修复或调用 `task_failed`。
-
-无 Vision 模式（`vision: false`）：
-- 只用高置信度资源（用户单独上传、明确图注、稳定相邻关系）；
-- 采用单栏、居中、保持比例的保守布局，禁止自由裁剪/浮动图；
-- 交付说明必须标注「未进行视觉版式检查」，不得声称完成视觉验证。
 
 ## 6. 硬性规则（每条都必须在生成中落实）
 
@@ -116,7 +130,13 @@
 
 ## 7. 工具纪律
 
-- 规格文件用 `write`；生成产物一律走 `exec_cmd` 脚本（docx 是二进制，`write` 不支持）。
+- 规格用 **`spec_append`** 增量构建（分小批追加 blocks，见第 2 节第 1 步）；规格文件本身写 `work/spec.json`；生成产物一律走 `exec_cmd` 脚本（docx 是二进制，`write` 不支持）。
+- **可调 action 只有这些**：`build_docx` / `inject_toc` / `postcheck_docx` /
+  `render_pages` / `fill_form` / `apply_template` / `officecli_gate` /
+  `download_assets`。**不存在 `exec_python` / `find_scripts` / `list_scripts` /
+  `build_report` 等 action**，也不要自己 `write` 一个 .py 再当脚本跑——会得到
+  "Action is not allowed" 报错并浪费步骤。所有动作（含下载图片）都通过已声明
+  action 完成；`spec_append` 是全局原生 tool（不是 action），直接以工具调用。
 - `postcheck_docx` 未通过前，不得调用 `finish_task`。
 - 产物必须写到 `artifacts/`，规格写到 `work/`；不得访问工作区之外路径。
 - 不要在对话里输出整份 docx 内容；`read` 只用于小规格 JSON 或渲染 PNG。

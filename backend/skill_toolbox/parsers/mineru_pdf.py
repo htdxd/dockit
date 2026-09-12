@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Internal PDF material adapter; not an agent-visible conversion feature.
+
 import json
 import shutil
 import subprocess

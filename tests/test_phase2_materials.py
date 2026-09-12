@@ -373,7 +373,14 @@ def test_pdf_preprocessing_exposes_single_prepared_docx(
     source.write_bytes(b"%PDF-1.7\nfixture")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    service = MaterialService(workspace, mineru_token="test-token")
+    # 注入隔离缓存根目录：跨任务持久缓存可能命中真实默认缓存（同 hash PDF），
+    # 导致调用数被缓存吸收（实施计划 §6.4 允许缓存命中 0 调用）；测试必须
+    # 保证"首次转换必然调用一次"的断言可复现。
+    service = MaterialService(
+        workspace,
+        mineru_token="test-token",
+        cache_root=tmp_path / "isolated-cache",
+    )
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **_kwargs):  # type: ignore[no-untyped-def]
@@ -391,9 +398,23 @@ def test_pdf_preprocessing_exposes_single_prepared_docx(
     entry = service.catalog().manifest["materials"][0]
     assert ir.source_format == "pdf"
     assert len(calls) == 1
+    assert Path(calls[0][1]).resolve() == Path("backend/skill_toolbox/parsers/mineru_pdf.py").resolve()
     assert calls[0][-1] == "--internal-absolute-paths"
     assert entry["prepared_docx"].endswith("report.docx")
     assert (workspace / entry["prepared_docx"]).is_file()
+
+    # The relocated internal adapter preserves cache identity across workspaces.
+    second_workspace = tmp_path / "second-workspace"
+    second_workspace.mkdir()
+    second = MaterialService(
+        second_workspace, mineru_token="test-token",
+        cache_root=tmp_path / "isolated-cache",
+    )
+    monkeypatch.setattr(second, "_run_subprocess", fake_run)
+    cached_ir = second.prepare_material(source)
+    assert cached_ir.source_format == "pdf"
+    assert len(calls) == 1
+    assert not (second_workspace / "artifacts").exists()
 
 
 def test_material_subprocess_timeout_kills_child(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ catalog/tool view，不拥有解析缓存。
 - 同 hash 材料只保留一份；同名/同 stem 文件互不覆盖
 - Markdown/TXT 解析前复制安全相对引用资源，拒绝 `..` 越界与远程 URL
 - 由 DocumentIR 单向生成现有 work/materials/<stem>.md 兼容投影
-- md/txt 原生解析；pptx 复用 ppt-master parser；pdf 复用 pdf_docx_routing 的
+- md/txt 原生解析；pptx 复用 ppt-master parser；pdf 使用内部 MinerU
   convert_pdf（MinerU 强依赖，失败即明确错误）；docx 富结构解析待阶段 4
   （当前以文本视图可用，旧 ingest/read 路径继续服务）
 
@@ -439,12 +439,18 @@ class MaterialService:
         workspace: Path,
         extra_env: dict[str, str] | None = None,
         mineru_token: str | None = None,
+        cache_root: Path | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.extra_env = extra_env or {}
         # MinerU API Token（Sidecar 受限凭据）。只传给 PDF adapter 子进程，
         # 不进入 Agent 可见路径（实施计划 §3.1）。
         self._mineru_token = mineru_token
+        # MinerU 跨任务持久缓存根目录（实施计划 §6）；测试可注入 tmp 目录，
+        # 默认 <app-data>/skill-toolbox-cache。
+        from skill_toolbox.tools.mineru import default_cache_root
+
+        self._cache_root = cache_root or default_cache_root()
         # 任务内活动子进程（ppt parser / MinerU convert）。预处理经
         # asyncio.to_thread 执行时取消无法中断线程，Runtime 在 CancelledError
         # 时调 terminate_all() 杀掉直接子进程，避免残留（实施计划 §9.5）。
@@ -504,15 +510,19 @@ class MaterialService:
                 if proc in self._active_procs:
                     self._active_procs.remove(proc)
 
-    def terminate_all(self) -> None:
-        """取消/超时时终止所有活动子进程（MinerU、ppt parser 等）。"""
-        self._cancelled.set()
+    def terminate_active(self) -> None:
+        """只终止当前活动子进程，允许后续领域工具继续复用本 Service。"""
         with self._proc_lock:
             active = list(self._active_procs)
         for proc in active:
             terminate_process_tree(proc)
         with self._proc_lock:
             self._active_procs.clear()
+
+    def terminate_all(self) -> None:
+        """永久取消并终止所有活动子进程（任务整体取消时使用）。"""
+        self._cancelled.set()
+        self.terminate_active()
 
     def _rel(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.workspace))
@@ -732,20 +742,25 @@ class MaterialService:
     def _parse_native_pdf(
         self, staged: Path, original: Path, material_id: str, sha256: str
     ) -> DocumentIR:
-        """PDF → 共享 DocumentIR：复用 pdf_docx_routing 的 convert_pdf 脚本
-        （MinerU）。输出 docx 交给 _parse_native_docx 复用同一份结构解析。
+        """PDF → 共享 DocumentIR：经 MineruService（跨任务持久缓存 + convert_pdf）。
+
+        输出 docx 交给 _parse_native_docx 复用同一份结构解析。MineruService
+        负责 cache key（pdf_sha256 + adapter/cli 版本 + 参数指纹 + 语言 + 模型）、
+        原子提交、COMPLETE 标记与 per-key 锁（实施计划 §6）。
 
         PDF 是 MinerU 强依赖（实施计划 §3.1）：MinerU CLI 不可用、Token 缺失
         或转换失败时抛 MaterialError（稳定错误码），由 Runtime 记为解析失败并
         fail-fast（任务直接失败），不降级、不登记成可继续的 warning。
         """
-        parser = (
-            Path(__file__).parent
-            / "skill_defs"
-            / "pdf_docx_routing"
-            / "scripts"
-            / "convert_pdf.py"
+        from skill_toolbox.tools.mineru import (
+            MINERU_PARSE_FAILED,
+            MINERU_TOKEN_MISSING,
+            MineruOptions,
+            MineruService,
         )
+        from skill_toolbox.contracts.common import ToolError
+
+        parser = Path(__file__).parent / "parsers" / "mineru_pdf.py"
         if not parser.is_file():
             raise MaterialError(
                 "MINERU_PARSE_FAILED", "convert_pdf 脚本缺失，PDF 富解析不可用"
@@ -755,35 +770,25 @@ class MaterialService:
         md_dir = out_root / "native"
         md_dir.mkdir(parents=True, exist_ok=True)
         converted = md_dir / f"{safe_stem(original.stem)}.docx"
+
+        service = MineruService(
+            cache_root=self._cache_root,
+            convert_script=parser,
+            runner=lambda command, *, timeout: self._run_subprocess(
+                command, timeout=timeout, use_mineru_token=True
+            ),
+        )
         try:
-            completed = self._run_subprocess(
-                [
-                    sys.executable,
-                    str(parser),
-                    str(staged),
-                    str(converted),
-                    "auto",  # model 由脚本自身探测（同 convert_pdf 契约）
-                    "true",
-                    "true",
-                    "true",
-                    "ch",
-                    "--internal-absolute-paths",
-                ],
-                timeout=1860,
-                use_mineru_token=True,
-            )
+            result = service.convert(staged, converted, MineruOptions())
+        except ToolError as exc:
+            raise MaterialError(exc.code, str(exc)) from None
         except subprocess.TimeoutExpired as exc:
             raise MaterialError(
                 "MINERU_PARSE_FAILED", f"PDF 转换超时（{exc}）"
             ) from None
         except OSError as exc:
             raise MaterialError("MINERU_PARSE_FAILED", f"PDF 转换调用失败（{exc}）") from None
-        if completed.returncode or not converted.is_file():
-            detail = completed.stderr.decode("utf-8", errors="replace")[-2000:]
-            code = "MINERU_PARSE_FAILED"
-            if any(k in detail.lower() for k in ("token", "auth", "401")):
-                code = "MINERU_TOKEN_MISSING"
-            raise MaterialError(code, detail or "MinerU 转换失败")
+
         # 复用 docx 结构解析（MinerU 产出的 docx 同样是 OOXML 包）；
         # source_format 保留 pdf（不写成 docx，IR 记录真实来源格式）。
         ir = self._parse_native_docx(converted, original, material_id, sha256, "pdf")
@@ -793,6 +798,8 @@ class MaterialService:
             if item["material_id"] == material_id
         )
         entry["prepared_docx"] = self._rel(converted)
+        entry["mineru_cache"] = result["status"]
+        entry["mineru_cache_key"] = result["cache_key"]
         return ir
 
     def _parse_native_docx(

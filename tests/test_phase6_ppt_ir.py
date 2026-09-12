@@ -133,6 +133,8 @@ def test_ppt_manifest_requires_tool_calling_with_timeouts() -> None:
     assert "tool_calling" in skill.required_capabilities
     assert skill.script_timeouts.get("source_to_md", 0) >= 60
     assert skill.script_timeouts.get("svg_to_pptx", 0) >= 60
+    assert skill.script_timeouts.get("render_pptx", 0) >= 60
+    assert (skill.dir / "scripts" / "render_pptx.py").is_file()
 
 
 def test_ppt_prompt_no_duplicate_source_to_md() -> None:
@@ -152,8 +154,9 @@ def test_ppt_prompt_no_duplicate_source_to_md() -> None:
         else ""
     )
     assert protocol_section and "source_to_md" not in protocol_section
-    # Generate 路由仍可用 source_to_md action（作为 action 而非材料解析第一步）
-    assert "source_to_md" in prompt
+    # 上传材料必须只消费共享 IR，不能再让 source_to_md 生成第二套事实。
+    assert "源文件转换用 `source_to_md`" not in prompt
+    assert "render_pptx" in prompt
 
 
 def test_pptx_package_remains_valid_after_ir(tmp_path: Path) -> None:

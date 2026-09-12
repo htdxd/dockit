@@ -207,15 +207,18 @@ async def _execute_action(
     return result.content
 
 
-def test_script_timeout_parsed_from_manifest(tmp_path: Path) -> None:
-    """skills.load_skill 解析 script spec 的 timeout_seconds。"""
-    skill = load_skill("pdf_docx_routing")
-    assert "convert_pdf" not in skill.scripts
-    assert skill.script_timeouts["inspect_pdf"] == 180.0
-    assert skill.script_timeouts["render_docx"] == 240.0
-    # 未声明超时的 skill 不产生条目
-    skill = load_skill("docx_pro")
-    assert skill.script_timeouts == {}
+def test_script_timeout_parsed_from_manifest(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import skill_toolbox.skills as skills
+    root = tmp_path / "skill_defs" / "timeout-test"
+    root.mkdir(parents=True)
+    (root / "prompt.md").write_text("test", encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps({
+        "id": "timeout-test", "name": "Test", "description": "Test",
+        "scripts": {"slow": {"entry": "slow.py", "timeout_seconds": 180}}
+    }), encoding="utf-8")
+    monkeypatch.setattr(skills, "__file__", str(tmp_path / "skills.py"))
+    assert skills.load_skill("timeout-test").script_timeouts == {"slow": 180.0}
 
 
 @pytest.mark.asyncio
@@ -277,7 +280,7 @@ async def test_task_failed_aborts_with_error(tmp_path: Path) -> None:
     )
     events: list[dict[str, object]] = []
     runtime = AgentRuntime(provider=provider, emit=events.append)
-    result = await runtime.run(TaskRequest("pdf_docx_routing", "转换", tmp_path))
+    result = await runtime.run(TaskRequest("docx_pro", "生成", tmp_path))
     assert result.status == "failed"
     assert "MinerU 转换失败" in (result.error or "")
     assert events[-1]["type"] == "task_failed"
@@ -324,7 +327,7 @@ def test_convert_pdf_selects_matching_stem_output(tmp_path: Path) -> None:
 
     spec = importlib.util.spec_from_file_location(
         "convert_pdf",
-        Path("backend/skill_toolbox/skill_defs/pdf_docx_routing/scripts/convert_pdf.py"),
+        Path("backend/skill_toolbox/parsers/mineru_pdf.py"),
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -358,7 +361,7 @@ def test_convert_pdf_rejects_agent_absolute_paths(
 
     spec = importlib.util.spec_from_file_location(
         "convert_pdf_paths",
-        Path("backend/skill_toolbox/skill_defs/pdf_docx_routing/scripts/convert_pdf.py"),
+        Path("backend/skill_toolbox/parsers/mineru_pdf.py"),
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -376,26 +379,6 @@ def test_convert_pdf_rejects_agent_absolute_paths(
     ) == outside.resolve()
 
 
-def test_render_docx_page_prefix_per_document(tmp_path: Path) -> None:
-    """render_docx 每个文档使用 <stem>-page- 前缀，文档间 PNG 不混用。"""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "render_docx",
-        Path("backend/skill_toolbox/skill_defs/pdf_docx_routing/scripts/render_docx.py"),
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    out_dir = tmp_path / "artifacts"
-    out_dir.mkdir(parents=True)
-    # 预置旧命名残留（跨文档污染场景：A 的 page-1.png）
-    (out_dir / "page-1.png").write_bytes(b"stale")
-    prefix = "report-page"
-    assert f"{prefix}-*.png" != "page-*.png"
-    # 渲染前缀与旧全局命名不同，证明隔离
-    assert prefix.startswith("report-")
 
 
 # ---------------- exec_cmd 内部超时（communicate 用声明值） ----------------

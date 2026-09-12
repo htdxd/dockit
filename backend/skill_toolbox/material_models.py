@@ -1,6 +1,6 @@
 """共享材料理解的最小数据契约（实施计划 §8）。
 
-四个功能（PPT / 简历 / DOCX / PDF 转 DOCX）共用同一份 DocumentIR、
+三个生成功能（PPT / 简历 / DOCX）共用同一份 DocumentIR、
 AssetCatalog、ContentPlan 与 QAReport。只保留当前工作流真正消费的字段，
 额外原生事实（EMU 坐标、复杂表格结构等）放各材料的 native/source-map.json，
 不扩张 Block/Asset schema（实施计划 §8.1 约束）。
@@ -19,6 +19,8 @@ BlockType = Literal[
     "heading", "paragraph", "list", "table", "formula", "code", "image", "page_break"
 ]
 SourceFormat = Literal["pdf", "docx", "md", "txt", "pptx", "image"]
+# pdf_to_docx remains readable for historical ContentPlan/QA JSON only.
+# New conversion tasks are rejected at Sidecar and Runtime boundaries.
 TaskType = Literal["ppt", "resume", "docx", "pdf_to_docx"]
 PlanningMode = Literal["vision", "conservative"]
 TransformKind = Literal["preserve", "summarize", "crop", "table", "formula"]
@@ -148,15 +150,16 @@ class DocumentIR(BaseModel):
 
 
 class Selection(BaseModel):
-    """Agent 的明确内容选择：source_id + purpose + target + transform。
+    """Agent 的明确内容选择：source_id 必填，其余全部可选（降低模型负担）。
 
     每个被读取且具有迁移价值的 Asset 必须出现在 selections 或 exclusions 中
-    （实施计划 §8.2 约束）。不引入浮点相关性分数。
+    （实施计划 §8.2 约束）。purpose/target/transform 供未来 renderer 消费，
+    当前工作流不消费，模型可不填（transform 默认 preserve）。不引入浮点相关性分数。
     """
 
     source_id: str
-    purpose: str
-    target: str
+    purpose: str = ""
+    target: str = ""
     transform: TransformKind = "preserve"
 
 
@@ -168,8 +171,10 @@ class Exclusion(BaseModel):
 class ContentPlan(BaseModel):
     """Agent 必须先写 work/plans/content-plan.json，Renderer 不直接猜测。
 
-    mode 区分 vision / conservative；无 Vision 模式必须为 conservative，
-    且 QAReport.visual 保持 not_run。
+    task_type/mode 由 Runtime 按任务上下文自动派生（模型可不填）；直接以
+    Pydantic 校验时它们仍是必填，保证内部契约严格。mode 区分 vision /
+    conservative；无 Vision 模式必须为 conservative，且 QAReport.visual 保持
+    not_run。
     """
 
     schema_version: str = SCHEMA_VERSION
@@ -200,6 +205,6 @@ class QAReport(BaseModel):
     mechanical_issues: list[str] = Field(default_factory=list)
     visual: QAStatus = "not_run"
     visual_issues: list[str] = Field(default_factory=list)
-    repair_rounds: int = 0
+    repair_rounds: int = Field(default=0, ge=0, le=3)
     used_assets: list[str] = Field(default_factory=list)
     skipped_assets: list[str] = Field(default_factory=list)
