@@ -1,11 +1,32 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
+
+static STARTED: OnceLock<Instant> = OnceLock::new();
+
+// Opt-in local startup measurements; never records settings or task content.
+fn startup_trace(stage: &str, detail: &Value) {
+    let Ok(path) = std::env::var("DOCKIT_STARTUP_TRACE") else { return };
+    let elapsed = STARTED.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0;
+    let wall_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", serde_json::json!({
+            "stage": stage, "pid": std::process::id(), "wall_ms": wall_ms,
+            "native_ms": elapsed, "detail": detail
+        }));
+    }
+}
+
+#[tauri::command]
+fn startup_profile(timings: Value) {
+    startup_trace("frontend", &timings);
+}
 
 fn parse_backend_line(line: &[u8]) -> serde_json::Result<Value> {
     let text = String::from_utf8_lossy(line);
@@ -50,6 +71,7 @@ impl BackendState {
         {
             return Ok(());
         }
+        startup_trace("backend_spawn_start", &Value::Null);
         let (program, args, working_dir, python_path) = backend_command()?;
         let mut command = Command::new(program);
         command
@@ -65,6 +87,7 @@ impl BackendState {
         let mut child = command
             .spawn()
             .map_err(|error| format!("Failed to start Python Sidecar: {error}"))?;
+        startup_trace("backend_spawned", &serde_json::json!({"pid": child.id()}));
         let stdin = child.stdin.take().ok_or("Sidecar stdin is unavailable")?;
         let stdout = child.stdout.take().ok_or("Sidecar stdout is unavailable")?;
         let stderr = child.stderr.take().ok_or("Sidecar stderr is unavailable")?;
@@ -178,12 +201,20 @@ fn send_backend_message(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    STARTED.get_or_init(Instant::now);
+    startup_trace("process", &Value::Null);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .manage(BackendState::default())
-        .invoke_handler(tauri::generate_handler![send_backend_message])
+        .setup(|_| { startup_trace("setup", &Value::Null); Ok(()) })
+        .on_page_load(|_, payload| {
+            startup_trace("page_load", &serde_json::json!({
+                "event": format!("{:?}", payload.event()), "url": payload.url().as_str()
+            }));
+        })
+        .invoke_handler(tauri::generate_handler![send_backend_message, startup_profile])
         .run(tauri::generate_context!())
         .expect("error while running Skill Toolbox");
 }

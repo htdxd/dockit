@@ -56,15 +56,16 @@ def test_conversion_tools_removed_but_shared_and_resume_tools_remain():
 
 def test_ui_retirement_preserves_history_route_and_pdf_uploads():
     ui = Path("src/ui.ts").read_text(encoding="utf-8")
-    main = Path("src/main.ts").read_text(encoding="utf-8")
+    tasks = Path("src/taskController.ts").read_text(encoding="utf-8")
+    artifacts = Path("src/artifacts.ts").read_text(encoding="utf-8")
     assert 'data-tool="pdf"' not in ui
     assert 'id="page-pdf"' not in ui
     assert 'data-start="pdf"' not in ui
-    assert 'pdf: "pdf_docx_routing"' not in main
-    assert 'buckets.docx.push(...(bySkill.pdf ?? []))' in main
-    assert 'name.endsWith(".pdf")) buckets.docx.push(f)' in main
+    assert 'pdf: "pdf_docx_routing"' not in tasks
+    assert 'buckets.docx.push(...(bySkill.pdf ?? []))' in artifacts
+    assert 'name.endsWith(".pdf")) buckets.docx.push(f)' in artifacts
     assert 'if (tool === "pdf") { tool = "docx"; sub = "art"; }' in ui
-    assert "历史 PDF 转 DOCX（功能已下线）" in main
+    assert "历史 PDF 转 DOCX（功能已下线）" in artifacts
     assert "pdf / docx / md / txt" in ui
 
 

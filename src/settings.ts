@@ -115,6 +115,7 @@ const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
 let _db: Database | null = null;
 let _lsFallback = false;
+let initialization: Promise<void> | undefined;
 
 const LS_PREFIX = "dockit.";
 const LS_PROVIDERS = `${LS_PREFIX}providers`;
@@ -122,7 +123,11 @@ const LS_SETTINGS = `${LS_PREFIX}settings`;
 
 /* ===== 初始化 ===== */
 
-export async function initDb(): Promise<void> {
+export function initDb(): Promise<void> {
+  return initialization ??= initializeDb();
+}
+
+async function initializeDb(): Promise<void> {
   if (isTauri()) {
     try {
       _db = await Database.load("sqlite:dockit.db");

@@ -3,6 +3,8 @@ import type { DebugEntry, Question, TaskState } from "./types";
 /* ===== 模块状态 ===== */
 let taskMeta: { tool: string; title: string; taskId: string } | null = null;
 let taskStartedAt = 0;
+let lastTaskState: TaskState | null = null;
+let renderedDebug: TaskState["debug"] | null = null;
 
 const STATUS_LABELS: Record<TaskState["status"], string> = {
   idle: "未开始",
@@ -23,25 +25,40 @@ export function escapeHtml(text: string): string {
 export function setTaskMeta(meta: { tool: string; title: string; taskId: string }): void {
   taskMeta = meta;
   taskStartedAt = Date.now();
+  lastTaskState = null;
 }
 
 /* ===== 导航 ===== */
 function goTool(tool: string): void {
+  if (!showTool(tool)) return;
+  refreshVisibleTaskView();
+  const active = document.querySelector<HTMLElement>(`#page-${tool} .subtab.active`);
+  notifyArtifactView(tool, active?.dataset.sub);
+}
+
+function showTool(tool: string): boolean {
   if (!document.getElementById(`page-${tool}`)) tool = "docx";
+  const target = document.getElementById(`page-${tool}`);
+  if (target && !target.hidden) return false;
   document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
     p.hidden = p.id !== `page-${tool}`;
   });
   document.querySelectorAll<HTMLElement>(".nav-item[data-tool]").forEach((n) => {
     n.classList.toggle("active", n.dataset.tool === tool);
   });
-  replay(document.getElementById(`page-${tool}`));
+  return true;
 }
 
 export function goSub(tool: string, sub: string): void {
   if (tool === "pdf") { tool = "docx"; sub = "art"; }
-  goTool(tool);
+  const toolChanged = showTool(tool);
   const page = document.getElementById(`page-${tool}`);
   if (!page) return;
+  const target = document.getElementById(`sub-${tool}-${sub}`);
+  if (!toolChanged && target && !target.hidden) {
+    notifyArtifactView(tool, sub);
+    return;
+  }
   page.querySelectorAll<HTMLElement>(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.sub === sub));
   // Data-driven: toggle every subpage named after a subtab on this page
   // (new/run/art for tools, providers/services for settings).
@@ -51,9 +68,12 @@ export function goSub(tool: string, sub: string): void {
     const el = document.getElementById(`sub-${tool}-${name}`);
     if (el) el.hidden = name !== sub;
   }
-  replay(page.querySelector(`#sub-${tool}-${sub}`));
-  // 产物子页可见时通知 main.ts 重新扫描输出目录（运行中新增的产物
-  // 只进当前工具页，其它工具页需切页时才刷新）
+  refreshVisibleTaskView();
+  notifyArtifactView(tool, sub);
+}
+
+function notifyArtifactView(tool: string, sub: string | undefined): void {
+  // 控制器负责缓存及合并刷新，导航只通知可见状态。
   if (sub === "art") {
     window.dispatchEvent(new CustomEvent("dockit:artifacts-view-shown", { detail: { tool } }));
   }
@@ -66,11 +86,10 @@ export function flashSubtab(tool: string, sub: string): void {
   setTimeout(() => tab.classList.remove("flash"), 1800);
 }
 
-function replay(el: HTMLElement | null): void {
-  if (!el) return;
-  el.style.animation = "none";
-  void el.offsetWidth;
-  el.style.animation = "";
+function refreshVisibleTaskView(): void {
+  if (!lastTaskState) return;
+  if (taskMeta) renderRunView(taskMeta.tool, lastTaskState);
+  renderDebugPanel(lastTaskState);
 }
 
 /* ===== Toast ===== */
@@ -93,6 +112,18 @@ export function toast(msg: string, type: "ok" | "info" | "warn" = "ok"): void {
 export function setModelSummary(text: string): void {
   const el = document.getElementById("model-summary");
   if (el) el.textContent = text;
+}
+
+export function setStartupState(state: "loading" | "ready" | "failed", message?: string): void {
+  const ready = state === "ready";
+  document.querySelectorAll<HTMLElement>("[data-pick], [data-start], #w-model, #model-picker, #page-settings")
+    .forEach((control) => { control.inert = !ready; });
+  const status = document.getElementById("startup-status");
+  if (!status) return;
+  status.hidden = ready;
+  status.textContent = ready ? "" : message ?? (state === "failed"
+    ? "应用准备失败，请关闭窗口后重试。" : "正在准备本地设置，您可以先浏览页面、填写内容。" );
+  status.setAttribute("role", state === "failed" ? "alert" : "status");
 }
 
 /* ===== 主题切换 ===== */
@@ -131,6 +162,8 @@ function setPagesMode(m: "exact" | "range"): void {
 
 /* ===== 布局 ===== */
 export function mountLayout(root: HTMLElement): void {
+  lastTaskState = null;
+  renderedDebug = null;
   root.innerHTML = `
   <main class="app">
     <aside class="side">
@@ -173,6 +206,7 @@ export function mountLayout(root: HTMLElement): void {
         </div>
         <button class="theme-btn" id="theme-btn">🌗 深色模式</button>
       </div>
+      <div id="startup-status" class="startup-status" role="status" hidden></div>
       <div id="form-error" class="form-error" role="alert"></div>
 
       <!-- ============ PPT ============ -->
@@ -249,13 +283,13 @@ export function mountLayout(root: HTMLElement): void {
         <div class="subpage" id="sub-resume-new">
           <div class="card">
             <div class="card-title"><span class="no">1</span> 目标岗位 <span class="sub">必填</span></div>
-            <input class="inp" id="resume-role" placeholder="例如：深度学习算法工程师（校招）">
+            <input class="inp" id="resume-role" placeholder="可留空，开始后确认；例如：深度学习算法工程师（校招）">
             <details class="more"><summary>补充要求（可选）</summary>
               <textarea class="txa" id="resume-extra" placeholder="如：突出实习项目，弱化社团经历…"></textarea>
             </details>
           </div>
           <div class="card">
-            <div class="card-title"><span class="no">2</span> 上传经历材料 <span class="sub">可选 · 没有材料也可以先写提纲</span></div>
+            <div class="card-title"><span class="no">2</span> 上传经历材料 <span class="sub">可选 · 没有材料也可以开始问答</span></div>
             <div class="upload-big" data-pick="resume" tabindex="0" role="button" aria-label="选择经历材料">
               <div class="u-ic">⭳</div>
               <div class="u-t">拖入文件，或点击选择</div>
@@ -576,12 +610,23 @@ export function mountLayout(root: HTMLElement): void {
 
 /* ===== 任务状态渲染 ===== */
 export function renderTaskState(state: TaskState): void {
-  updateBadges(state);
-  if (taskMeta) {
+  const previous = lastTaskState;
+  lastTaskState = state;
+  if (!previous || previous.status !== state.status || previous.artifacts !== state.artifacts) {
+    updateBadges(state);
+  }
+  if (taskMeta && (!previous || previous.status !== state.status || previous.progress !== state.progress
+      || previous.qa !== state.qa || previous.materialProgress !== state.materialProgress
+      || previous.error !== state.error || previous.visionWarning !== state.visionWarning)) {
     renderRunView(taskMeta.tool, state);
+  }
+  // 新任务暂时没有产物，不能覆盖目录扫描已显示的历史成果。
+  if (taskMeta && state.artifacts.length && (!previous || previous.artifacts !== state.artifacts)) {
     renderArtView(taskMeta.tool, state);
   }
-  renderClarify(state);
+  if (!previous || previous.status !== state.status || previous.questions !== state.questions) {
+    renderClarify(state);
+  }
   renderDebugPanel(state);
 }
 
@@ -616,7 +661,7 @@ function deriveStep(state: TaskState): number {
 
 function renderRunView(tool: string, state: TaskState): void {
   const host = document.getElementById(`run-${tool}`);
-  if (!host) return;
+  if (!host || host.closest("[hidden]")) return;
   if (state.status === "idle") {
     host.innerHTML = `<div class="empty">暂无进行中的任务 —— <a data-go="${tool}:new">去新建任务</a></div>`;
     return;
@@ -783,16 +828,26 @@ function renderDebugPanel(state: TaskState): void {
   const list = document.getElementById("debug-list");
   const pathEl = document.getElementById("debug-log-path");
   if (!count || !list || !pathEl) return;
+  if (list.closest("[hidden]")) return;
   count.textContent = String(state.debug.length);
   pathEl.textContent = state.debugLogPath ? `完整日志：${state.debugLogPath}` : "";
+  if (renderedDebug === state.debug) return;
+  const previousCount = renderedDebug?.length ?? 0;
+  // reducer 只追加日志或在新任务开始时重置，不重建已经显示的行。
+  const appendOnly = previousCount > 0 && state.debug.length >= previousCount
+    && state.debug[0] === renderedDebug?.[0]
+    && state.debug[previousCount - 1] === renderedDebug?.[previousCount - 1];
+  if (!appendOnly) list.replaceChildren();
   if (!state.debug.length) {
     const empty = document.createElement("li");
     empty.className = "muted";
     empty.textContent = "暂无日志，任务运行后自动记录";
     list.replaceChildren(empty);
+    renderedDebug = state.debug;
     return;
   }
-  list.replaceChildren(...state.debug.map(formatDebugEntry));
+  list.append(...state.debug.slice(appendOnly ? previousCount : 0).map(formatDebugEntry));
+  renderedDebug = state.debug;
 }
 
 function formatDebugEntry(entry: DebugEntry): HTMLLIElement {

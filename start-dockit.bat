@@ -25,6 +25,10 @@ if not exist ".venv\Scripts\python.exe" (
     echo [2/3] Python environment ready
 )
 
+rem Record actual launcher runs; native code logs timings only, no task data.
+if not exist ".tmp_t" mkdir ".tmp_t"
+if not defined DOCKIT_STARTUP_TRACE set "DOCKIT_STARTUP_TRACE=%CD%\.tmp_t\startup-launch.jsonl"
+
 rem 3. launch Tauri (dev mode: starts vite, compiles, opens window)
 echo [3/3] Launching DocKit... first Rust compile takes 1-3 minutes.
 echo Note: keep this window open while using the app; closing it quits.

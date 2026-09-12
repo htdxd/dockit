@@ -80,8 +80,8 @@ html[data-theme="dark"] .subtab.active{color:#0e1220;}
 .subtab.flash{animation:flash .5s ease 3;}
 @keyframes flash{0%,100%{background:transparent;}50%{background:var(--brand-soft);}}
 /* 页面 / 子页切换过渡 */
-.page{animation:fadeUp .2s ease;}
-.subpage{animation:fadeUp .22s ease;}
+.subpage{animation:fadeUp .12s ease-out;}
+.startup-status{padding:8px 12px;margin-bottom:12px;border-radius:7px;background:var(--brand-soft);color:var(--text);font-size:13px;}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
 /* 卡片 */
 .card{background:var(--card);border-radius:8px;border:1px solid var(--border);padding:18px;transition:background .25s ease,border-color .25s ease,box-shadow .2s ease;}
