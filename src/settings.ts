@@ -15,7 +15,7 @@ import Database from "@tauri-apps/plugin-sql";
 export const SETTINGS_KEY = "dockit-settings";
 export const VISION_OVERRIDE_KEY = "dockit-vision-override";
 
-export type ReasoningLevel = "auto" | "fast" | "balanced" | "deep";
+export type ReasoningLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "fast" | "balanced" | "deep";
 
 export interface CapabilityProbeResult {
   status: "unknown" | "verified" | "unsupported" | "probe_error";
@@ -23,12 +23,14 @@ export interface CapabilityProbeResult {
   probe_version: number;
   detail?: string | null;
   control?: "none" | "effort" | "budget" | "adaptive" | null;
+  reasoning_level?: ReasoningLevel | null;
 }
 
 export interface CapabilityProbeReport {
   tool_calling: CapabilityProbeResult;
   vision: CapabilityProbeResult;
   reasoning_control: CapabilityProbeResult;
+  forced_tool_calling?: CapabilityProbeResult;
 }
 
 export function emptyProbeResult(): CapabilityProbeResult {
@@ -46,7 +48,7 @@ export function emptyProbeReport(): CapabilityProbeReport {
 export interface ProviderConfig {
   id: string;
   name: string;
-  kind: "openai" | "anthropic" | "openai_compatible";
+  kind: "openai" | "openai_responses" | "anthropic" | "openai_compatible";
   base_url: string;
   api_key: string;
   model: string;
@@ -55,7 +57,7 @@ export interface ProviderConfig {
   vision_override: boolean | null;
   /** null = 默认 true（运行时必需能力） */
   tool_calling_override: boolean | null;
-  /** 生成质量档位：auto=不主动发送 reasoning 参数 */
+  /** 推理深度：auto=不主动发送 reasoning 参数；保留旧档位用于读取历史配置 */
   reasoning_level: ReasoningLevel;
   /** 版本化能力探测报告（JSON 字符串），未知能力时为空 */
   capability_probe: string;
@@ -74,7 +76,8 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
 };
 
 const PROVIDER_KIND_LABEL: Record<ProviderConfig["kind"], string> = {
-  openai: "OpenAI",
+  openai: "OpenAI Chat Completions",
+  openai_responses: "OpenAI Responses",
   anthropic: "Anthropic",
   openai_compatible: "兼容接入",
 };

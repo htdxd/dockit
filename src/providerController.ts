@@ -27,6 +27,7 @@ export function createProviderController(send: SendBackend) {
   let providers: ProviderConfig[] = [];
   let globalSettings: GlobalSettings = { ...DEFAULT_GLOBAL_SETTINGS };
   let mineruReady: boolean | null = null;
+  let settingsModels: string[] = [];
 
   function activeProvider(): ProviderConfig {
     return providers.find((p) => p.id === globalSettings.active_provider) ?? providers[0] ?? _defaultFormProvider();
@@ -146,8 +147,7 @@ export function createProviderController(send: SendBackend) {
   /* ===== 表单 ↔ 供应商 ===== */
   function formToProvider(): ProviderConfig {
     const current = activeProvider();
-    const selModel = element<HTMLSelectElement>("#model").value;
-    const customModel = element<HTMLInputElement>("#model-custom").value.trim();
+    const model = element<HTMLInputElement>("#model").value.trim();
     const reasoningEl = document.getElementById("reasoning-level") as HTMLSelectElement | null;
     return {
       ...current,
@@ -155,11 +155,8 @@ export function createProviderController(send: SendBackend) {
       kind: element<HTMLSelectElement>("#provider-kind").value as ProviderConfig["kind"],
       base_url: element<HTMLInputElement>("#base-url").value.trim(),
       api_key: element<HTMLInputElement>("#api-key").value.trim(),
-      // select 为空时（当前模型不在下拉选项中）回退到内存值，绝不把空写回，
-      // 否则 saveCurrentProvider 会把已配置的 model 覆盖成 "" → 卡片变"未配置模型"、
-      // start_task 带空 model → 网关 400。
-      model: selModel || current.model || "",
-      model_custom: customModel || current.model_custom || "",
+      model,
+      model_custom: "",
       reasoning_level: (reasoningEl?.value as ProviderConfig["reasoning_level"]) ?? current.reasoning_level ?? "auto",
     };
   }
@@ -169,22 +166,11 @@ export function createProviderController(send: SendBackend) {
     element<HTMLSelectElement>("#provider-kind").value = p.kind;
     element<HTMLInputElement>("#base-url").value = p.base_url;
     element<HTMLInputElement>("#api-key").value = p.api_key;
-    const modelSel = element<HTMLSelectElement>("#model");
-    // 若当前模型不在下拉选项中，动态补一个 option，避免 select.value 变空后被
-    // formToProvider 误读为空并写回。
-    const model = p.model === "__custom" ? "" : p.model;
-    if (model && !Array.from(modelSel.options).some((o) => o.value === model)) {
-      const opt = document.createElement("option");
-      opt.value = model;
-      opt.textContent = model;
-      modelSel.appendChild(opt);
-    }
-    modelSel.value = p.model;
-    element<HTMLInputElement>("#model-custom").value = p.model_custom;
-    const custom = element<HTMLInputElement>("#model-custom");
-    custom.style.display = p.model === "__custom" ? "block" : "none";
+    element<HTMLInputElement>("#model").value = effectiveModel(p);
+    settingsModels = [];
+    setModelListOpen(false);
     const reasoning = document.getElementById("reasoning-level") as HTMLSelectElement | null;
-    if (reasoning) reasoning.value = p.reasoning_level ?? "auto";
+    if (reasoning) reasoning.value = ({ fast: "low", balanced: "medium", deep: "high" } as Record<string, string>)[p.reasoning_level] ?? p.reasoning_level ?? "auto";
     updateProviderUi();
   }
 
@@ -218,7 +204,7 @@ export function createProviderController(send: SendBackend) {
     applyProviderToForm(provider);
     renderProviderCards();
     syncModelSummary();
-    renderProbeStatus(null);
+    renderProbeStatus(null, false);
     toast("已添加供应商卡片，填写配置即可使用", "ok");
   }
 
@@ -324,7 +310,7 @@ export function createProviderController(send: SendBackend) {
 
   /* 表单字段变更：写回当前供应商 + 全局字段
      （#provider-kind / #model 已有专用监听器，不在此重复注册，避免双写 DB） */
-  ["#provider-name", "#base-url", "#api-key", "#model-custom", "#mineru-key", "#output-dir"].forEach((selector) => {
+  ["#provider-name", "#base-url", "#api-key", "#mineru-key", "#output-dir"].forEach((selector) => {
     document.querySelector<HTMLElement>(selector)?.addEventListener("change", () => {
       if (selector === "#mineru-key" || selector === "#output-dir") {
         saveGlobalFields();
@@ -336,11 +322,18 @@ export function createProviderController(send: SendBackend) {
       }
     });
   });
-  element<HTMLInputElement>("#model-custom").addEventListener("input", saveCurrentProvider);
 
   function updateProviderUi(): void {
     const hint = document.getElementById("base-url-hint");
     if (hint) hint.style.display = element<HTMLSelectElement>("#provider-kind").value === "openai_compatible" ? "" : "none";
+    const reasoning = document.getElementById("reasoning-level") as HTMLSelectElement | null;
+    if (reasoning) {
+      const anthropic = element<HTMLSelectElement>("#provider-kind").value === "anthropic";
+      for (const option of Array.from(reasoning.options ?? [])) {
+        option.hidden = option.disabled = anthropic && ["minimal", "xhigh", "max"].includes(option.value);
+      }
+      if (anthropic && ["minimal", "xhigh", "max"].includes(reasoning.value)) reasoning.value = "auto";
+    }
   }
 
   function modelName(): string {
@@ -355,6 +348,9 @@ export function createProviderController(send: SendBackend) {
 
   /** 能力默认值：tool_calling 默认开启；vision 按模型静态表判定 */
   function capabilityDefault(cap: "tool_calling" | "vision"): boolean {
+    const status = parseStoredProbe(activeProvider().capability_probe)?.[cap].status;
+    if (status === "verified") return true;
+    if (status === "unsupported") return false;
     if (cap === "vision") return isVisionModel(modelName());
     return true;
   }
@@ -383,8 +379,9 @@ export function createProviderController(send: SendBackend) {
       const effective = capabilityEffective(cap);
       badge.classList.toggle("cap-dim", !effective);
       const label = cap === "tool_calling" ? "工具调用" : "视觉能力";
+      const detected = parseStoredProbe(activeProvider().capability_probe)?.[cap].status;
       const state = capabilityOverride(cap) === null
-        ? (effective ? "默认开启" : "默认关闭")
+        ? (["verified", "unsupported"].includes(detected ?? "") ? (effective ? "检测支持" : "检测不支持") : (effective ? "默认开启" : "默认关闭"))
         : (effective ? "已手动开启" : "已手动关闭");
       badge.title = `点击可手动切换${label}（当前：${state}）`;
     });
@@ -460,7 +457,7 @@ export function createProviderController(send: SendBackend) {
     if (!("__TAURI_INTERNALS__" in window)) {
       // 浏览器演示：无后端可用，保留本地模拟列表
       const demo = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "deepseek-v3.2", "qwen3-max", "kimi-k2"];
-      fillModelOptions(demo, demo[0] ?? "");
+      fillModelOptions(demo);
       hint.textContent = `浏览器演示模式 · 已填 ${demo.length} 个模拟模型`;
       toast("浏览器演示模式：模型列表为本地模拟", "info");
       return;
@@ -479,28 +476,44 @@ export function createProviderController(send: SendBackend) {
     });
   }
 
-  /** 将模型列表填入下拉；优先保留当前生效模型（若在新列表里），
-      避免自动获取列表把用户手选的模型顶掉并写回 DB。 */
-  function fillModelOptions(models: string[], selected: string): void {
-    const sel = element<HTMLSelectElement>("#model");
-    sel.innerHTML = models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("")
-      + '<option value="__custom">✎ 手动输入…</option>';
-    const current = effectiveModel(activeProvider());
-    sel.value = models.includes(current)
-      ? current
-      : models.includes(selected) ? selected : (models[0] ?? "");
-    // 当前模型不在新列表里 → 动态补 option，避免 select.value 变空
-    if (sel.value === "" && current) {
-      const opt = document.createElement("option");
-      opt.value = current;
-      opt.textContent = current;
-      sel.appendChild(opt);
-      sel.value = current;
-    }
-    const custom = element<HTMLInputElement>("#model-custom");
-    custom.style.display = "none";
-    saveCurrentProvider();
+  /** 获取列表只更新候选项，不修改用户正在输入或已经选择的模型。 */
+  function fillModelOptions(models: string[]): void {
+    settingsModels = [...new Set(models)];
+    setModelListOpen(false);
   }
+
+  function setModelListOpen(open: boolean): void {
+    const list = element<HTMLElement>("#model-options");
+    list.hidden = !open;
+    element<HTMLInputElement>("#model").ariaExpanded = String(open);
+    element<HTMLButtonElement>("#model-toggle").ariaExpanded = String(open);
+    if (open) {
+      const current = element<HTMLInputElement>("#model").value;
+      list.innerHTML = settingsModels.length
+        ? settingsModels.map((name) => `<button type="button" role="option" class="model-option" data-model-choice="${escapeHtml(name)}" aria-selected="${name === current}">${escapeHtml(name)}</button>`).join("")
+        : '<div class="mp-empty">请先获取模型列表，也可以直接输入模型名</div>';
+    }
+  }
+
+  element<HTMLButtonElement>("#model-toggle").addEventListener("click", () => {
+    setModelListOpen(element<HTMLElement>("#model-options").hidden);
+  });
+  element<HTMLInputElement>("#model").addEventListener("click", () => setModelListOpen(false));
+  element<HTMLElement>("#model-options").addEventListener("click", (event) => {
+    const option = (event.target as HTMLElement).closest<HTMLElement>("[data-model-choice]");
+    if (!option) return;
+    element<HTMLInputElement>("#model").value = option.dataset.modelChoice!;
+    setModelListOpen(false);
+    invalidateProbe();
+    saveCurrentProvider();
+    element<HTMLInputElement>("#model").focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (!(event.target as HTMLElement).closest("#settings-model-picker")) setModelListOpen(false);
+  });
+  element<HTMLElement>("#settings-model-picker").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setModelListOpen(false);
+  });
 
   element<HTMLButtonElement>("#btn-fetch-models").addEventListener("click", fetchModels);
 
@@ -516,11 +529,8 @@ export function createProviderController(send: SendBackend) {
     document.querySelector<HTMLElement>(selector)?.addEventListener("change", scheduleFetchModels);
   });
 
-  element<HTMLSelectElement>("#model").addEventListener("change", (e) => {
-    const isCustom = (e.target as HTMLSelectElement).value === "__custom";
-    const custom = element<HTMLInputElement>("#model-custom");
-    custom.style.display = isCustom ? "block" : "none";
-    if (isCustom) custom.focus();
+  element<HTMLInputElement>("#model").addEventListener("input", () => {
+    setModelListOpen(false);
     invalidateProbe();
     saveCurrentProvider();
   });
@@ -558,22 +568,25 @@ export function createProviderController(send: SendBackend) {
       providers[idx] = { ...provider, capability_probe: "" };
       void saveProvider(providers[idx]);
     }
-    renderProbeStatus(null);
+    renderProbeStatus(null, false);
   }
 
-  function renderProbeStatus(report: CapabilityProbeReport | null): void {
+  function renderProbeStatus(report: CapabilityProbeReport | null, refreshMineru = true): void {
     const host = document.getElementById("probe-status");
     if (!host) return;
     if (!report) {
       host.textContent = "未检测";
       host.classList.remove("probe-ok", "probe-warn", "probe-err");
-      renderMineruStatus();
+      if (refreshMineru) renderMineruStatus();
       return;
     }
     const labels: Array<[string, CapabilityProbeResult]> = [
       ["工具调用", report.tool_calling],
       ["视觉", report.vision],
       ["推理控制", report.reasoning_control],
+      ["强制工具调用", report.forced_tool_calling?.reasoning_level === activeProvider().reasoning_level
+        ? report.forced_tool_calling : { status: "unknown", checked_at: 0, probe_version: 1,
+          detail: "当前推理深度尚未验证，任务使用自动工具选择" }],
     ];
     const statusText: Record<string, string> = {
       verified: "✓",
@@ -587,7 +600,7 @@ export function createProviderController(send: SendBackend) {
     host.classList.toggle("probe-ok", report.tool_calling.status === "verified");
     host.classList.toggle("probe-warn", report.tool_calling.status === "unknown" || report.tool_calling.status === "probe_error");
     host.classList.toggle("probe-err", report.tool_calling.status === "unsupported");
-    renderMineruStatus();
+    if (refreshMineru) renderMineruStatus();
   }
 
   /** MinerU 强依赖状态（§12.3）：设置页第三方服务显示 CLI 可解析性。
@@ -597,8 +610,14 @@ export function createProviderController(send: SendBackend) {
     const host = document.getElementById("mineru-status");
     if (!host) return;
     mineruReady = null;
+    if (!("__TAURI_INTERNALS__" in window)) {
+      host.textContent = "浏览器预览中不检查本地 MinerU 状态";
+      return;
+    }
     host.textContent = "MinerU 状态检查中…";
-    void send({ id: "mineru-status-check", type: "mineru_status", payload: {} });
+    void send({ id: "mineru-status-check", type: "mineru_status", payload: {} }).catch(() => {
+      host.textContent = "暂时无法检查 MinerU 状态，请确认应用后端已启动";
+    });
   }
 
   /** 探测指纹：kind + base_url + 生效模型（镜像后端 capabilities.probe_fingerprint，
@@ -648,9 +667,11 @@ export function createProviderController(send: SendBackend) {
     } catch { /* ignore */ }
     const idx = providers.findIndex((p) => p.id === provider.id);
     if (idx < 0) return;
-    const patch = { ...provider, capability_probe: JSON.stringify(report) };
+    const patch = { ...provider, capability_probe: JSON.stringify(report),
+      tool_calling_override: null, vision_override: null };
     providers[idx] = patch;
     void saveProvider(patch);
+    syncCapabilityUi();
   }
 
   function probeCapabilities(): void {
@@ -695,7 +716,10 @@ export function createProviderController(send: SendBackend) {
   }
 
   element<HTMLButtonElement>("#btn-probe").addEventListener("click", probeCapabilities);
-  element<HTMLSelectElement>("#reasoning-level").addEventListener("change", () => saveCurrentProvider());
+  element<HTMLSelectElement>("#reasoning-level").addEventListener("change", () => {
+    saveCurrentProvider();
+    renderProbeStatus(parseStoredProbe(activeProvider().capability_probe), false);
+  });
 
   element<HTMLButtonElement>("#choose-dir").addEventListener("click", async () => {
     const selected = await open({ directory: true, multiple: false, title: "选择输出目录" });
@@ -741,7 +765,7 @@ export function createProviderController(send: SendBackend) {
           if (hint) hint.textContent = `获取失败：${event.error}`;
           toast(`模型列表获取失败：${event.error}`, "warn");
         } else if (event.models?.length) {
-          fillModelOptions(event.models, event.models[0]);
+          fillModelOptions(event.models);
           if (hint) hint.textContent = `已获取 ${event.models.length} 个模型 · 也可选"手动输入"`;
           toast(`已获取 ${event.models.length} 个模型`, "ok");
         } else {

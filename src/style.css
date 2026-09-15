@@ -106,8 +106,13 @@ html[data-theme="dark"] .subtab.active{color:#0e1220;}
 /* model 选择行 */
 .model-row{margin-top:12px;}
 .model-ctl{display:flex;gap:8px;margin-top:6px;align-items:center;}
-.model-sel{flex:1;min-width:0;appearance:auto;}
-.model-custom{flex:1;min-width:0;}
+.settings-model-picker{position:relative;flex:1;min-width:0;}
+.settings-model-picker>.inp{width:100%;padding-right:38px;}
+.model-toggle{position:absolute;right:1px;top:1px;bottom:1px;width:34px;border:0;background:transparent;color:inherit;cursor:pointer;border-left:1px solid var(--border);border-radius:0 7px 7px 0;}
+.model-options{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:260px;overflow:auto;z-index:40;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:4px;}
+.model-options[hidden]{display:none;}
+.model-option{display:block;width:100%;text-align:left;border:0;border-radius:5px;background:transparent;color:inherit;padding:8px 10px;cursor:pointer;overflow-wrap:anywhere;}
+.model-option:hover,.model-option:focus-visible,.model-option[aria-selected="true"]{background:var(--bg, #f3f4f6);}
 .model-hint{font-size:11px;color:var(--t3);margin-top:5px;}
 .btn-sm{padding:7px 13px;font-size:12.5px;white-space:nowrap;}
 /* 上传区域（加大 + 明显标注"可选"） */

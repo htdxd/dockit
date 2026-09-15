@@ -53,7 +53,8 @@ describe("provider validation", () => {
 
 describe("default provider template", () => {
   it("names the card after the kind", () => {
-    expect(defaultProviderName("openai")).toBe("OpenAI 供应商");
+    expect(defaultProviderName("openai")).toBe("OpenAI Chat Completions 供应商");
+    expect(defaultProviderName("openai_responses")).toBe("OpenAI Responses 供应商");
     expect(defaultProviderName("anthropic")).toBe("Anthropic 供应商");
     expect(defaultProviderName("openai_compatible")).toBe("兼容接入 供应商");
   });

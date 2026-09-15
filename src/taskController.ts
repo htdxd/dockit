@@ -102,7 +102,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
   }
 
 
-  function toolPrompt(tool: string): { title: string; prompt: string; templateId?: string } | null {
+  function toolPrompt(tool: string): { title: string; prompt: string; templateId?: string; outputFormat?: string; writingStyle?: string } | null {
     const val = (id: string): string =>
       (document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null)?.value.trim() ?? "";
     const chipVal = (id: string): string =>
@@ -138,6 +138,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       const extra = val("resume-extra");
       const format = chipVal("resume-format") || "DOCX";
       const length = chipVal("resume-length") || "一页";
+      const writingStyle = chipVal("resume-writing-style") || "balanced";
       const lines = [
         `简历模板：${tpl}`,
         role ? `目标岗位：${role}` : "目标岗位待问答确认",
@@ -147,7 +148,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       if (extra) lines.push(`补充要求：${extra}`);
       const vision = capabilityEffective("vision");
       if (!vision) lines.push("注意：当前模型无视觉能力，将走机械溢出检测流程，不进行视觉版式核验。");
-      return { title: role ? `${role} 简历` : "简历制作", prompt: lines.join("\n"), templateId: tpl };
+      return { title: role ? `${role} 简历` : "简历制作", prompt: lines.join("\n"), templateId: tpl, outputFormat: format, writingStyle };
     }
     return null;
   }
@@ -194,6 +195,8 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
           skill_id: SKILLS[tool],
           user_prompt: built.prompt,
           ...(built.templateId ? { template_id: built.templateId } : {}),
+          ...(built.outputFormat ? { output_format: built.outputFormat } : {}),
+          ...(built.writingStyle ? { writing_style: built.writingStyle } : {}),
           output_dir: element<HTMLInputElement>("#output-dir").value.trim(),
           materials: materialsByTool[tool],
           // UI 生产路径显式启用领域工具；未带该字段的旧 Sidecar 调用仍走 legacy。

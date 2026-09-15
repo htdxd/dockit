@@ -190,7 +190,7 @@ export function mountLayout(root: HTMLElement): void {
           <div class="h">下午好 👋 今天要把什么材料变成成品文件？</div>
           <div class="h-sub">从左侧选择一个工具开始 —— 填信息 → 答少量问题 → 拿到文件</div>
         </div>
-        <div class="w-model" id="w-model" data-go="settings"><span class="live"></span><span id="model-summary">未配置模型</span><span class="w-chev">▾</span></div>
+        <div class="w-model" id="w-model"><span class="live"></span><span id="model-summary">未配置模型</span><span class="w-chev">▾</span></div>
         <div class="model-picker" id="model-picker" hidden>
           <div class="mp-head">切换供应商 / 模型</div>
           <div class="mp-cols">
@@ -306,18 +306,6 @@ export function mountLayout(root: HTMLElement): void {
                 <img src="resume-templates/t001.jpg" alt="通用简洁风" loading="lazy">
                 <div class="tmpl-name">通用简洁风</div>
               </div>
-              <div class="tmpl-card" data-template="t002" tabindex="0" role="button" aria-label="选择模板 简约风">
-                <img src="resume-templates/t002.jpg" alt="简约风" loading="lazy">
-                <div class="tmpl-name">简约风</div>
-              </div>
-              <div class="tmpl-card" data-template="t046" tabindex="0" role="button" aria-label="选择模板 蓝灰设计风">
-                <img src="resume-templates/t046.jpg" alt="蓝灰设计风" loading="lazy">
-                <div class="tmpl-name">蓝灰设计风</div>
-              </div>
-              <div class="tmpl-card" data-template="t026" tabindex="0" role="button" aria-label="选择模板 黑色双栏">
-                <img src="resume-templates/t026.jpg" alt="黑色双栏" loading="lazy">
-                <div class="tmpl-name">黑色双栏</div>
-              </div>
               <div class="tmpl-card" data-template="t109" tabindex="0" role="button" aria-label="选择模板 简约 word">
                 <img src="resume-templates/t109.jpg" alt="简约 word" loading="lazy">
                 <div class="tmpl-name">简约 word</div>
@@ -332,6 +320,13 @@ export function mountLayout(root: HTMLElement): void {
               <span class="chip" data-v="PDF">PDF</span>
               <span class="chip" data-v="DOCX+PDF">两者都要</span>
             </div>
+            <label class="fld-l">内容优化程度</label>
+            <div class="chips" id="resume-writing-style">
+              <span class="chip" data-v="light">轻度润色</span>
+              <span class="chip on" data-v="balanced">突出优势</span>
+              <span class="chip" data-v="strong">深度改写</span>
+            </div>
+            <div class="sub2">轻度润色：整理措辞；突出优势：精选贡献与成果；深度改写：重组内容和表达。均保留事实，缺少经历细节时会先询问。</div>
             <label class="fld-l">篇幅</label>
             <div class="chips" id="resume-length">
               <span class="chip on" data-v="一页">一页（推荐）</span>
@@ -434,9 +429,10 @@ export function mountLayout(root: HTMLElement): void {
               <div>
                 <label class="fld-l" style="margin-top:0;">Provider</label>
                 <select class="inp" id="provider-kind">
-                  <option value="openai">OpenAI</option>
+                  <option value="openai">OpenAI Chat Completions</option>
+                  <option value="openai_responses">OpenAI Responses</option>
                   <option value="anthropic">Anthropic</option>
-                  <option value="openai_compatible" selected>OpenAI-compatible</option>
+                  <option value="openai_compatible" selected>OpenAI-compatible · Chat Completions</option>
                 </select>
               </div>
             </div>
@@ -451,13 +447,14 @@ export function mountLayout(root: HTMLElement): void {
             <div class="model-row">
               <label class="fld-l" style="margin:0;">model</label>
               <div class="model-ctl">
-                <select class="inp mono model-sel" id="model">
-                  <option value="">— 点击右侧按钮获取模型列表，或手动输入 —</option>
-                </select>
-                <input class="inp mono model-custom" id="model-custom" style="display:none;" placeholder="手动输入模型名…">
+                <div class="settings-model-picker" id="settings-model-picker">
+                  <input class="inp mono" id="model" placeholder="输入模型名，或点击右侧箭头选择" autocomplete="off" role="combobox" aria-label="模型名" aria-controls="model-options" aria-expanded="false" aria-autocomplete="none">
+                  <button type="button" id="model-toggle" class="model-toggle" aria-label="展开模型列表" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-options">▾</button>
+                  <div id="model-options" class="model-options" role="listbox" aria-label="模型列表" hidden></div>
+                </div>
                 <button class="btn btn-sm" id="btn-fetch-models">⟳ 获取模型列表</button>
               </div>
-              <div class="model-hint" id="model-hint">获取失败时可切换为手动输入</div>
+              <div class="model-hint" id="model-hint">框内可直接输入；右侧箭头展开已获取的模型列表</div>
             </div>
             <div class="cta-row">
               <button class="btn" id="btn-save-provider">💾 保存配置</button>
@@ -470,17 +467,21 @@ export function mountLayout(root: HTMLElement): void {
             </div>
             <div class="probe-grid">
               <div>
-                <label class="fld-l" style="margin:0;">生成质量</label>
+                <label class="fld-l" style="margin:0;">推理深度</label>
                 <select class="inp" id="reasoning-level">
                   <option value="auto">自动（跟随模型默认）</option>
-                  <option value="fast">快速（浅推理）</option>
-                  <option value="balanced">平衡（推荐）</option>
-                  <option value="deep">深入（重推理）</option>
+                  <option value="none">关闭 · none</option>
+                  <option value="minimal">最少 · minimal</option>
+                  <option value="low">低 · low</option>
+                  <option value="medium">中 · medium</option>
+                  <option value="high">高 · high</option>
+                  <option value="xhigh">超高 · xhigh</option>
+                  <option value="max">最高 · max</option>
                 </select>
               </div>
               <div id="probe-status" class="probe-status">未检测</div>
             </div>
-            <div class="sec-note">输入或切换卡片时已自动持久化到本地数据库；点「保存配置」可立即落盘确认。任务开始前检查模型能力，不兼容时明确报错，不静默降级。tool_calling 默认开启、vision 按模型静态表自动判定，标签可点击手动覆盖。生成质量档位仅在模型支持时生效，不支持时自动省略对应参数。「检测模型能力」会向当前 Provider 发送少量测试请求，可能产生极少量 token 费用。</div>
+            <div class="sec-note">配置自动保存。能力标签跟随检测结果，也可点击手动覆盖。强制工具调用仅在当前推理深度下检测通过后启用，否则自动选择工具。推理深度按协议提供选项，具体可用档位取决于模型；自动不发送推理参数。Anthropic 当前以思考预算控制低/中/高。「检测模型能力」会发送少量测试请求，可能产生少量费用。</div>
           </div>
           <div class="card">
             <div class="card-title">📂 输出目录</div>

@@ -18,6 +18,103 @@ vi.mock("./ui", async (importOriginal) => ({
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("controller event ownership", () => {
+  it.each(["light", "balanced", "strong"])("sends resume writing style %s as a structured option", (style) => {
+    let start!: () => void;
+    const button = { dataset: { start: "resume" }, addEventListener: (_event: string, fn: () => void) => { start = fn; } };
+    const node = { value: "", textContent: "", dataset: {}, addEventListener: vi.fn() };
+    vi.stubGlobal("document", {
+      addEventListener: vi.fn(),
+      getElementById: () => node,
+      querySelectorAll: (selector: string) => selector === "[data-start]" ? [button] : [],
+      querySelector: (selector: string) => selector === "#resume-writing-style .chip.on"
+        ? { dataset: { v: style } }
+        : selector === "#output-dir" ? { value: "E:/test" } : node,
+    });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    const send = vi.fn(async (_message: Record<string, unknown>) => {});
+    createTaskController(send, {
+      validateSettings: () => "", capabilityEffective: () => true,
+      saveFields: vi.fn(), taskProvider: () => ({}),
+    } as any);
+    start();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "start_task", payload: expect.objectContaining({ skill_id: "resume_pro", writing_style: style }),
+    }));
+  });
+
+  it("updates capability badges from the probe and keeps manual toggles available", async () => {
+    const fields = new Map<string, any>();
+    const field = (id: string) => {
+      if (!fields.has(id)) fields.set(id, {
+        value: "", hidden: true, style: {}, dataset: {}, options: [],
+        classList: { toggle: vi.fn(), remove: vi.fn() },
+        addEventListener: vi.fn(),
+      });
+      return fields.get(id);
+    };
+    vi.stubGlobal("document", { addEventListener: vi.fn(), querySelector: (s: string) => field(s.slice(1)), getElementById: field });
+    vi.stubGlobal("window", {});
+    vi.spyOn(settings, "initDb").mockResolvedValue();
+    const provider = settings._defaultProvider({ model: "unknown", reasoning_level: "balanced", vision_override: false, tool_calling_override: true });
+    field("reasoning-level").options = ["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"].map(value => ({ value }));
+    vi.spyOn(settings, "listProviders").mockResolvedValue([provider]);
+    vi.spyOn(settings, "loadGlobalSettings").mockResolvedValue({ ...settings.DEFAULT_GLOBAL_SETTINGS, active_provider: provider.id });
+    const saved = vi.spyOn(settings, "saveProvider").mockResolvedValue();
+    const controller = createProviderController(vi.fn(async () => {}));
+    await controller.loadSettings();
+    expect(field("reasoning-level").value).toBe("medium");
+    const report = settings.emptyProbeReport();
+    report.vision.status = "verified";
+    report.tool_calling.status = "unsupported";
+    controller.handleEvent({ id: "probe-capabilities", event: { type: "capabilities_probed", report } });
+    expect(controller.capabilityEffective("vision")).toBe(true);
+    expect(controller.capabilityEffective("tool_calling")).toBe(false);
+    expect(field("cap-vision").classList.toggle).toHaveBeenLastCalledWith("cap-dim", false);
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ vision_override: null, tool_calling_override: null }));
+    field("provider-kind").value = "anthropic";
+    field("reasoning-level").value = "xhigh";
+    const onKindChange = field("provider-kind").addEventListener.mock.calls.find(([event]: string[]) => event === "change")[1];
+    onKindChange();
+    expect(field("reasoning-level").value).toBe("auto");
+    expect(field("reasoning-level").options.filter((o: any) => !o.disabled).map((o: any) => o.value))
+      .toEqual(["auto", "none", "low", "medium", "high"]);
+  });
+
+  it("edits the model directly and opens its list only with the arrow", () => {
+    const fields = new Map<string, any>();
+    const field = (selector: string) => {
+      if (!fields.has(selector)) fields.set(selector, {
+        value: "", hidden: true, style: {}, dataset: {}, innerHTML: "", textContent: "",
+        focus: vi.fn(), handlers: {} as Record<string, (event?: any) => void>,
+        addEventListener(event: string, handler: (event?: any) => void) { this.handlers[event] = handler; },
+      });
+      return fields.get(selector);
+    };
+    vi.stubGlobal("document", { addEventListener: vi.fn(), querySelector: field, getElementById: () => null });
+    vi.stubGlobal("window", {});
+    const saved = vi.spyOn(settings, "saveProvider").mockResolvedValue();
+    field("#provider-kind").value = "openai_responses";
+    field("#reasoning-level").value = "auto";
+    const controller = createProviderController(vi.fn(async () => {}));
+    field("#model").value = "manual-model";
+    field("#model").handlers.input();
+    field("#model").handlers.click();
+    expect(field("#model-options").hidden).toBe(true);
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ model: "manual-model", kind: "openai_responses" }));
+    controller.handleEvent({ id: "models-fetch", event: { type: "models_fetched", models: ["listed-model"] } });
+    expect(field("#model").value).toBe("manual-model");
+    field("#model-toggle").handlers.click();
+    expect(field("#model-options").hidden).toBe(false);
+    expect(field("#model-options").innerHTML).toContain("listed-model");
+    field("#model-options").handlers.click({ target: { closest: () => ({ dataset: { modelChoice: "listed-model" } }) } });
+    expect(field("#model").value).toBe("listed-model");
+    expect(field("#model-options").hidden).toBe(true);
+    field("#model").value = "";
+    field("#model").handlers.input();
+    controller.handleEvent({ id: "models-fetch", event: { type: "models_fetched", models: ["listed-model"] } });
+    expect(field("#model").value).toBe("");
+  });
+
   it.each([["resume", "test"], ["resume", ""], ["docx", "test"], ["ppt", "test"]])("sends structured template selection only for resume (%s, role=%s)", (tool, role) => {
     let start!: () => void;
     const button = { dataset: { start: tool }, addEventListener: (_event: string, callback: () => void) => { start = callback; } };
