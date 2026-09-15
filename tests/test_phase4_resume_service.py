@@ -1,7 +1,7 @@
 """阶段 4 强制测试：简历领域 Service（模板预处理 + 生成 + 受限修复）。
 
 覆盖计划 §阶段4 验收：
-- 5 套模板 hash 校验与字段/组件/容量索引
+- 已开放组件模板的 hash 校验与字段/组件/容量索引
 - 未知模板 / 未索引字段明确报错
 - 生成成功路径（产物存在 + QA mechanical=passed + 无溢出）
 - 溢出失败路径（FILL_OVERFLOW，不注册 artifact）
@@ -30,7 +30,7 @@ from skill_toolbox.materials import MaterialService
 from skill_toolbox.tools.resume import ResumeService
 
 TEMPLATES = Path("backend/skill_toolbox/skill_defs/resume_pro/templates")
-TEMPLATE_IDS = ["t001", "t002", "t026", "t046", "t109"]
+TEMPLATE_IDS = ["t001", "t109"]
 
 
 @pytest.fixture
@@ -76,10 +76,11 @@ def test_prepare_returns_index_and_capacity(template_id: str, service: ResumeSer
     assert data["target_actions"] == ["resume_generate", "resume_repair"]
 
 
-def test_prepare_unknown_template(service: ResumeService) -> None:
+@pytest.mark.parametrize("template_id", ["t002", "t026", "t046", "t999"])
+def test_prepare_unsupported_template(template_id: str, service: ResumeService) -> None:
     with pytest.raises(ToolError) as exc:
-        service.prepare("t999")
-    assert exc.value.code == "TEMPLATE_UNKNOWN"
+        service.prepare(template_id)
+    assert exc.value.code == "TEMPLATE_UNSUPPORTED"
 
 
 def test_prepare_rejects_tampered_template_hash(workspace: Path, tmp_path: Path) -> None:

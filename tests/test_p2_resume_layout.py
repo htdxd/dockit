@@ -368,8 +368,12 @@ def test_e2e_archive_reproduces_original_anchor_positions(tmp_path: Path) -> Non
         for i, lines in enumerate(sec.entry_lines):
             eid = f"{sid}-{i + 1}"
             entries.append({"id": eid})
-            ms[eid] = _m(eid, lines)
-        sections.append({"id": sid, "title": sid, "entries": entries})
+            # 回放原件几何时也使用该栏实测首行偏移；全栏套用默认 3.85pt
+            # 会把各栏的小差异累积为约 1pt，不能用于验证原件 anchor。
+            ms[eid] = layout.MeasureResult(eid, lines, lines * 18.0,
+                text_top_offset_pt=sec.text_ink_top_pt - sec.frame_top_pt - sec.body_wsp_off_y_pt)
+        sections.append({"id": sid, "title": sid, "entries": entries,
+                         "body_offset_pt": sec.body_wsp_off_y_pt})
     plan = layout.plan_layout(sections, ms, spacing=arch)
     assert plan.pages == 1
     for s in plan.sections:
