@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 
@@ -72,7 +72,7 @@ impl BackendState {
             return Ok(());
         }
         startup_trace("backend_spawn_start", &Value::Null);
-        let (program, args, working_dir, python_path) = backend_command()?;
+        let (program, args, working_dir, python_path) = backend_command(app)?;
         let mut command = Command::new(program);
         command
             .args(args)
@@ -80,7 +80,25 @@ impl BackendState {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("PYTHONUNBUFFERED", "1");
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW；保留通信管道。
+        }
+        if !cfg!(debug_assertions) {
+            let resources = app.path().resource_dir().map_err(|e| e.to_string())?.join("runtime");
+            command.env("PYTHONHOME", resources.join("python"))
+                .env("PYTHONNOUSERSITE", "1")
+                .env_remove("__PYVENV_LAUNCHER__");
+            let mut paths = vec![resources.join("tools"), resources.join("poppler/bin")];
+            if let Some(existing) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&existing));
+            }
+            command.env("PATH", std::env::join_paths(paths).map_err(|e| e.to_string())?);
+        }
         if let Some(path) = python_path {
             command.env("PYTHONPATH", path);
         }
@@ -150,11 +168,22 @@ impl BackendState {
     }
 }
 
-fn backend_command() -> Result<(PathBuf, Vec<String>, PathBuf, Option<PathBuf>), String> {
+fn backend_command(app: &AppHandle) -> Result<(PathBuf, Vec<String>, PathBuf, Option<PathBuf>), String> {
     if let Some(explicit) = std::env::var_os("SKILL_TOOLBOX_SIDECAR") {
         let path = PathBuf::from(explicit);
         let working_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         return Ok((path, Vec::new(), working_dir, None));
+    }
+    if !cfg!(debug_assertions) {
+        let resources = app.path().resource_dir().map_err(|e| e.to_string())?.join("runtime");
+        let python = resources.join("python/python.exe");
+        if !python.is_file() {
+            return Err("应用内置 Python 运行环境缺失，请重新安装 DocKit。".into());
+        }
+        let working_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&working_dir).map_err(|e| e.to_string())?;
+        return Ok((python, vec!["-m".into(), "skill_toolbox.sidecar".into()],
+                   working_dir, Some(resources.join("backend"))));
     }
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

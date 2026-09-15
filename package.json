@@ -7,7 +7,8 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc && vite build",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "package": "uv run scripts/package_desktop.py && tauri build --config src-tauri/tauri.bundle.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.10.0",

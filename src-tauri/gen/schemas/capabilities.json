@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default desktop permissions for Skill Toolbox","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","opener:allow-open-path","sql:default"]}}
+{"default":{"identifier":"default","description":"Default desktop permissions for Skill Toolbox","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open",{"identifier":"opener:allow-open-path","allow":[{"app":null,"path":"**"}]},"sql:default","sql:allow-execute"]}}

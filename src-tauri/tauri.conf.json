@@ -25,7 +25,11 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": { "installMode": "currentUser", "languages": ["SimpChinese", "English"] }
+    }
   }
 }
-
