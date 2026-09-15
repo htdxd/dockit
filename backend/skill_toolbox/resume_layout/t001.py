@@ -132,6 +132,19 @@ def fit_header(template: Path, fields: dict, work_dir: Path, *, header: dict | N
                 )
             results[str(ident)] = {"width_pt": round(shape.Width, 2),
                                    "height_pt": round(shape.Height, 2), "overflow": False}
+        if components and (header or {}).get("photo_bytes"):
+            import pymupdf
+            from skill_toolbox.resume_layout.header import rendered_field_bounds
+
+            pdf_path = work_dir / "header_host.pdf"
+            doc.ExportAsFixedFormat(str(pdf_path.resolve()), 17)
+            with pymupdf.open(pdf_path) as pdf:
+                text_bottom = max(b[3] for b in rendered_field_bounds(pdf[0], components))
+            photo = anchor_by_id(root, 5)
+            top = int(photo.find(emit.WP + "positionV/" + emit.WP + "posOffset").text) / emit.EMU
+            original_height = emit.emu2pt(photo.find(emit.WP + "extent").get("cy"))
+            # 信息少时不让原件大照片撑高首屏；至少保留一英寸高的容纳框。
+            results["photo_height_pt"] = round(min(original_height, max(72.0, text_bottom - top)), 2)
         return results
     finally:
         if doc is not None:
@@ -195,7 +208,8 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
             data = next(e for e in content["entries"] if e["id"] == entry.instance_id)
             typography.scale_title(anchor, float(content.get("scale") or 1),
                                     body=wsp, template_id="t001")
-            emit.set_box_text(wsp, data["text"], first_is_header=data.get("has_heading"))
+            emit.set_box_text(wsp, data["text"], first_is_header=data.get("has_heading"),
+                              header_lines=data.get("heading_lines"), tech_stack_line=data.get("tech_stack_line"))
             metrics = typography.apply_body(wsp, data, content, "t001", numbering)
             anchor.find(emit.WP + "extent").set("cx", str(emit.pt2emu(metrics["body_width_pt"])))
             wsp.find(emit.WPS + "spPr/" + emit.A + "xfrm/" + emit.A + "ext").set(
@@ -223,7 +237,8 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
         drawing = photo.getparent()
         drawing.getparent().remove(drawing)
     elif header.get("photo_bytes"):
-        info = emit.replace_photo(photo, header["photo_bytes"])
+        info = emit.replace_photo(photo, header["photo_bytes"],
+                                  frame_cy_pt=(header.get("fit") or {}).get("photo_height_pt"))
         extent = photo.find(emit.WP + "extent")
         extent.set("cx", str(emit.pt2emu(info["width_pt"])))
         extent.set("cy", str(emit.pt2emu(info["height_pt"])))

@@ -58,3 +58,73 @@ def test_hidden_field_wins_over_custom_override_and_all_rows_can_be_removed(temp
     assert result == {}
     assert not "".join(t.text or "" for box in boxes for t in box.iter(emit.W + "t"))
     assert all(box.find(".//" + emit.W + "txbxContent/" + emit.W + "p") is not None for box in boxes)
+
+
+@pytest.mark.parametrize("shift,wrapped", [(0, False), (3, False), (3, True)])
+def test_render_alignment_rejects_shifted_values_and_continuations(tmp_path, shift, wrapped):
+    import pymupdf
+    from skill_toolbox.resume_layout.header import check_rendered_alignment
+    path = tmp_path / "header.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((40, 40), "Name:")
+        page.insert_text((120, 40), "Alice")
+        page.insert_text((40, 60), "Role:")
+        page.insert_text((120 + (0 if wrapped else shift), 60), "Engineer")
+        if wrapped:
+            page.insert_text((120 + shift, 80), "Developer")
+        pdf.save(path)
+    records = {"name": {"label": "Name", "after": "Alice", "column": 0},
+               "role": {"label": "Role", "after": "Engineer" + ("Developer" if wrapped else ""), "column": 0}}
+    issues = check_rendered_alignment(path, records)
+    assert bool(issues) == bool(shift)
+    assert all(issue.severity == "error" for issue in issues)
+
+
+def test_body_start_follows_text_and_respects_photo_decoration(tmp_path):
+    import pymupdf
+    from skill_toolbox.resume_layout.header import body_start_from_render
+    starts = []
+    for y, photo in [(60, False), (100, False), (60, True)]:
+        path = tmp_path / f"{y}-{photo}.pdf"
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((40, y), "Name: Alice")
+            if photo:
+                page.draw_rect((300, 40, 370, 150), fill=(1, 1, 1))
+            pdf.save(path)
+        starts.append(body_start_from_render(path, {"name": {"label": "Name", "after": "Alice"}}, 200))
+    assert starts[1] - starts[0] == pytest.approx(40)
+    assert starts[2] == pytest.approx(158.5)
+    assert max(starts) < 200
+
+
+def test_t109_photo_tracks_header_without_crossing_top_band():
+    from skill_toolbox.resume_layout.t109 import photo_top_for_header
+    short = photo_top_for_header(140, 110, 36, 9, 9)
+    tall = photo_top_for_header(185, 110, 36, 9, 9)
+    assert short - 9 == 44  # 色带以下 8pt，包括装饰外沿。
+    assert tall + 110 + 9 == 185
+    assert tall > short
+
+
+@pytest.mark.parametrize("size", [(206, 210), (200, 300), (300, 200)])
+def test_t001_compact_photo_keeps_aspect_and_updates_outer_bounds(tmp_path, size):
+    import io
+    from PIL import Image
+    from skill_toolbox.resume_layout.layout import LayoutPlan
+
+    image = io.BytesIO()
+    Image.new("RGB", size).save(image, format="PNG")
+    output = tmp_path / "photo.docx"
+    result = t001.emit_scenario({"sections": [], "header": {
+        "photo_bytes": image.getvalue(), "fit": {"photo_height_pt": 72.0}}},
+        LayoutPlan(1, [], 243.7, 815.0), output,
+        template=TEMPLATES / "t001" / "template.docx")
+    photo = t001.anchor_by_id(emit.load_document_xml(output), 5)
+    extent = photo.find(emit.WP + "extent")
+    width, height = [emit.emu2pt(extent.get(key)) for key in ("cx", "cy")]
+    assert height <= 72.01
+    assert width / height == pytest.approx(size[0] / size[1], abs=0.001)
+    assert result["header"]["photo"]["height_pt"] == pytest.approx(height, abs=0.01)
+    assert photo.find(".//" + emit.A + "srcRect") is None

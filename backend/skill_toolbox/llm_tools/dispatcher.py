@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from pydantic import ValidationError
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
 import json
@@ -246,9 +247,12 @@ def dispatch_with_media(
     """
     if "_invalid_json" in arguments:
         truncated = arguments.get("_finish_reason") == "length"
+        detail = arguments.get("_json_error") or {}
+        location = (f" JSON 解析位置 {detail['position']}：{detail.get('message', '')}。"
+                    if "position" in detail else "")
         return error_text(ToolError(
             "MODEL_OUTPUT_TRUNCATED" if truncated else "TOOL_JSON_INVALID",
-            "模型工具参数因输出长度限制被截断。" if truncated else "模型返回了不完整或非法的 JSON 工具参数。",
+            ("模型工具参数因输出长度限制被截断。" if truncated else "模型返回了不完整或非法的 JSON 工具参数。") + location,
             retryable=True,
             suggestion="完整重发这次工具调用；保持 JSON 完整，必要时减少单次内容或拆分编辑操作。",
         )), [], {}
@@ -269,6 +273,15 @@ def dispatch_with_media(
         result = handler(arguments)
     except ToolError as exc:
         return error_text(exc), [], {}
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['msg']} [{item['type']}]"
+            for item in exc.errors(include_input=False, include_context=False, include_url=False))
+        return error_text(ToolError(
+            "TOOL_ARGUMENTS_INVALID", details, retryable=True,
+            suggestion=("修正指出的字段。编辑时先发送单条原生 changes 数组，并带上最新 candidate_id；不要原样重发错误参数。"
+                        if name == "resume_edit" else "修正指出的字段，按工具 schema 提供参数。"),
+        )), [], {}
     except (KeyError, TypeError, ValueError) as exc:
         return (
             error_text(
@@ -287,8 +300,15 @@ def dispatch_with_media(
         "preview_refs": list(result.preview_refs),
         "ok": result.ok and result.status != "failed",
     }
+    workflow_result = services.resume_workflow is not None and name in {
+        "resume_prepare", "resume_generate", "resume_edit", "resume_preview", "resume_accept"}
+    if workflow_result:
+        from skill_toolbox.tools.resume_workflow import compact_agent_result
+        result = compact_agent_result(name, result)
     if result.ok:
-        return operation_text(result), list(result.images), meta
+        text = (json.dumps(result.as_dict(), ensure_ascii=False, separators=(",", ":"))
+                if workflow_result else operation_text(result))
+        return text, list(result.images), meta
     issue = result.issues[0] if result.issues else {}
     suggestion = issue.get("suggestion")
     error = ToolError(

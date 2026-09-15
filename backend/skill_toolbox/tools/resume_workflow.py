@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
@@ -12,8 +13,37 @@ from skill_toolbox.contracts.resume import (
 )
 from skill_toolbox.contracts.resume_workflow import Content, Entry, Section
 from skill_toolbox.tools.workspace import atomic_write_json
+from skill_toolbox.resume_content import canonical_entry
+from skill_toolbox.resume_facts import ResumeFacts
 
-SUPPORTED_TEMPLATES = frozenset({"t001", "t109"})
+from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES
+
+
+def compact_agent_result(name, result):
+    """模型只接收当前语义状态；完整版本记录仍由编辑服务保存。"""
+    data = result.data
+    if name == "resume_prepare":
+        data = {**data, "materials": [{**doc, "blocks": [
+            {key: value for key, value in block.items()
+             if key in {"id", "type", "text", "level", "page", "caption", "asset_ids", "source_id"}}
+            for block in doc["blocks"]]} for doc in data.get("materials", [])]}
+    elif data.get("candidate_id"):
+        keep = {"candidate_id", "content", "density", "target_pages", "fits_page_target", "page_count",
+                "layout", "largest_entries", "page_fit", "docx", "pdf", "remaining_pages",
+                "idempotent_replay", "accepted_revision", "visual", "content_review"}
+        if name == "resume_accept":
+            keep -= {"content", "layout", "largest_entries", "page_fit"}
+        data = {key: value for key, value in data.items() if key in keep}
+
+    def omit_empty(value):
+        if isinstance(value, dict):
+            return {key: omit_empty(item) for key, item in value.items()
+                    if item is not None and item != ""}
+        if isinstance(value, list):
+            return [omit_empty(item) for item in value]
+        return value
+
+    return replace(result, data=omit_empty(data))
 
 
 def _request_id(operation, payload):
@@ -27,6 +57,7 @@ class ResumeWorkflow:
         self.materials = materials
         self.template_id = template_id
         self.material_ids = None
+        self.facts = ResumeFacts(engine.workspace)
 
     def prepare(self, request):
         ids = request.material_ids
@@ -37,12 +68,20 @@ class ResumeWorkflow:
             ir = self.materials.catalog.ir_for(material_id)
             if ir is None:
                 raise ToolError("MATERIAL_UNKNOWN_ID", f"未知材料 {material_id}")
+            blocks = []
+            for index, block in enumerate(ir.blocks, 1):
+                source_id = f"m{material_id[:8]}-b{index}"
+                self.facts.add(source_id, block.text or "", kind="material", material_id=material_id,
+                               block_id=block.id, page=block.page)
+                blocks.append({**block.model_dump(), "source_id": source_id})
             documents.append({
                 "material_id": material_id, "name": ir.original_name,
-                "blocks": [b.model_dump() for b in ir.blocks],
+                "supplementary_views": ["native_text"] if ir.source_format == "pdf" else [],
+                "blocks": blocks,
                 "assets": self.materials.material_summary(material_id).data["assets"],
             })
         self.material_ids = ids
+        self.facts.save()
         capabilities = self.engine.prepare(self.template_id).data
         geometry = self.engine.profile.geometry
         body_height = geometry.page_bottom_pt - geometry.page_top_pt
@@ -51,16 +90,20 @@ class ResumeWorkflow:
             "template_id": self.template_id,
             "person_fields": capabilities["header_fields"],
             "materials": documents,
+            "conversation_sources": [{"source_id": key, "kind": value.get("kind")} for key, value in self.facts.sources.items()
+                                     if value.get("kind") != "material"],
+            "writing_focus": self.facts.writing_focus(),
             "page_budget": {
                 "body_height_pt": round(body_height, 1),
                 "continuation_body_height_pt": round(geometry.page_bottom_pt - (
                     geometry.page_top_pt if continuation_top is None else continuation_top), 1),
                 "line_height_pt": 18,
+                "default_body_font_size_pt": 10.0 if self.template_id == "t001" else 10.5,
                 "max_lines_before_titles_and_gaps": int(body_height / 18),
                 "note": "这是模板默认字号下、未扣除标题和间距的容量上限，实际以测量为准。"
                         "经历丰富且未限定一页时可保留内容分为两三页；只有获准摘要时才精简。",
             },
-        }, next_action="按原材料整理内容；需要识别照片时 read_material(asset_id)。随后 resume_generate。")
+        }, next_action="materials.blocks 已含所选材料全文，不必重复 read_material(view='blocks')。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。只有 PDF 疑似漏标题/指标上下文才补看 native_text，有照片才读取照片资产。")
 
     def _photo(self, asset_id):
         if not asset_id:
@@ -82,6 +125,8 @@ class ResumeWorkflow:
         head = {"date": entry.date, "org": entry.organization, "role": entry.role}
         return {
             "id": entry.id or entry_id,
+            "source_ids": entry.source_ids,
+            "tech_stack": entry.tech_stack,
             "head": head if any(head.values()) else {},
             "bullets": entry.text if prototype == "experience_v1" else [],
             "lines": entry.text if prototype == "plain_lines_v1" else [],
@@ -91,6 +136,12 @@ class ResumeWorkflow:
 
     @classmethod
     def _section(cls, section):
+        # 纯文字栏目的重复栏目名不是经历标题，避免把它渲染成第二个标题。
+        if section.key in {"skills", "summary"}:
+            section = section.model_copy(update={"entries": [
+                entry.model_copy(update={"organization": ""})
+                if entry.organization == section.title and not entry.date and not entry.role else entry
+                for entry in section.entries]})
         has_head = any(e.date or e.organization or e.role for e in section.entries)
         prototype = "experience_v1" if has_head else "plain_lines_v1"
         return {
@@ -122,7 +173,10 @@ class ResumeWorkflow:
                     if entry["font_size_pt"] is None:
                         entry["font_size_pt"] = request.font_size_pt
         self._check_ids(sections)
+        self.facts.validate_refs(sections)
+        self._check_typography(sections)
         internal = ResumeContentV2(
+            density=request.density,
             template_id=self.template_id, sections=sections,
             header=ResumeHeaderV2(fields=fields, custom_fields=custom, hidden_fields=hidden,
                                  **self._photo(content.photo_asset_id)),
@@ -136,6 +190,17 @@ class ResumeWorkflow:
                                    or not self._target_path(result.artifact_id).is_file()):
             self._save_target(result.artifact_id, request.target_pages)
         return self._result(result)
+
+    def _check_typography(self, sections):
+        from skill_toolbox.resume_layout.typography import factors
+
+        for section in sections:
+            for entry in section["entries"]:
+                try:
+                    factors(entry, section, self.template_id)
+                except ValueError as exc:
+                    raise ToolError("TYPOGRAPHY_BOUNDS", str(exc), retryable=True,
+                                    suggestion="字号还会乘以条目和栏目缩放；提高字号或恢复缩放，不能让最终正文小于8pt。") from None
 
     @staticmethod
     def _check_ids(sections):
@@ -183,16 +248,17 @@ class ResumeWorkflow:
                 id=e["id"], date=(e.get("head") or {}).get("date", ""),
                 organization=(e.get("head") or {}).get("org", ""),
                 role=(e.get("head") or {}).get("role", ""),
-                text=e.get("bullets") or e.get("lines") or [],
+                text=e.get("bullets") or e.get("lines") or [], tech_stack=e.get("tech_stack", ""),
                 font_size_pt=e.get("font_size_pt"), scale=e.get("scale"),
-            ) for e in s["entries"]]) for s in content["sections"]],
+                source_ids=e.get("source_ids", []),
+            ) for e in (canonical_entry(s, raw) for raw in s["entries"])]) for s in content["sections"]],
         )
 
     def edit(self, request):
         import copy
 
         artifact_id, revision, record = self._candidate(request.candidate_id)
-        if not request.changes:
+        if not request.changes and request.density is None:
             if revision != self.engine.store.index(artifact_id)["current"]:
                 raise ToolError("STALE_CANDIDATE", "请使用最新 candidate_id 修改页数上限。")
             result = self.engine.preview(ResumePreviewRequest(artifact_id=artifact_id, revision=revision))
@@ -298,16 +364,20 @@ class ResumeWorkflow:
                                      section_key=change.section_id, title=getattr(change, "title", ""))
             working, _ = self.engine._apply_changes(working, [action])
             actions.append(action)
-            for section in list(working["sections"]):
-                if not section["entries"]:
-                    removal = ResumeEditV2(op="remove_section", section_key=section["key"])
-                    working, _ = self.engine._apply_changes(working, [removal])
-                    actions.append(removal)
+        # 整批结束再移除空栏；同批“删旧条目→插入新条目”仍可引用该栏目。
+        for section in list(working["sections"]):
+            if not section["entries"]:
+                removal = ResumeEditV2(op="remove_section", section_key=section["key"])
+                working, _ = self.engine._apply_changes(working, [removal])
+                actions.append(removal)
         self._external(working)  # 在渲染前拒绝空条目/空简历，不能生成后才发现遗漏。
         self._check_ids(working["sections"])
+        self.facts.validate_refs(working["sections"])
+        self._check_typography(working["sections"])
         header["hidden_fields"] = sorted(hidden)
         header["custom_fields"] = list(custom.values())
         result = self.engine.repair(ResumeRepairV2Request(
+            density=request.density,
             artifact_id=artifact_id, base_revision=revision, changes=actions,
             header=ResumeHeaderV2(**header) if header_changed else None,
             request_id=_request_id("edit", request.model_dump()),
@@ -371,6 +441,10 @@ class ResumeWorkflow:
         if not result.artifact_id or result.revision is None:
             return result
         record = self.engine.store.load_revision(result.artifact_id, result.revision)
+        review = self.facts.review(record["content"])
+        atomic_write_json(self.engine.store.artifact_dir(result.artifact_id) / "revisions" /
+                          str(result.revision) / "content_review.json", review)
+        result.data["content_review"] = {key: value for key, value in review.items() if key != "entries"}
         target = self._target(result.artifact_id)
         fits = record["page_count"] <= target
         rows = [{"target_id": e["instance_id"], "section_id": s["section_key"],
@@ -379,21 +453,40 @@ class ResumeWorkflow:
                 for s in record.get("instance_model", []) for e in s["entries"]]
         result.data.update({
             "candidate_id": f"{result.artifact_id}@{result.revision}",
+            "density": record["content"].get("density", "normal"),
             "content": self._external(record["content"]).model_dump(),
             "target_pages": target, "fits_page_target": fits,
             "page_count": record["page_count"], "layout": rows,
             "largest_entries": sorted(rows, key=lambda r: r["height_pt"], reverse=True)[:3],
             "docx": record["docx"], "pdf": record["pdf"],
+            "page_fit": {
+                **(record.get("single_page_fit") or {}),
+                "entries_beyond_target": [row for row in rows if row["page"] > target],
+                "first_page_unused_pt": round(max(0, self.engine.profile.geometry.page_bottom_pt - max(
+                    (e["region"]["y_pt"] + e["region"]["h_pt"]
+                     for s in record.get("instance_model", []) for e in s["entries"]
+                     if e["page_index"] == 0), default=self.engine.profile.geometry.page_top_pt)), 1),
+            },
         })
         if changes is not None:
             result.data["applied_changes"] = changes
-        if not fits:
+        if not result.ok:
+            result.next_action = "先按 issues 修复内容或机械检查问题，再处理页数；不要删除未授权内容来绕过检查。使用当前 candidate_id 局部修复。"
+        elif not fits:
             result.ok = False
             result.status = "failed"
             result.issues.append({"code": "PAGE_TARGET_EXCEEDED", "message": f"实际 {record['page_count']} 页，目标最多 {target} 页。"})
-            result.next_action = "使用 candidate_id 调用 resume_edit 调整内容或字号；经历较多可提高 target_pages，禁止直接交付超页候选。"
-        elif not result.ok:
-            result.next_action = "根据 issues 用 candidate_id 调用 resume_edit；不可接受失败候选。"
+            result.next_action = ("先用 resume_edit(candidate_id=当前候选, density='compact') 压缩纵向留白，不要重新生成或用等比缩放压页。"
+                                  if record["content"].get("density", "normal") == "normal" else
+                                  "已使用紧凑排版，根据 page_fit 的超页条目和首页余量一次批量精简表达；若必须保留全部文字则说明页数限制，不能原样重试。")
+            result.next_action += " 不得擅自提高用户页数或删除未授权内容。"
+            fit = record.get("single_page_fit") or {}
+            if target == 1 and fit.get("required_reduction_pt"):
+                result.next_action = (
+                    f"当前整页还需节省约 {fit['required_reduction_pt']}pt"
+                    f"（约 {fit['approx_lines_to_save']} 行正文高度）。"
+                    "请一次批量调整到这个量级；只减少字数但未减少实际换行，不会释放高度。 "
+                    + result.next_action)
         else:
             result.next_action = "自行完成全部页面视觉检查；需修改时用 resume_edit，合格后调用 resume_accept，无需询问用户是否满意，再使用接受结果的 DOCX/PDF 路径 finish_task。"
         return result

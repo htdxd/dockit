@@ -80,16 +80,80 @@ def generate(workflow, **overrides):
     return workflow.generate(GenerateRequest(content=content))
 
 
+def test_fact_references_survive_partial_edit_and_unknown_ref_fails_before_render(workflow):
+    workflow.facts.add("request", "课程项目，完成功能测试")
+    workflow.facts.save()
+    result = generate(workflow, sections=[{"key": "projects", "title": "项目经历", "entries": [
+        {"id": "p1", "text": ["完成功能测试"], "source_ids": ["request"]}]}])
+    edited = workflow.edit(EditRequest(candidate_id=result.data["candidate_id"], changes=[
+        {"op": "update_entry", "target_id": "projects#p1", "entry": {"text": ["设计测试用例并完成功能测试"]}}]))
+    assert edited.data["content"]["sections"][0]["entries"][0]["source_ids"] == ["request"]
+    assert edited.data["content_review"]["semantic_review"] == "agent_required"
+    renders = workflow.engine.test_render_count
+    with pytest.raises(ToolError, match="来源 ID"):
+        workflow.edit(EditRequest(candidate_id=edited.data["candidate_id"], changes=[
+            {"op": "update_entry", "target_id": "projects#p1", "entry": {"source_ids": ["bogus"]}}]))
+    assert workflow.engine.test_render_count == renders
+
+
+def test_plain_section_repeated_heading_is_normalized(workflow):
+    result = generate(workflow, sections=[{"key": "skills", "title": "技能", "entries": [
+        {"organization": "技能", "text": ["Python、SQL"]}]}])
+    entry = result.data["content"]["sections"][0]["entries"][0]
+    assert entry["organization"] == "" and entry["text"] == ["Python、SQL"]
+
+
+def test_replace_last_entry_in_one_batch_keeps_section_available(workflow):
+    result = generate(workflow)
+    edited = workflow.edit(EditRequest(candidate_id=result.data["candidate_id"], changes=[
+        {"op": "remove_entry", "target_id": "skills#skill-1"},
+        {"op": "insert_entry", "section_id": "skills", "entry": {"text": ["Git"]}},
+    ]))
+    assert edited.ok
+    skills = next(s for s in edited.data["content"]["sections"] if s["key"] == "skills")
+    assert len(skills["entries"]) == 1 and skills["entries"][0]["text"] == ["Git"]
+
+
 def test_prepare_returns_whole_source_and_no_photo_hides_template_sample(workflow):
     prepared = workflow.prepare(PrepareRequest()).data
     ir = next(iter(workflow.materials.catalog.irs.values()))
-    assert prepared["materials"][0]["blocks"] == [b.model_dump() for b in ir.blocks]
+    blocks = prepared["materials"][0]["blocks"]
+    assert [{k: v for k, v in block.items() if k != "source_id"} for block in blocks] == [b.model_dump() for b in ir.blocks]
+    assert all(workflow.facts.sources[b["source_id"]]["text"] == b["text"] for b in blocks)
     assert prepared["template_id"] == workflow.template_id
     result = generate(workflow)
     record = workflow.engine.store.load_revision(result.artifact_id, result.revision)
     assert record["content"]["header"]["hide_photo"] is True
     assert record["content"]["header"]["photo_path"] == ""
     assert record["content"]["header"]["fields"]["email"] == ""
+
+
+def test_scaled_font_rejected_before_word_and_without_revision_change(workflow):
+    with pytest.raises(ToolError, match="8pt") as exc:
+        generate(workflow, sections=[{"key": "skills", "title": "技能", "scale": 0.9,
+                                     "entries": [{"text": ["Python"], "font_size_pt": 8}]}])
+    assert exc.value.code == "TYPOGRAPHY_BOUNDS"
+    assert workflow.engine.test_render_count == 0
+    first = generate(workflow)
+    with pytest.raises(ToolError, match="8pt"):
+        workflow.edit(EditRequest(candidate_id=first.data["candidate_id"], changes=[
+            {"op": "format", "scope": "all", "font_size_pt": 8, "scale": 0.9}]))
+    assert workflow.engine.test_render_count == 1
+    assert workflow.engine.store.index(first.artifact_id)["current"] == first.revision
+
+
+def test_density_edit_keeps_content_and_expands_uniformly_scaled_width(workflow):
+    first = generate(workflow)
+    scaled = workflow.edit(EditRequest(candidate_id=first.data["candidate_id"], changes=[
+        {"op": "format", "scope": "all", "font_size_pt": 10, "scale": 0.9}]))
+    compact = workflow.edit(EditRequest(candidate_id=scaled.data["candidate_id"], density="compact"))
+    assert compact.data["density"] == "compact"
+    for old, new in zip(first.data["content"]["sections"], compact.data["content"]["sections"]):
+        assert new["scale"] == 1
+        for before, after in zip(old["entries"], new["entries"]):
+            assert after["text"] == before["text"] and after["organization"] == before["organization"]
+            assert after["font_size_pt"] == 9 and after["scale"] == 1
+    assert compact.data["content"]["person"] == first.data["content"]["person"]
 
 
 def test_move_section_preserves_all_entry_content(workflow):
@@ -177,6 +241,21 @@ def test_page_target_blocks_accept_even_with_passing_mechanical_qa(workflow):
         workflow.accept(AcceptRequest(candidate_id=candidate.data["candidate_id"], visual_notes="两页均检查"))
     assert error.value.code == "PAGE_TARGET_EXCEEDED"
     assert workflow.engine.store.index(candidate.artifact_id)["accepted"] == 0
+
+
+def test_page_failure_leads_with_measured_reduction_budget(workflow):
+    workflow.engine.test_pages = 2
+    candidate = generate(workflow)
+    path = workflow.engine.store.revision_dir(candidate.artifact_id, candidate.revision) / "revision.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["single_page_fit"] = {"required_reduction_pt": 81.0, "approx_lines_to_save": 6,
+                                 "reference_line_pitch_pt": 13.5}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    result = workflow._result(OperationResult(ok=True, artifact_id=candidate.artifact_id,
+                                             revision=candidate.revision))
+    assert result.next_action.startswith("当前整页还需节省约 81.0pt（约 6 行正文高度）")
+    assert not result.ok
+    assert result.data["page_fit"]["required_reduction_pt"] == 81.0
 
 
 @pytest.mark.parametrize("style_patch", [{}, {"font_size_pt": None, "scale": None}])

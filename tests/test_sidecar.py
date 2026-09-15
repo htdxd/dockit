@@ -38,6 +38,7 @@ async def test_sidecar_passes_structured_resume_template(
             "provider": {"kind": "mock", "model": "mock"},
             "skill_id": "resume_pro",
             "template_id": template_id,
+            "writing_style": "strong",
             "user_prompt": "简历模板：t109",
             "output_dir": str(tmp_path),
         },
@@ -45,6 +46,7 @@ async def test_sidecar_passes_structured_resume_template(
     await service.wait_all()
     assert len(captured) == 1
     assert captured[0].template_id == expected
+    assert captured[0].writing_style == "strong"
     assert captured[0].user_prompt == "简历模板：t109"
 
 

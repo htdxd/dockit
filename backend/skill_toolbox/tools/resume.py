@@ -296,6 +296,9 @@ class ResumeService:
 
     # ---------------- helpers ----------------
     def _template_dir(self, template_id: str) -> Path:
+        from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES
+        if template_id not in SUPPORTED_TEMPLATES:
+            raise ToolError("TEMPLATE_UNSUPPORTED", "仅开放已组件化模板：t001、t109。")
         tpl = (self.templates_root / template_id).resolve()
         try:
             tpl.relative_to(self.templates_root.resolve())

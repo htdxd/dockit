@@ -16,11 +16,17 @@ _DESCRIPTIONS = {
     "resume_prepare": "开始简历制作：读取选定材料并查看当前模板支持的栏目与个人信息字段。"
         "material_ids 省略时使用当前任务材料；请根据返回的材料与能力组织内容。",
     "resume_generate": "将准备好的个人信息与栏目条目生成简历候选并返回渲染图。"
+        "项目名称 organization 和性质 role 同行，tech_stack 单独在下一行，text 是后续职责和成果。"
+        "一页且细节较多时先用 density=compact；不要用缩窄组件的等比缩放压页。"
+        "请求顶层为 {content:{person:{…},sections:[…]},target_pages:1}，sections 不能放在 content 外。"
         "应先 resume_prepare；target_pages 是允许的最大页数，不强制填满页面。"
         "font_size_pt 是缩放前的正文字号；条目可单独指定字号和 scale，栏目 scale 含标题图标但不改个人信息或照片。"
         "缩放后字号不得小于 8pt 且组件须放得下页面，不能保证所有组件都能放大到 1.25。"
         "条目 id 可省略；照片必须使用材料中的 asset_id。失败时按错误提示修改内容。",
     "resume_edit": "基于最新 candidate_id 批量编辑内容并返回新候选及渲染图。"
+        "超页时可先只传 candidate_id 和 density=compact，保持正文宽度和等效字号、压缩纵向留白，不删文字。"
+        "每次都必须带 candidate_id；changes 必须是原生数组，不能是 JSON 字符串。"
+        '最小示例：{"candidate_id":"resume-example@1","changes":[{"op":"format","scope":"all","font_size_pt":10}]}。示例 ID 需替换为实际返回值。'
         "target_id/section_id/before_id/after_id 使用准备或候选结果给出的真实实例 ID。"
         "update_entry 仅更新显式提供的字段，text=[] 清空正文；插入时省略 after_id 表示追加。"
         "移动条目或栏目必须指定 before_id 或 after_id 之一。"
@@ -50,7 +56,11 @@ def _inline_refs(schema: dict) -> dict:
             definition = definitions[value["$ref"].removeprefix("#/$defs/")]
             value = {**definition, **{key: item for key, item in value.items() if key != "$ref"}}
         # discriminator 的 mapping 仍指向 $defs；oneOf 中的 op.const 足以判别。
-        return {key: expand(item) for key, item in value.items() if key not in {"$defs", "discriminator"}}
+        return {
+            key: ({name: expand(prop) for name, prop in item.items()}
+                  if key == "properties" else expand(item))
+            for key, item in value.items() if key not in {"$defs", "discriminator", "title"}
+        }
 
     return expand(schema)
 

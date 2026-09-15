@@ -43,6 +43,32 @@ def test_material_blocks_are_paginated_without_truncating_text(material):
     assert svc.read_material(ir.material_id, view="assets").data["assets"][0]["id"] == ir.assets[0].id
 
 
+def test_pdf_native_text_is_optional_paginated_and_keeps_empty_pages(material):
+    import pymupdf
+    from skill_toolbox.materials import material_id_dir
+
+    workspace, catalog, ir = material
+    ir.source_format = "pdf"
+    source = workspace / "sources" / material_id_dir(workspace, ir.material_id).name / "original.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((30, 40), "FLUX.1 inference acceleration 93%")
+        pdf.new_page()
+        pdf.save(source)
+    svc = MaterialPlanService(workspace, catalog, "resume")
+    assert svc.material_summary(ir.material_id).data["supplementary_views"] == ["native_text"]
+    text, images, meta = dispatch_with_media("read_material", {
+        "source_id": ir.material_id, "view": "native_text", "limit": 1,
+    }, DomainServices(materials=svc))
+    data = json.loads(text)["data"]
+    assert meta["ok"] and not images
+    assert "FLUX.1 inference acceleration 93%" in data["pages"][0]["text"]
+    assert data["pages"][0]["page"] == 1 and data["next_offset"] == 1
+    second = svc.read_material(ir.material_id, view="native_text", offset=1, limit=1).data
+    assert second["pages"] == [{"page": 2, "text": ""}]
+    assert not second["has_more"]
+
+
 def test_individual_block_keeps_character_slice_semantics(material):
     workspace, catalog, ir = material
     svc = MaterialPlanService(workspace, catalog, "resume")

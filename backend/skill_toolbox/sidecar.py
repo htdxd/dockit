@@ -110,6 +110,8 @@ def request_models(kind: str, base_url: str, api_key: str) -> tuple[list[str], s
             "Accept": "application/json",
         }
     else:
+        if not base and kind in {"openai", "openai_responses"}:
+            base = "https://api.openai.com/v1"
         if not base:
             return [], "base_url 为空"
         endpoint = f"{base}/models"
@@ -283,6 +285,8 @@ class SidecarService:
         )
         request = TaskRequest(
             skill_id=skill.id,
+            output_format=payload.get("output_format"),
+            writing_style=payload.get("writing_style") or "balanced",
             user_prompt=str(payload.get("user_prompt", "")),
             template_id=(
                 payload["template_id"].strip()
@@ -511,6 +515,8 @@ class SidecarService:
                 continue
             safe_detail = _redact(detail)[:200] if detail else None
             result = ProbeResult(status=status, checked_at=now, detail=safe_detail)
+            if capability == "forced_tool_calling":
+                result.reasoning_level = config.reasoning_level
             # Reasoning Control 探测的 detail 槽位承载验证成功的 control 类型
             # （effort/budget/adaptive）；只接受白名单值，其它一律不写入 control，
             # 避免任意 detail 文本污染 Literal 字段导致校验失败丢消息。

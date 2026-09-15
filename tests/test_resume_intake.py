@@ -70,11 +70,13 @@ async def test_resume_intake_prepare_questions_answers_use_same_runtime(tmp_path
         skill_id="resume_pro", template_id="t001", user_prompt=prompt,
         output_dir=tmp_path / "out", materials=materials,
         capabilities={"vision": True, "tool_calling": True}, tool_mode="domain",
+        writing_style="strong",
     )), timeout=15)
     assert result.status == "failed" and "测试在收集回答后停止" in result.error
     assert len(provider.calls) == 3
     system_prompt = provider.calls[0][0]
     assert "两种问答入口" in system_prompt
+    assert "本次写作档位：深度改写" in system_prompt
     assert "ask_user_questions" in system_prompt
     assert "用户明确指定" in system_prompt and "直接执行" in system_prompt
     assert "籍贯不等于现居住址" in system_prompt
@@ -92,6 +94,6 @@ async def test_resume_intake_prepare_questions_answers_use_same_runtime(tmp_path
         assert prepared["materials"] == []
     answered = next(result for message in provider.calls[2][1] for result in message.tool_results
                     if result.name == "ask_user_questions")
-    assert answered.success and json.loads(answered.content) == answers
+    assert answered.success and json.loads(answered.content) == {"answers": answers, "source_id": "answer-1"}
     assert [event["questions"] for event in events if event["type"] == "questions_requested"] == [questions]
     assert any(event["type"] == "questions_answered" and event["answer_ids"] == list(answers) for event in events)

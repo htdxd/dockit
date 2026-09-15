@@ -1,8 +1,9 @@
 """面向 Agent 的简历工作流契约；模板与版本细节由后端管理。"""
 
+import json
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 FontSize = Annotated[float, Field(ge=8, le=18)]
 ComponentScale = Annotated[float, Field(ge=0.75, le=1.25)]
@@ -20,9 +21,18 @@ class EntryPatch(WorkflowModel):
     """只修改显式提供的字段；空 text 可用于清空原正文。"""
 
     date: str = Field(default="", description="原材料中的起止日期，不编造日期；与机构、角色分开填写")
-    organization: str = Field(default="", description="学校、公司或项目名称；只填名称，不拼接日期、角色或制表符标题")
+    organization: str = Field(default="", description="学校、公司或项目名称；不拼接日期或角色。技能/自评等纯文字条目只填 text，不把栏目标题填在这里")
     role: str = Field(default="", description="专业、岗位或项目性质（如公司项目、个人项目）；作为标题信息，不混入正文")
     text: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list, description="可选：本条经历的事实来源 ID，复制 prepare 的 source_id 或问答返回值；只改表达时省略以保留原引用，不填写文件路径")
+    tech_stack: str = Field(default="", description="项目技术栈，单独排在项目名称/性质下方；用逗号分隔，不放入 role")
+
+    @field_validator("tech_stack", mode="before")
+    @classmethod
+    def technology_text(cls, value):
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return "、".join(value)
+        return value
     font_size_pt: FontSize | None = Field(default=None, description="缩放前的正文字号（pt）；省略或 null 保留模板或已有字号")
     scale: ComponentScale | None = Field(default=None, description="条目整体缩放比例；1 为原大小，绝对设置不累乘；省略或 null 保留；最终字号不得小于 8pt 且须放得下页面")
 
@@ -34,7 +44,7 @@ class Entry(EntryPatch):
 
     @model_validator(mode="after")
     def require_content(self):
-        if not any(value.strip() for value in (self.date, self.organization, self.role, *self.text)):
+        if not any(value.strip() for value in (self.date, self.organization, self.role, self.tech_stack, *self.text)):
             raise ValueError("条目必须包含标题信息或正文")
         return self
 
@@ -60,7 +70,8 @@ class Content(WorkflowModel):
 
 
 class GenerateRequest(WorkflowModel):
-    content: Content
+    density: Literal["normal", "compact"] = Field(default="normal", description="一页且内容较多时选 compact：保持正文宽度，压缩纵向间距；不删文字。normal 保留原间距。")
+    content: Content = Field(description="简历内容对象；sections、person 等必须放在 content 内，不放在请求顶层")
     target_pages: int = Field(default=1, ge=1, le=3, description="允许的最大页数；不会为了达到此值填满页面")
     font_size_pt: FontSize | None = Field(default=None, description="所有未单独指定字号条目的缩放前正文字号（pt）")
 
@@ -173,14 +184,32 @@ Change = Annotated[
 
 
 class EditRequest(WorkflowModel):
-    candidate_id: str
-    changes: list[Change] = Field(default_factory=list)
+    density: Literal["normal", "compact"] | None = Field(default=None, description="可单独设 compact 压页：将已有等比缩放折算为等效字号并恢复完整宽度，压缩纵向留白；正文和照片不变。")
+    candidate_id: str = Field(description="每次调用必填：原样复制最近工具结果的 candidate_id，不能因前次已传而省略")
+    changes: list[Change] = Field(default_factory=list, description="原生 JSON 数组，数组元素是动作对象；不要把数组编码成字符串或放入代码块")
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def decode_changes_array(cls, value):
+        if not isinstance(value, str):
+            return value
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"changes 字符串不是完整 JSON：位置 {exc.pos}（第 {exc.lineno} 行第 {exc.colno} 列），"
+                f"{exc.msg}。请重发原生 changes 数组；长批次拆为每次一个动作，"
+                "沿用实际 candidate_id 和 target_id，不要原样重试错误字符串。"
+            ) from exc
+        if not isinstance(decoded, list):
+            raise ValueError("changes 必须是动作数组；JSON 字符串解码后也必须是数组。")
+        return decoded
     target_pages: int | None = Field(default=None, ge=1, le=3, description="修改允许的最大页数；可单独使用，不强制填满页面")
 
     @model_validator(mode="after")
     def require_edit(self):
-        if not self.changes and self.target_pages is None:
-            raise ValueError("至少提供 changes 或 target_pages")
+        if not self.changes and self.target_pages is None and self.density is None:
+            raise ValueError("至少提供 changes、density 或 target_pages")
         return self
 
 

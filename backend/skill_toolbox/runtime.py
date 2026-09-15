@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,6 +133,8 @@ class TaskRequest:
     output_dir: Path
     materials: list[Path] = field(default_factory=list)
     template_id: str | None = field(default=None, kw_only=True)
+    output_format: str | None = field(default=None, kw_only=True)
+    writing_style: Literal["light", "balanced", "strong"] = field(default="balanced", kw_only=True)
     # Resolved model capabilities (e.g. {"vision": True}) injected as a banner
     # at the top of the skill's system prompt so prompt-level routing can
     # depend on them without guessing.
@@ -194,12 +197,17 @@ class AgentRuntime:
             self.emit({"type": "task_failed", "error": FEATURE_RETIRED_MESSAGE})
             return TaskResult(status="failed", error=FEATURE_RETIRED_MESSAGE)
         skill = load_skill(request.skill_id)
+        if skill.id == "resume_pro" and request.template_id and request.template_id not in SUPPORTED_TEMPLATES:
+            return self._failed("仅开放已组件化模板：t001、t109。请重新选择模板。")
         self.skill_id = skill.id  # _publish 用它给产物文件名打来源标记
         request.output_dir.mkdir(parents=True, exist_ok=True)
         system_prompt = skill.system_prompt
         workflow_mode = _resume_workflow_enabled(skill, request)
         if workflow_mode:
             system_prompt = (skill.dir / "workflow.md").read_text(encoding="utf-8")
+        if skill.id == "resume_pro":
+            from skill_toolbox.resume_facts import WRITING_STYLES
+            system_prompt += "\n\n本次写作档位：" + WRITING_STYLES[request.writing_style]
         if request.capabilities:
             banner = "[CAPABILITIES]\n" + "\n".join(
                 f"{name}: {str(value).lower()}"
@@ -211,9 +219,14 @@ class AgentRuntime:
             "phase": "task_start",
             "skill_id": skill.id,
             "user_prompt": request.user_prompt,
+            "writing_style": request.writing_style if skill.id == "resume_pro" else None,
             "output_dir": str(request.output_dir),
             "materials": [str(p) for p in request.materials],
             "capabilities": request.capabilities,
+            "provider": type(self.provider).__name__,
+            "model": getattr(self.provider, "model", None),
+            "max_tokens": getattr(self.provider, "max_tokens", None),
+            "reasoning_level": getattr(self.provider, "reasoning_level", None),
         })
         with tempfile.TemporaryDirectory(prefix="skill-toolbox-") as temp:
             workspace = Path(temp)
@@ -311,22 +324,39 @@ class AgentRuntime:
                     "[MATERIALS] 中的共享 IR 为准；仅在声明脚本明确要求 source 时使用"
                     f"这些原始路径，不要再次 ingest：\n{files_list}"
                 )
-            materials_banner = self._materials_banner(catalog, domain_mode=domain_mode)
+            materials_banner = self._materials_banner(catalog, domain_mode=domain_mode, workflow=workflow_mode)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
             messages.append(ConversationMessage(role="user", text=user_text))
             text_only_turns = 0
             for step in range(1, skill.max_steps + 1):
                 self.emit({"type": "model_started", "step": step})
+                model_started = time.monotonic()
+                model_messages = messages
+                if workflow_mode:
+                    from skill_toolbox.resume_context import current_resume_context
+                    model_messages = current_resume_context(messages)
                 try:
                     turn = await asyncio.wait_for(
-                        self.provider.complete(system_prompt, messages, tool_specs),
+                        self.provider.complete(system_prompt, model_messages, tool_specs),
                         timeout=self.model_timeout_seconds,
                     )
                 except TimeoutError:
                     return self._failed(
                         f"LLM request timed out after {self.model_timeout_seconds:g} seconds"
                     )
+                except Exception as exc:
+                    causes = []
+                    cause = exc
+                    for _ in range(6):
+                        if cause is None:
+                            break
+                        causes.append({"type": type(cause).__name__, "errno": getattr(cause, "errno", None)})
+                        cause = cause.__cause__ or cause.__context__
+                    self.debug({"phase": "model_error", "step": step,
+                                "error": redact_secrets(str(exc))[:400], "causes": causes,
+                                "elapsed_seconds": round(time.monotonic() - model_started, 3)})
+                    raise
                 self.emit(
                     {
                         "type": "model_finished",
@@ -350,7 +380,8 @@ class AgentRuntime:
                 })
                 messages.append(
                     ConversationMessage(
-                        role="assistant", text=turn.text, tool_calls=turn.tool_calls
+                        role="assistant", text=turn.text, tool_calls=turn.tool_calls,
+                        provider_items=turn.provider_items,
                     )
                 )
                 if turn.text:
@@ -361,14 +392,23 @@ class AgentRuntime:
                 if not turn.tool_calls:
                     text_only_turns += 1
                     if text_only_turns >= 2:
+                        if turn.response_metadata.get("finish_reason") == "length":
+                            return self._failed(
+                                "模型在生成工具调用前耗尽了输出预算，重试后仍被截断。"
+                                "请降低推理深度（建议中或高）后重试；强制工具调用无法突破输出上限。"
+                            )
                         return self._failed(
-                            "Model produced two consecutive turns with no tool calls."
+                            "模型连续两轮未返回工具调用。请确认当前供应商和模型支持工具调用。"
                         )
                     messages.append(
                         ConversationMessage(
                             role="user",
                             text=(
-                                "你上一轮没有调用任何工具，任务无法推进。"
+                                (
+                                    "上一轮达到输出 token 上限，未产生工具调用。请缩短推理，先执行一个最小必要步骤。"
+                                    if turn.response_metadata.get("finish_reason") == "length"
+                                    else "你上一轮没有调用任何工具，任务无法推进。"
+                                ) +
                                 "如果最终产物已经生成并验证完毕，请立即调用 "
                                 "finish_task 交付（只传产物相对路径）；否则请调用 "
                                 + (
@@ -438,7 +478,14 @@ class AgentRuntime:
                             )
                         if workflow_mode:
                             domain_services.resume_workflow.verify_delivery(finish.arguments["artifacts"])
-                        published = self._publish(finish, policy, request.output_dir)
+                        delivery = finish
+                        if workflow_mode and request.output_format in {"DOCX", "PDF"}:
+                            selected = [p for p in finish.arguments["artifacts"]
+                                        if Path(p).suffix.lower() == "." + request.output_format.lower()]
+                            if not selected:
+                                raise ValueError(f"请交付用户选择的 {request.output_format} 文件。")
+                            delivery = finish.model_copy(update={"arguments": {**finish.arguments, "artifacts": selected}})
+                        published = self._publish(delivery, policy, request.output_dir)
                         self._emit_qa_status(qa)
                     except (OSError, TypeError, ValueError) as exc:
                         # 机械门/QA 未过：不发 task_completed，把失败原因回给
@@ -661,6 +708,9 @@ class AgentRuntime:
                 questions = call.arguments.get("questions", [])
                 self.emit({"type": "questions_requested", "questions": questions})
                 answers = await self.input_broker.wait()
+                if domain_services is not None and domain_services.resume_workflow is not None:
+                    source_id = domain_services.resume_workflow.facts.answer(questions, answers)
+                    answers = {"answers": answers, "source_id": source_id}
                 self.emit(
                     {
                         "type": "questions_answered",
@@ -720,6 +770,17 @@ class AgentRuntime:
                 "success": result.success,
             }
         )
+        summary = {}
+        if call.name in _DOMAIN_TOOL_NAMES:
+            try:
+                payload = json.loads(result.content)
+                data = payload.get("data", {})
+                summary = {"error_code": payload.get("code"),
+                           "candidate_id": data.get("candidate_id"),
+                           "page_count": data.get("page_count"),
+                           "fits_page_target": data.get("fits_page_target")}
+            except (ValueError, AttributeError):
+                pass
         self.debug({
             "phase": "tool_result",
             "tool_call_id": call.id,
@@ -727,6 +788,7 @@ class AgentRuntime:
             "success": result.success,
             "content": _truncate(result.content, MAX_LOG_RESULT_CHARS),
             "image_count": len(result.images),
+            "summary": summary,
         })
         return result
 
@@ -1097,7 +1159,7 @@ class AgentRuntime:
             staged.append((f"sources/{bucket}/{src.name}", src))
         return staged
 
-    def _materials_banner(self, catalog: MaterialCatalog, *, domain_mode: bool = False) -> str:
+    def _materials_banner(self, catalog: MaterialCatalog, *, domain_mode: bool = False, workflow: bool = False) -> str:
         """生成 [MATERIALS] 横幅：只读预处理结果短摘要，不执行 ingest。
 
         阶段 3 起横幅不再自动萃取（实施计划 §12.1）。所有支持格式均列出
@@ -1125,7 +1187,9 @@ class AgentRuntime:
                 f"{len(ir.assets)} 资源）→ {document_rel}，"
                 f"顺序阅读 {content_rel}{prepared}"
             )
-            if domain_mode:
+            if workflow:
+                lines.append(f"  material_id={material_id}；先 resume_prepare 获取全文及来源 ID，无需另行读正文。")
+            elif domain_mode:
                 lines.append(
                     f"  整篇读取：read_material(source_id=\"{material_id}\", "
                     'view="blocks")；返回真实 block/asset ID，可按需继续读取。'
@@ -1206,6 +1270,9 @@ def _build_domain_services(
         resume_v2 = None
     workflow = (ResumeWorkflow(resume_v2, materials, request.template_id)
                 if _resume_workflow_enabled(skill, request) else None)
+    if workflow is not None:
+        workflow.facts.add("request", request.user_prompt, kind="request")
+        workflow.facts.save()
     docx = DocxService(
         workspace,
         skill_dir / "scripts",

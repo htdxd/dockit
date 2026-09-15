@@ -51,7 +51,7 @@ def shared_tools() -> list[dict]:
             "单独读取图片 asset 时有 Vision 返回实际图片，无 Vision 仅返回元数据。不接受任意路径。",
             {
                 "source_id": {"type": "string", "description": "材料 material_id，或 IR block/asset 的真实 ID"},
-                "view": {"type": "string", "enum": ["summary", "blocks", "assets"], "description": "读取视图（默认 summary）"},
+                "view": {"type": "string", "enum": ["summary", "blocks", "assets", "native_text"], "description": "默认 summary；PDF 可选 native_text 机械读取原生文字层补查漏字，offset/limit 按页计数。"},
                 "offset": {"type": "integer", "minimum": 0, "description": "材料ID：块/资源列表偏移；单block ID：字符偏移"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "材料ID：块/资源数量；单block ID：字符数（默认200）"},
             },

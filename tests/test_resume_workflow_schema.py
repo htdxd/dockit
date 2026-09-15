@@ -79,3 +79,46 @@ def test_typography_bounds_and_page_only_edit():
     ]:
         with pytest.raises(ValidationError):
             EditRequest.model_validate({"candidate_id": "a@1", "changes": [change]})
+
+
+def test_edit_requires_candidate_and_accepts_unambiguous_encoded_array():
+    change = {"op": "format", "scope": "all", "font_size_pt": 10}
+    with pytest.raises(ValidationError):
+        EditRequest.model_validate({"changes": [change]})
+    native = EditRequest.model_validate({"candidate_id": "a@1", "changes": [change]})
+    encoded = EditRequest.model_validate({"candidate_id": "a@1", "changes": json.dumps([change])})
+    assert native == encoded
+
+
+def test_encoded_changes_reports_exact_bad_json_position_without_repair():
+    value = '[{"op":"update_entry","target_id":"a","entry":{"text":["正文"]]}}]'
+    with pytest.raises(json.JSONDecodeError) as parsing:
+        json.loads(value)
+    with pytest.raises(ValidationError) as invalid:
+        EditRequest.model_validate({"candidate_id": "a@1", "changes": value})
+    message = str(invalid.value)
+    assert f"位置 {parsing.value.pos}" in message
+    assert "每次一个动作" in message
+
+
+@pytest.mark.parametrize("value", [
+    '{"op":"remove_entry","target_id":"a"}',
+    '"[]"',
+    '[{"op":"update_entry","target_id":"a","entry":{"text":[["正文"]]}}]',
+    '[{"op":"remove_entry","target_id":"a","unknown":"不能忽略"}]',
+])
+def test_encoded_changes_still_require_full_contract_validation(value):
+    with pytest.raises(ValidationError):
+        EditRequest.model_validate({"candidate_id": "a@1", "changes": value})
+
+
+def test_schema_metadata_titles_removed_but_section_title_field_preserved():
+    tools = {tool["name"]: tool["input_schema"] for tool in workflow_tools()}
+    schema = tools["resume_generate"]
+    sections = schema["properties"]["content"]["properties"]["sections"]
+    assert "title" not in schema
+    assert sections["type"] == "array"
+    section = sections["items"]
+    assert "title" in section["required"]
+    assert section["properties"]["title"]["type"] == "string"
+    assert "title" not in section["properties"]["title"]

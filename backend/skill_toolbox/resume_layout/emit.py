@@ -194,6 +194,8 @@ def set_box_text(
     style_roles: dict[str, list[dict]] | None = None,
     style_snaps: list[dict] | None = None,
     first_is_header: bool | None = None,
+    header_lines: int | None = None,
+    tech_stack_line: int | None = None,
 ) -> None:
     """整框替换文本，**按段落角色复用源样式**（P2-1）。
 
@@ -215,6 +217,9 @@ def set_box_text(
             raise RuntimeError("角色样式桶为空（空原型？）")
 
         def snap_for(i: int, line: str) -> dict:
+            if header_lines is not None:
+                duty_index = i - header_lines - int(tech_stack_line is not None and i > tech_stack_line)
+                return head[0] if i < header_lines else duty[min(duty_index, len(duty) - 1)]
             if i == 0 and (first_is_header if first_is_header is not None else looks_like_entry_header(line)):
                 return head[min(0, len(head) - 1)]
             return duty[min(max(i - 1, 0), len(duty) - 1)]
@@ -249,6 +254,13 @@ def set_box_text(
             if snap["pPr"] is not None:
                 p.append(copy.deepcopy(snap["pPr"]))
             prev_p.addnext(p)
+        if i == tech_stack_line:
+            props = p.find(W + "pPr")
+            if props is not None:
+                for tag in ("numPr", "ind"):
+                    child = props.find(W + tag)
+                    if child is not None:
+                        props.remove(child)
         r = etree.SubElement(p, W + "r")
         if snap["rPr"] is not None:
             r.append(copy.deepcopy(snap["rPr"]))

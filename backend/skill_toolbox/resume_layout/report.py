@@ -261,12 +261,13 @@ def extract_rendered_entries(
             if s2 == sec_id and p2 == page:
                 next_head = h2
                 break
-        from skill_toolbox.resume_layout.typography import factors
+        from skill_toolbox.resume_layout.typography import factors, line_pitch
         source_section = next(s for s in scenario["sections"] if s["id"] == sec_id)
         source_entry = next(e for e in source_section["entries"] if e["id"] == eid)
         font_factor, _ = factors(source_entry, source_section, template_id)
+        expected_pitch = line_pitch(source_entry, source_section, template_id)
         band = locate_entry_band(pw, head, tail, next_head,
-                                  continuation_pt=18.0 * font_factor + 0.6)
+                                  continuation_pt=expected_pitch + 0.6)
         if band.get("error"):
             out.append({"entry_id": eid, "error": band["error"]})
             continue
@@ -298,7 +299,7 @@ def extract_rendered_entries(
         # COM text_height = lines × 18.0（行框口径）；渲染侧行框口径换算：
         # ink 跨度 + (行框余量) —— 单行行框高实测 18.0，ink 高 13.8，
         # 余量 4.2；行框跨度 = ink跨度 + 4.2（首行顶到末行底的单侧余量）
-        INK_TO_LINEBOX_PAD = 4.2 * font_factor
+        INK_TO_LINEBOX_PAD = expected_pitch - 13.8 * font_factor
         occupied = (last_bottom - y0) + INK_TO_LINEBOX_PAD
         # 实测渲染行距（lines>1 时）：末行顶-首行顶 / (lines-1)。
         # 不假设 18pt——行距异常（如 21pt）通过 pitch 进入失败门。
@@ -341,7 +342,8 @@ def extract_rendered_entries(
                 if source_key(source_section) in ("education", "work"):
                     head_size = 10.5
             paragraphs = source_entry["text"].split("\n")
-            duty_top = locate_line_top(pw, paragraphs[1]) if len(paragraphs) > 1 else None
+            header_count = source_entry.get("heading_lines", 1)
+            duty_top = locate_line_top(pw, paragraphs[header_count]) if len(paragraphs) > header_count else None
             for span_info in text_spans:
                 is_head = source_entry.get("has_heading") and (
                     duty_top is None or span_info["bbox"][1] < duty_top - 0.5)
@@ -381,6 +383,10 @@ def qa_scenario(
             f"{field['label']}：{field['after']}" for field in header_components.values()
         ]
     issues: list[qa.QAIssue] = []
+
+    if header_components is not None:
+        from skill_toolbox.resume_layout.header import check_rendered_alignment
+        issues += check_rendered_alignment(pdf, header_components)
 
     # 1. 内容完整性（完整文本 + 顺序 + 重复，游标式）
     rendered_by_page: dict[int, str] = {}

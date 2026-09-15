@@ -6,6 +6,8 @@ import hashlib
 import json
 import subprocess
 import sys
+import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.tools.process import ProcessRunner
 from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
 from skill_toolbox.tools.resume_store import ResumeStore
+from skill_toolbox.resume_content import canonical_entry, is_project
 
 def _normalize_photo(path: Path) -> bytes:
     """把常见图片统一成 PNG；各模板写入对应部件并声明正确的媒体类型。"""
@@ -56,11 +59,14 @@ def _payload_hash(payload: object) -> str:
 class _GapOverride:
     """在档案之上叠加内容层显式声明的条目间距（未声明则回落档案/默认）。"""
 
-    def __init__(self, archive: object, overrides: dict[str, float]) -> None:
+    def __init__(self, archive: object, overrides: dict[str, float], section_delta: float | None = None) -> None:
         self._archive = archive
         self._overrides = overrides
+        self._section_delta = section_delta
 
     def delta_after(self, prev_id: str, next_id: str | None, default: float) -> float:
+        if self._section_delta is not None:
+            return self._section_delta
         return self._archive.delta_after(prev_id, next_id, default)  # type: ignore[attr-defined]
 
     def entry_gap_for(self, section_id: str, default: float) -> float:
@@ -259,6 +265,9 @@ class ResumeEditService:
 
     def generate(self, request: Any) -> OperationResult:
         content = request.content.model_dump()
+        if content.get("density") == "compact":
+            from skill_toolbox.resume_layout.typography import apply_density
+            apply_density(content, "compact", self.template_id)
         template_id = request.template_id or content.get("template_id", "")
         self._template_dir(template_id)
         content["template_id"] = template_id
@@ -294,8 +303,9 @@ class ResumeEditService:
 
     def repair(self, request: Any) -> OperationResult:
         header_change = getattr(request, "header", None)
-        if not request.changes and header_change is None:
-            raise ToolError("CONTENT_INVALID", "changes 或 header 不能为空")
+        density = getattr(request, "density", None)
+        if not request.changes and header_change is None and density is None:
+            raise ToolError("CONTENT_INVALID", "changes、density 或 header 不能为空")
         header_payload = header_change.model_dump(exclude_unset=True) if header_change is not None else None
         # 幂等签名用**请求本身**（base_revision + changes + layout_mode），与执行
         # 后的版本号无关——否则超时重试会因版本已推进而误报 VERSION_CONFLICT。
@@ -307,6 +317,7 @@ class ResumeEditService:
                 "base_revision": int(request.base_revision),
                 "changes": changes_payload,
                 **({"header": header_payload} if header_payload is not None else {}),
+                **({"density": density} if density is not None else {}),
                 "layout_mode": request.layout_mode,
             },
         )
@@ -332,6 +343,10 @@ class ResumeEditService:
             base = self.store.load_revision(request.artifact_id, int(request.base_revision))
             content = base["content"]
             new_content, records = self._apply_changes(content, request.changes)
+            if density is not None:
+                from skill_toolbox.resume_layout.typography import apply_density
+                apply_density(new_content, density, self.template_id)
+                records.append({"op": "set_density", "density": density})
             if header_payload is not None:
                 header = dict(new_content.get("header") or {})
                 new_content["header"] = header
@@ -682,6 +697,9 @@ class ResumeEditService:
             if s.get("entry_gap_pt") is not None
         }
         gap_source = _GapOverride(archive, overrides) if overrides else archive
+        if content.get("density") == "compact":
+            gaps = {s["key"]: 3.0 for s in content["sections"]}
+            gap_source = _GapOverride(archive, {**gaps, **overrides}, section_delta=8.0)
         # 几何约束按模式处理（P2-R2）：
         # - reflow：交给完整 flow 排版器（entry_adjust），后续条目/栏目/分页
         #   一起重排；
@@ -702,6 +720,17 @@ class ResumeEditService:
             plan = self._apply_local_geometry(plan, content, RL)
         else:
             self._validate_plan_geometry(plan, RL)
+        single_page_fit = None
+        if layout_mode == "reflow" and plan.pages > 1:
+            unpaged = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
+                                    min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT, entry_adjust=adjust,
+                                    geometry=replace(self.geometry, page_bottom_pt=1_000_000))
+            bottom = max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries)
+            reduction = max(0, bottom - self.geometry.page_bottom_pt)
+            pitch = min(row["line_pitch_pt"] for row in measurements["results"])
+            single_page_fit = {"required_reduction_pt": round(reduction, 1),
+                               "approx_lines_to_save": math.ceil(reduction / pitch),
+                               "reference_line_pitch_pt": pitch}
         docx = rev_dir / "resume.docx"
         emit_info = RG.emit_scenario(scenario, plan, docx,
                                      template=self._template_dir(self.template_id) / "template.docx", template_id=self.template_id)
@@ -711,6 +740,36 @@ class ResumeEditService:
         self._run_stage(
             [sys.executable, str(RENDER_SCRIPT), str(docx), str(render_dir)], "RENDER_FAILED"
         )
+        # 使用本版真实渲染边界收紧首屏，再复用测量结果重排；续页仍遵循模板母版。
+        from skill_toolbox.resume_layout.header import body_start_from_render
+        header_components = (emit_info.get("header") or {}).get("fields")
+        if header_components is None:
+            raise ValueError("HEADER_CONTRACT_MISSING: 模板必须返回个人信息组件")
+        body_top = body_start_from_render(render_dir / "resume.pdf", header_components,
+                                          self.geometry.page_top_pt)
+        if abs(body_top - self.geometry.page_top_pt) > 1:
+            dynamic_geometry = replace(self.geometry, page_top_pt=body_top,
+                                       continuation_page_top_pt=self.geometry.continuation_page_top_pt or self.geometry.page_top_pt)
+            plan = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
+                                  min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT,
+                                  entry_adjust=adjust, geometry=dynamic_geometry)
+            if layout_mode == "local":
+                plan = self._apply_local_geometry(plan, content, RL)
+            self._validate_plan_geometry(plan, RL)
+            emit_info = RG.emit_scenario(scenario, plan, docx,
+                template=self._template_dir(self.template_id) / "template.docx", template_id=self.template_id)
+            for stale in render_dir.glob("page-*.png"):
+                stale.unlink()
+            self._run_stage([sys.executable, str(RENDER_SCRIPT), str(docx), str(render_dir)], "RENDER_FAILED")
+            single_page_fit = None
+            if layout_mode == "reflow" and plan.pages > 1:
+                unpaged = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
+                    min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT, entry_adjust=adjust,
+                    geometry=replace(dynamic_geometry, page_bottom_pt=1_000_000))
+                reduction = max(0, max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries) - self.geometry.page_bottom_pt)
+                pitch = min(row["line_pitch_pt"] for row in measurements["results"])
+                single_page_fit = {"required_reduction_pt": round(reduction, 1),
+                    "approx_lines_to_save": math.ceil(reduction / pitch), "reference_line_pitch_pt": pitch}
         (rev_dir / "layout_plan.json").write_text(
             json.dumps(plan.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -721,11 +780,14 @@ class ResumeEditService:
         header_values = [
             info["after"] for info in (emit_info.get("header") or {}).get("fields", {}).values()
         ]
+        header_components = (emit_info.get("header") or {}).get("fields")
+        if header_components is None:
+            raise ValueError("HEADER_CONTRACT_MISSING: 组件模板必须返回 header.fields（含 column），供共享对齐验收；无字段时显式返回空字典。")
         qa_report = RR.qa_scenario(
             rev_dir, scenario, plan.to_dict(), measured_view, pdf_name="resume",
             header_values=header_values, template_id=self.template_id,
             template=self._template_dir(self.template_id) / "template.docx",
-            header_components=(emit_info.get("header") or {}).get("fields"),
+            header_components=header_components,
         )
         (rev_dir / "qa_report.json").write_text(
             json.dumps(qa_report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -740,6 +802,7 @@ class ResumeEditService:
             "changes": changes,
             "content": content,
             "content_hash": _payload_hash(content),
+            "single_page_fit": single_page_fit,
             "page_count": plan.pages,
             "mechanical": {
                 "passed": bool(qa_report.get("passed")),
@@ -908,15 +971,18 @@ class ResumeEditService:
             entries = [
                 {"id": e["id"], "text": self._entry_text(sec, e),
                  "has_heading": any(str(v or "").strip() for v in (e.get("head") or {}).values()),
+                 "heading_lines": len(self._entry_heading(sec, e).splitlines()),
+                 "tech_stack_line": len(self._entry_heading(sec, e).splitlines()) if e.get("tech_stack") else None,
                  **{key: e[key] for key in ("width_pt", "font_size_pt", "scale")
                     if e.get(key) is not None}}
-                for e in sec.get("entries", [])
+                for e in (canonical_entry(sec, raw) for raw in sec.get("entries", []))
             ]
             sections.append({
                 "id": sec["key"], "title": sec["title"],
                 "prototype": sec.get("prototype", "experience_v1"),
                 "entries": entries,
                 "scale": sec.get("scale") or 1.0,
+                "density": content.get("density", "normal"),
             })
         if self.template_id == "t001":
             from skill_toolbox.resume_layout.t001 import SECTIONS, source_key
@@ -953,15 +1019,38 @@ class ResumeEditService:
         return sum(2 if ord(ch) > 0x2E80 else 1 for ch in text)
 
     def _entry_text(self, section: dict[str, Any], entry: dict[str, Any]) -> str:
+        entry = canonical_entry(section, entry)
         bullets = [b for b in (entry.get("bullets") or []) if str(b).strip()]
         lines = [ln for ln in (entry.get("lines") or []) if str(ln).strip()]
-        if not entry.get("head"):
-            return "\n".join(lines or bullets)
-        head = {k: str(v or "").strip() for k, v in (entry.get("head") or {}).items()}
-        slots = [head.get(key, "") for key in self.profile.header_slot_order]
-        header = "\t".join(slot for slot in slots if slot)
+        header = self._entry_heading(section, entry)
         parts = [header] if header else []
+        if entry.get("tech_stack"):
+            stack = entry["tech_stack"]
+            parts.append(stack if stack.startswith(("技术栈：", "技术栈:")) else "技术栈：" + stack)
         return "\n".join(parts + (bullets or lines))
+
+    def _entry_heading(self, section, entry):
+        entry = canonical_entry(section, entry)
+        head = entry.get("head") or {}
+        order = ("org", "role", "date") if is_project(section) else self.profile.header_slot_order
+        slots = [str(head.get(key) or "").strip() for key in order]
+        slots = [slot for slot in slots if slot]
+        if not is_project(section):
+            return "\t".join(slots)
+        if len(slots) < 2:
+            return "".join(slots)
+        scale = float(section.get("scale") or 1) * float(entry.get("scale") or 1)
+        font = float(entry.get("font_size_pt") or (10 if self.template_id == "t001" else 10.5)) * scale
+        width = float(entry.get("width_pt") or self.profile.body_width_pt * scale) - 14.4 * scale
+        # 仅用保守估算选择单行/分段；换行数和高度仍由 Word 实测。
+        sizes = [self._display_width(slot) * font * 0.58 for slot in slots]
+        fits = sum(sizes) + 12 <= width
+        if len(sizes) == 3:
+            fits = fits and 2 * max(sizes[0], sizes[2]) + sizes[1] + 12 <= width
+        elif self.template_id == "t109":
+            fits = fits and sizes[0] < width * 0.58 and sizes[1] < width * 0.4
+        separator = "\t" if fits else (" ｜ " if is_project(section) else "\n")
+        return separator.join(slots)
 
     # ---------- 内部：编辑动作 ----------
 

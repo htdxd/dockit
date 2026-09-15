@@ -41,7 +41,8 @@ def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template
             typography.scale_title(anchor, float(sec.get("scale") or 1),
                                     body=body, template_id=template_id)
             emit.set_box_text(body, entry["text"], style_roles=roles,
-                              first_is_header=entry.get("has_heading"))
+                              first_is_header=entry.get("has_heading"), header_lines=entry.get("heading_lines"),
+                              tech_stack_line=entry.get("tech_stack_line"))
             numbering = typography.Numbering(template)
             metrics = typography.apply_body(body, entry, sec, template_id, numbering)
             if template_id == "t001":
@@ -219,9 +220,10 @@ def emit_scenario(
                                     body=body_wsp, template_id=template_id)
             has_heading = next(e.get("has_heading") for e in scen_sec["entries"]
                                if e["id"] == entry_plan.instance_id)
-            emit.set_box_text(body_wsp, entry_text, style_roles=style_roles,
-                              first_is_header=has_heading)
             entry_data = next(e for e in scen_sec["entries"] if e["id"] == entry_plan.instance_id)
+            emit.set_box_text(body_wsp, entry_text, style_roles=style_roles,
+                              first_is_header=has_heading, header_lines=entry_data.get("heading_lines"),
+                              tech_stack_line=entry_data.get("tech_stack_line"))
             typography.apply_body(body_wsp, entry_data, scen_sec, template_id, numbering)
             emit.resize_group_child_bottom(new_anchor, body_wsp, entry_plan.body_h_pt)
             # 宽度覆盖：布局按真实测量给出的宽度（≤ 模板正文宽）；测量侧
@@ -269,6 +271,11 @@ def emit_scenario(
         header_record["photo"] = emit.replace_photo(photo_anchor, header["photo_bytes"])
         header_record["photo"]["part"] = header.get("photo_part", "")
         part_overrides[header["photo_part"]] = header["photo_bytes"]
+
+    photo_y = (header.get("fit") or {}).get("photo_y_pt")
+    if photo_y is not None and not header.get("hide_photo"):
+        emit.set_anchor_pos_v(emit._anchor_by_docpr_name(root, MASTER_PHOTO_ANCHOR_NAME), photo_y)
+        header_record.setdefault("photo", {})["top_pt"] = photo_y
 
     # 保存
     tmp_out = out_docx.with_suffix(".docx.tmp")

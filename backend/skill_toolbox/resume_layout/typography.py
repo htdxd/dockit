@@ -18,6 +18,25 @@ def factors(entry: dict, section: dict, template_id: str) -> tuple[float, float]
     return font, geometry
 
 
+def line_pitch(entry: dict, section: dict, template_id: str) -> float:
+    font, _ = factors(entry, section, template_id)
+    base = 10.0 if template_id == "t001" else 10.5
+    return round((base * 1.5 if section.get("density") == "compact" else 18.0) * font * 20) / 20
+
+
+def apply_density(content: dict, density: str, template_id: str) -> None:
+    """紧凑模式展开均匀缩放，保留等效字号和全部内容，恢复模板宽度。"""
+    if density == "compact":
+        base = 10.0 if template_id == "t001" else 10.5
+        for section in content["sections"]:
+            for entry in section["entries"]:
+                font, _ = factors(entry, section, template_id)
+                entry["font_size_pt"] = round(base * font * 2) / 2
+                entry["scale"] = 1.0
+            section["scale"] = 1.0
+    content["density"] = density
+
+
 def _scale_text(root, factor: float, base: float):
     if abs(factor - 1) < 1e-9:
         return
@@ -172,7 +191,12 @@ def apply_body(body, entry: dict, section: dict, template_id: str, numbering: Nu
             props.set(key, str(round(int(props.get(key, default)) * geometry)))
     _scale_text(body, font, base)
     _scale_metrics(body, geometry)
-    if abs(font - 1) > 1e-9:
+    compact = section.get("density") == "compact"
+    pitch = line_pitch(entry, section, template_id)
+    if compact:
+        props.set("tIns", str(round(1.8 * emit.EMU)))
+        props.set("bIns", str(round(1.8 * emit.EMU)))
+    if abs(font - 1) > 1e-9 or compact:
         for p in body.findall(".//" + emit.W + "txbxContent/" + emit.W + "p"):
             ppr = p.find(emit.W + "pPr")
             if ppr is None:
@@ -183,11 +207,11 @@ def apply_body(body, entry: dict, section: dict, template_id: str, numbering: Nu
                 spacing = emit.etree.SubElement(ppr, emit.W + "spacing")
             for key in ("before", "after"):
                 if spacing.get(emit.W + key) is not None:
-                    spacing.set(emit.W + key, str(round(float(spacing.get(emit.W + key)) * font)))
-            spacing.set(emit.W + "line", str(round(18.0 * font * 20)))
+                    spacing.set(emit.W + key, "0" if compact else str(round(float(spacing.get(emit.W + key)) * font)))
+            spacing.set(emit.W + "line", str(round(pitch * 20)))
             spacing.set(emit.W + "lineRule", "exact")
     numbering.apply(body, font, geometry, base)
     configure_heading_tabs(body, entry, template_id=template_id)
-    return {"body_width_pt": width, "line_pitch_pt": round(18 * font * 20) / 20,
-            "font_factor": font, "body_pad_pt": profile.geometry.body_pad_pt * geometry,
+    return {"body_width_pt": width, "line_pitch_pt": pitch,
+            "font_factor": font, "body_pad_pt": 1.8 if compact else profile.geometry.body_pad_pt * geometry,
             "body_offset_pt": float(section.get("body_offset_pt", profile.geometry.body_offset_pt)) * float(section.get("scale") or 1)}

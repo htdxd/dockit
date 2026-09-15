@@ -88,6 +88,8 @@ class ResumeEntryV2(BaseModel):
     head: dict[str, str] = Field(default_factory=dict)
     bullets: list[str] = Field(default_factory=list)
     lines: list[str] = Field(default_factory=list)
+    tech_stack: str = ""
+    source_ids: list[str] = Field(default_factory=list)
     font_size_pt: float | None = Field(default=None, ge=8, le=18)
     scale: float | None = Field(default=None, ge=0.75, le=1.25)
 
@@ -127,6 +129,7 @@ class ResumeHeaderV2(BaseModel):
 
 
 class ResumeContentV2(BaseModel):
+    density: Literal["normal", "compact"] = "normal"
     schema_version: Literal["resume-content-v2"] = "resume-content-v2"
     template_id: str
     layout_mode: ResumeLayoutMode = "reflow"
@@ -172,6 +175,7 @@ class ResumeGenerateV2Request(BaseModel):
 
 
 class ResumeRepairV2Request(BaseModel):
+    density: Literal["normal", "compact"] | None = None
     artifact_id: str
     base_revision: int
     header: ResumeHeaderV2 | None = None

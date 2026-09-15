@@ -934,9 +934,9 @@ class MaterialService:
                         node.text or "" for node in item.iter(M_NS + "t")
                     ).strip()
                     if formula_text:
-                        block_type = "formula"
-                        text = formula_text
                         warnings.append(f"{locator} 的 OMML 公式以线性文本投影")
+                    if formula_text and text == formula_text:
+                        block_type = "formula"
                     elif asset_ids:
                         block_type = "image"
                     elif _docx_heading_level(item) is not None:

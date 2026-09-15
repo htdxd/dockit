@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 from skill_toolbox.resume_layout.layout import LayoutGeometry
 
+SUPPORTED_TEMPLATES = frozenset({"t001", "t109"})
+
 
 @dataclass(frozen=True)
 class TemplateProfile:

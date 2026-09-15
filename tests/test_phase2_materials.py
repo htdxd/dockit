@@ -313,6 +313,21 @@ def test_standalone_image_registers_asset(tmp_path: Path) -> None:
     assert not Path(ir.assets[0].path).is_absolute()
 
 
+def test_inline_formula_keeps_surrounding_text(tmp_path: Path) -> None:
+    from docx import Document
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    source = tmp_path / "metrics.docx"
+    document = Document()
+    paragraph = document.add_paragraph("内部测试集中检索准确率达到约 ")
+    paragraph._p.append(parse_xml(f'<m:oMath {nsdecls("m")}><m:r><m:t>93%</m:t></m:r></m:oMath>'))
+    paragraph.add_run("，用于评估召回效果。")
+    document.save(source)
+    ir = MaterialService(tmp_path / "workspace").prepare_material(source)
+    assert any(block.text == "内部测试集中检索准确率达到约 93%，用于评估召回效果。" and block.type == "paragraph" for block in ir.blocks)
+
+
 def test_docx_ir_preserves_rich_block_order_and_image_links(tmp_path: Path) -> None:
     import base64
 

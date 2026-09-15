@@ -41,6 +41,13 @@ def header_boxes(root) -> list:
     return boxes
 
 
+def photo_top_for_header(text_bottom: float, height: float, band_bottom: float,
+                         effect_top: float, effect_bottom: float) -> float:
+    """照片外框底部贴合信息区，顶部与页眉色带至少留 8pt。"""
+    return round(max(band_bottom + 8 + effect_top,
+                     text_bottom - height - effect_bottom), 2)
+
+
 def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
     """t109 组内两列沿用原框；增删字段后用 Word 实际检查容量。"""
     import pythoncom
@@ -56,7 +63,7 @@ def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
         for child in box.iter():
             if emit.etree.QName(child).localname == "cNvPr":
                 child.set("name", f"ResumeHeader{index}")
-    apply_header_components(boxes, emit.INFO_FIELD_LABELS, header)
+    records = apply_header_components(boxes, emit.INFO_FIELD_LABELS, header)
     host = work_dir / "header_host.docx"
     emit.save_document_xml(root, template, host)
 
@@ -94,6 +101,22 @@ def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
             result[str(index)] = {"width_pt": round(shape.Width, 2),
                                   "height_pt": round(shape.Height, 2), "bottom_pt": round(bottom, 2),
                                   "overflow": False}
+        if records and not header.get("hide_photo"):
+            import pymupdf
+            from skill_toolbox.resume_layout.header import rendered_field_bounds
+            pdf_path = work_dir / "header_host.pdf"
+            doc.ExportAsFixedFormat(str(pdf_path.resolve()), 17)
+            with pymupdf.open(pdf_path) as pdf:
+                page = pdf[0]
+                text_bottom = max(b[3] for b in rendered_field_bounds(page, records))
+                band_bottom = max(d["rect"].y1 for d in page.get_drawings()
+                                  if d["rect"].width > page.rect.width * 0.8
+                                  and d["rect"].y1 < 60)
+            photo = emit._anchor_by_docpr_name(root, MASTER_PHOTO_ANCHOR_NAME)
+            effect = photo.find(emit.WP + "effectExtent")
+            result["photo_y_pt"] = photo_top_for_header(
+                text_bottom, emit.emu2pt(photo.find(emit.WP + "extent").get("cy")),
+                band_bottom, emit.emu2pt(effect.get("t")), emit.emu2pt(effect.get("b")))
         return result
     finally:
         if doc is not None:
