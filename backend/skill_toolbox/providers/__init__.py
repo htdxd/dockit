@@ -2,9 +2,12 @@ from skill_toolbox.models import ProviderConfig
 from skill_toolbox.providers.anthropic import AnthropicProvider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.providers.openai import OpenAIProvider
+from skill_toolbox.providers.openai_responses import OpenAIResponsesProvider
 
 
 def create_provider(config: ProviderConfig) -> ModelProvider:
+    if config.kind == "openai_responses":
+        return OpenAIResponsesProvider(config)
     if config.kind in {"openai", "openai_compatible"}:
         return OpenAIProvider(config)
     if config.kind == "anthropic":

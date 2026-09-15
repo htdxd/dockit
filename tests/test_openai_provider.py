@@ -6,6 +6,60 @@ from skill_toolbox.models import ProviderConfig
 from skill_toolbox.providers import openai as openai_provider
 
 
+def test_parallel_tool_images_follow_all_tool_replies():
+    from skill_toolbox.models import ConversationMessage, ToolCall, ToolResult, ImageContent
+    from skill_toolbox.providers.openai_responses import OpenAIResponsesProvider
+
+    messages = [
+        ConversationMessage(role="assistant", tool_calls=[
+            ToolCall(id=ident, name="read_material", arguments={}) for ident in ("a", "b")]),
+        ConversationMessage(role="tool", tool_results=[
+            ToolResult(tool_call_id=ident, name="read_material", success=True, content=ident,
+                       images=[ImageContent(media_type="image/png", base64_data=ident)])
+            for ident in ("a", "b")]),
+    ]
+    wire = openai_provider.OpenAIProvider._messages("system", messages)
+    assert [item["role"] for item in wire] == ["system", "assistant", "tool", "tool", "user", "user"]
+    assert [item["tool_call_id"] for item in wire[2:4]] == ["a", "b"]
+    assert wire[4]["content"][0]["image_url"]["url"].endswith(",a")
+    wire = OpenAIResponsesProvider._response_input(messages)
+    assert [item.get("type", item.get("role")) for item in wire] == [
+        "function_call", "function_call", "function_call_output", "function_call_output", "user", "user"]
+
+
+@pytest.mark.parametrize("level", ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_native_reasoning_effort_is_preserved(level):
+    config = ProviderConfig(kind="openai", model="test", api_key="test", reasoning_level=level)
+    assert openai_provider._reasoning_kwargs(config.reasoning_level) == {"reasoning_effort": level}
+
+
+@pytest.mark.parametrize("status,mode,expected", [
+    ("verified", "high", "required"), ("unsupported", "high", "auto"),
+    ("unknown", "high", "auto"), ("verified", "none", "auto"),
+])
+def test_forced_tools_require_a_probe_for_current_reasoning(monkeypatch, status, mode, expected):
+    import json
+    from skill_toolbox.providers.openai_responses import OpenAIResponsesProvider
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", lambda **_: None)
+    config = ProviderConfig(kind="openai", model="test", reasoning_level="high", capability_probe=json.dumps({
+        "forced_tool_calling": {"status": status, "reasoning_level": mode}}))
+    for provider in (openai_provider.OpenAIProvider(config), OpenAIResponsesProvider(config)):
+        assert provider.tool_choice == expected
+
+
+@pytest.mark.asyncio
+async def test_forced_probe_uses_current_thinking_and_records_rejection(monkeypatch):
+    provider = _provider_with_response(monkeypatch, None)
+    provider.reasoning_level = "high"
+    create = provider.client.chat.completions.create
+    create.side_effect = RuntimeError("Thinking mode does not support this tool_choice")
+    status, detail = await provider._probe_tool_calling(force=True)
+    assert status == "unsupported"
+    assert "Thinking mode" in detail
+    assert create.call_args.kwargs["tool_choice"] == "required"
+    assert create.call_args.kwargs["reasoning_effort"] == "high"
+
+
 class _FakeCompletions:
     def __init__(self, content: str = "2") -> None:
         self.calls: list[dict[str, object]] = []
@@ -66,7 +120,10 @@ async def test_complete_records_safe_counts_and_invalid_json_reason(monkeypatch,
             "reasoning_tokens": 60, "cached_tokens": 20,
         },
     }
-    assert turn.tool_calls[0].arguments == {"_invalid_json": '{"content":', "_finish_reason": finish_reason}
+    assert turn.tool_calls[0].arguments == {
+        "_invalid_json": '{"content":', "_finish_reason": finish_reason,
+        "_json_error": {"message": "Expecting value", "position": 11, "length": 11},
+    }
     assert "hidden reasoning" not in turn.model_dump_json()
     assert "vendor_private" not in turn.model_dump_json()
 
@@ -80,6 +137,10 @@ async def test_complete_accepts_response_without_usage_or_finish_reason(monkeypa
     turn = await provider.complete("system", [], [])
     assert turn.text == "ok"
     assert turn.response_metadata == {}
+    assert "tool_choice" not in provider.client.chat.completions.create.call_args.kwargs
+    await provider.complete("system", [], [{"name": "finish_task", "description": "finish", "input_schema": {"type": "object"}}])
+    assert provider.client.chat.completions.create.call_args.kwargs["tool_choice"] == "auto"
+    assert provider.client.chat.completions.create.call_args.kwargs["max_tokens"] == 65536
 
 
 @pytest.mark.asyncio

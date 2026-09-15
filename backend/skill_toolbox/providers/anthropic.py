@@ -28,6 +28,8 @@ def _thinking_kwargs(level: ReasoningLevel, max_tokens: int) -> dict[str, Any]:
     with the max_tokens cap (e.g. a small max_tokens), fall back to auto rather
     than constructing a request that is guaranteed to 400.
     """
+    if level == "none":
+        return {"thinking": {"type": "disabled"}}
     budget = anthropic_reasoning_budget(level)
     if not budget:
         return {}

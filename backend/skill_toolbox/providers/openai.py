@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from skill_toolbox.capabilities import openai_reasoning_effort
+from skill_toolbox.capabilities import load_probe_report, openai_reasoning_effort
 from skill_toolbox.models import (
     AssistantTurn,
     ConversationMessage,
@@ -24,10 +24,10 @@ def _reasoning_kwargs(level: ReasoningLevel) -> dict[str, Any]:
     """Map a user reasoning level to OpenAI-native request parameters.
 
     OpenAI reasoning models (o1/o3/gpt-5) accept ``reasoning_effort`` with a
-    closed enum. ``auto`` sends nothing (provider default); unsupported/unknown
-    models get no parameter either — we never silently send a field the vendor
-    may reject. ``max_tokens`` stays the standard chat-completions parameter for
-    non-reasoning models; the project does not switch to the Responses API.
+    closed enum. ``auto`` sends nothing (provider default); explicit levels are
+    passed through so the provider validates model-specific support.
+    ``max_tokens`` stays the standard chat-completions parameter for
+    non-reasoning models. Responses uses its own provider implementation.
     """
     effort = openai_reasoning_effort(level)
     if not effort:
@@ -58,6 +58,7 @@ class OpenAIProvider:
         self.model = config.model
         self.max_tokens = config.max_tokens
         self.reasoning_level = config.reasoning_level
+        self.tool_choice = "required" if load_probe_report(config).forced_tool_calling.status == "verified" else "auto"
 
     async def complete(
         self,
@@ -84,6 +85,8 @@ class OpenAIProvider:
             "max_tokens": self.max_tokens,
         }
         params.update(_reasoning_kwargs(self.reasoning_level))
+        if api_tools:
+            params["tool_choice"] = self.tool_choice
         response = await self.client.chat.completions.create(**params)
         choice = response.choices[0]
         message = choice.message
@@ -92,8 +95,10 @@ class OpenAIProvider:
         for call in message.tool_calls or []:
             try:
                 arguments = json.loads(call.function.arguments)
-            except json.JSONDecodeError:
-                arguments = {"_invalid_json": call.function.arguments[:2000]}
+            except json.JSONDecodeError as exc:
+                arguments = {"_json_error": {"message": exc.msg, "position": exc.pos,
+                                              "length": len(call.function.arguments)},
+                             "_invalid_json": call.function.arguments[:2000]}
                 if isinstance(finish_reason, str):
                     arguments["_finish_reason"] = finish_reason
             calls.append(
@@ -162,6 +167,8 @@ class OpenAIProvider:
                             "content": tool_result.content,
                         }
                     )
+                # 同批工具必须全部回复后才能插入用户图片消息。
+                for tool_result in message.tool_results:
                     for image in tool_result.images:
                         result.append(
                             {
@@ -199,14 +206,16 @@ class OpenAIProvider:
             "tool_calling": self._probe_tool_calling,
             "vision": self._probe_vision,
             "reasoning_control": self._probe_reasoning_control,
+            "forced_tool_calling": lambda: self._probe_tool_calling(force=True),
         })
 
     @staticmethod
     def _nonce(length: int = 6) -> str:
         return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-    async def _probe_tool_calling(self) -> tuple[str, str | None]:
+    async def _probe_tool_calling(self, force: bool = False) -> tuple[str, str | None]:
         nonce = self._nonce()
+        options = {"tool_choice": "required", **_reasoning_kwargs(self.reasoning_level)} if force else {}
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -237,9 +246,10 @@ class OpenAIProvider:
                 # 改用 max_completion_tokens；非 reasoning 模型两者皆可。探测统一
                 # 用 max_completion_tokens，避免对 gpt-5/o3 误报「不支持工具调用」。
                 max_completion_tokens=512,
+                **options,
             )
         except Exception as exc:  # noqa: BLE001
-            return self._classify_error("tool_calling", exc)
+            return self._classify_error("forced_tool_calling" if force else "tool_calling", exc)
         message = response.choices[0].message
         calls = message.tool_calls or []
         if not calls:

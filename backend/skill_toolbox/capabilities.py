@@ -81,12 +81,18 @@ _VISION_RE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in _VISION_MOD
 
 # Reasoning level → vendor parameter mapping (per-adapter application in
 # providers/*.py). auto = do not send any reasoning parameter.
-REASONING_LEVELS: tuple[ReasoningLevel, ...] = ("auto", "fast", "balanced", "deep")
+REASONING_LEVELS: tuple[ReasoningLevel, ...] = ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # OpenAI reasoning_effort values are a closed enum; Anthropic uses token budgets.
-_OPENAI_EFFORT: dict[str, str] = {"fast": "low", "balanced": "medium", "deep": "high"}
+_OPENAI_EFFORT: dict[str, str] = {
+    **{level: level for level in REASONING_LEVELS if level != "auto"},
+    "fast": "low", "balanced": "medium", "deep": "high",
+}
 # Anthropic budget_tokens must be >= 1024 and < max_tokens.
-_ANTHROPIC_BUDGET: dict[str, int] = {"fast": 2048, "balanced": 4096, "deep": 8192}
+_ANTHROPIC_BUDGET: dict[str, int] = {
+    "low": 2048, "medium": 4096, "high": 8192,
+    "fast": 2048, "balanced": 4096, "deep": 8192,
+}
 
 _PROBE_VERSION = 1
 
@@ -136,6 +142,9 @@ def load_probe_report(config: ProviderConfig) -> CapabilityProbeReport:
         report.vision.status = "unknown"
     if report.reasoning_control.probe_version != _PROBE_VERSION:
         report.reasoning_control.status = "unknown"
+    if (report.forced_tool_calling.probe_version != _PROBE_VERSION
+            or report.forced_tool_calling.reasoning_level != config.reasoning_level):
+        report.forced_tool_calling.status = "unknown"
     return report
 
 

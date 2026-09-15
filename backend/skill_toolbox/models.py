@@ -22,6 +22,7 @@ class AssistantTurn(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     response_metadata: dict[str, Any] = Field(default_factory=dict)
+    provider_items: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
 
     @field_validator("text", mode="before")
     @classmethod
@@ -52,6 +53,7 @@ class ConversationMessage(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
+    provider_items: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
 
     @field_validator("text", mode="before")
     @classmethod
@@ -65,7 +67,7 @@ class ConversationMessage(BaseModel):
 
 CapabilityStatus = Literal["unknown", "verified", "unsupported", "probe_error"]
 ReasoningControl = Literal["none", "effort", "budget", "adaptive"]
-ReasoningLevel = Literal["auto", "fast", "balanced", "deep"]
+ReasoningLevel = Literal["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max", "fast", "balanced", "deep"]
 
 
 class ProbeResult(BaseModel):
@@ -78,27 +80,29 @@ class ProbeResult(BaseModel):
     # thinking.type=adaptive。OpenAI-compatible 网关若无可验证 metadata，
     # 保持 unknown（见 capabilities.py probe_reasoning_control）。
     control: ReasoningControl | None = None
+    reasoning_level: ReasoningLevel | None = None
 
 
 class CapabilityProbeReport(BaseModel):
     tool_calling: ProbeResult = Field(default_factory=ProbeResult)
     vision: ProbeResult = Field(default_factory=ProbeResult)
     reasoning_control: ProbeResult = Field(default_factory=ProbeResult)
+    forced_tool_calling: ProbeResult = Field(default_factory=ProbeResult)
 
 
 class ProviderConfig(BaseModel):
-    kind: Literal["openai", "anthropic", "openai_compatible", "mock"]
+    kind: Literal["openai", "openai_responses", "anthropic", "openai_compatible", "mock"]
     model: str
     api_key: str = ""
     base_url: str | None = None
-    max_tokens: int = Field(default=16384, ge=256, le=32768)
+    max_tokens: int = Field(default=65536, ge=256, le=65536)
     # Explicit user overrides for model capabilities. None = unknown, resolved
     # from defaults / the static model table in skill_toolbox.capabilities.
     vision: bool | None = None
     tool_calling: bool | None = None
     # 推理强度档位：auto=不主动发送 reasoning 参数（用 Provider 默认行为），
-    # fast/balanced/deep 由各 adapter 映射为厂商原生参数。
-    reasoning_level: Literal["auto", "fast", "balanced", "deep"] = "auto"
+    # 保留旧 fast/balanced/deep 配置；新配置使用协议原生深度名。
+    reasoning_level: ReasoningLevel = "auto"
     # 版本化能力探测报告 JSON（CapabilityProbeReport 的序列化结果）。SQLite
     # 以 TEXT 存储；解析必须容忍空值/旧版本/未知字段。kind/base_url/model 变化
     # 时由调用方重置为 unknown（见 capabilities.py probe_fingerprint）。
