@@ -64,12 +64,15 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
     # ---------- 共享材料（阶段 3） ----------
     def _read_material(args: dict[str, Any]) -> OperationResult:
         _require(services.materials, "MaterialPlanService")
-        return services.materials.read_material(
+        result = services.materials.read_material(
             str(args["source_id"]),
             view=str(args.get("view", "summary")),  # type: ignore[arg-type]
             offset=int(args.get("offset", 0)),
             limit=int(args.get("limit", 200)),
         )
+        if services.resume_workflow is not None and result.data.get("view") == "native_text":
+            services.resume_workflow.record_native_read(result)
+        return result
 
     def _create_content_plan(args: dict[str, Any]) -> OperationResult:
         _require(services.materials, "MaterialPlanService")

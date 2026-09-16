@@ -67,11 +67,22 @@ class MaterialPlanService:
             )
         document = self.catalog.ir_for(source_id)
         if view == "native_text":
-            if document is None or document.source_format != "pdf":
-                raise ToolError("MATERIAL_VIEW_INVALID", "native_text 需要 PDF 的 material_id")
+            if document is None or document.source_format not in {"pdf", "docx"}:
+                raise ToolError("MATERIAL_VIEW_INVALID", "native_text 需要 PDF 或 DOCX 的 material_id")
+            scope = material_id_dir(self.workspace, source_id).name
+            if document.source_format == "docx":
+                from skill_toolbox.materials import docx_native_text
+                blocks = docx_native_text(self.workspace / "sources" / scope / "original.docx")
+                page = blocks[offset:offset + limit]
+                next_offset = offset + len(page)
+                return OperationResult(ok=True, status="validated", data={
+                    "material_id": source_id, "view": view, "blocks": page,
+                    "offset": offset, "total": len(blocks), "has_more": next_offset < len(blocks),
+                    "next_offset": next_offset if next_offset < len(blocks) else None,
+                    "note": "DOCX 原件机械提取，按块分页；浮动文本框顺序不一定等于视觉阅读顺序，仅供补查。",
+                })
             import pymupdf
 
-            scope = material_id_dir(self.workspace, source_id).name
             source = self.workspace / "sources" / scope / "original.pdf"
             with pymupdf.open(source) as pdf:
                 total = len(pdf)
@@ -183,7 +194,7 @@ class MaterialPlanService:
                 "material_id": ir.material_id,
                 "original_name": ir.original_name,
                 "source_format": ir.source_format,
-                "supplementary_views": ["native_text"] if ir.source_format == "pdf" else [],
+                "supplementary_views": ["native_text"] if ir.source_format in {"pdf", "docx"} else [],
                 "page_count": ir.page_count,
                 "block_count": len(ir.blocks),
                 "asset_count": len(ir.assets),

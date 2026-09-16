@@ -9,9 +9,8 @@ catalog/tool view，不拥有解析缓存。
 - 同 hash 材料只保留一份；同名/同 stem 文件互不覆盖
 - Markdown/TXT 解析前复制安全相对引用资源，拒绝 `..` 越界与远程 URL
 - 由 DocumentIR 单向生成现有 work/materials/<stem>.md 兼容投影
-- md/txt 原生解析；pptx 复用 ppt-master parser；pdf 使用内部 MinerU
-  convert_pdf（MinerU 强依赖，失败即明确错误）；docx 富结构解析待阶段 4
-  （当前以文本视图可用，旧 ingest/read 路径继续服务）
+- md/txt 原生解析；pptx 复用 ppt-master parser；PDF/DOCX 由 MinerU 主解析，
+  原件保留为按需机械文字视图，原始内嵌图片独立提取。
 
 路径约定：manifest 与所有暴露路径必须是 workspace 相对路径；禁止写入
 临时绝对路径。
@@ -359,7 +358,7 @@ def _docx_table_markdown(table: etree._Element) -> str:
 
 
 def _docx_assets(
-    archive: zipfile.ZipFile, workspace: Path, material_id: str
+    archive: zipfile.ZipFile, workspace: Path, material_id: str, *, original: bool = False
 ) -> tuple[list[Asset], dict[str, Asset]]:
     assets_dir = material_id_dir(workspace, material_id) / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
@@ -373,21 +372,46 @@ def _docx_assets(
     for member in sorted(
         name for name in archive.namelist() if name.startswith("word/media/")
     ):
-        out = assets_dir / PurePosixPath(member).name
+        out = assets_dir / (("docx-original-" if original else "") + PurePosixPath(member).name)
         out.write_bytes(archive.read(member))
         content_hash = sha256_file(out)
         asset = Asset(
-            id=_asset_id(material_id, member, content_hash),
+            id=_asset_id(material_id, ("original:" if original else "") + member, content_hash),
             path=_relative_to(workspace, out),
             mime_type=content_types.get(member) or _mime_for(out),
             sha256=content_hash,
             width=_image_width(out),
             height=_image_height(out),
-            source_locator=f"docx:{member}",
+            source_locator=f"{'docx-original' if original else 'docx'}:{member}",
         )
         assets.append(asset)
         by_member[member] = asset
     return assets, by_member
+
+
+def docx_native_text(source: Path) -> list[dict]:
+    """原件机械文字视图；不调用 MinerU，也不覆盖主解析 IR。"""
+    blocks = []
+    with zipfile.ZipFile(source) as archive:
+        parts = ["word/document.xml"] + sorted(name for name in archive.namelist()
+            if re.fullmatch(r"word/(?:header|footer)\d+\.xml", name))
+        for part in parts:
+            root = etree.fromstring(archive.read(part))
+            for index, item in enumerate(_docx_content_items(root)):
+                text = _docx_table_markdown(item) if item.tag == W_NS + "tbl" else _docx_text(item)
+                if text:
+                    blocks.append({"text": text, "type": "table" if item.tag == W_NS + "tbl" else "paragraph",
+                                   "source_locator": f"docx-original:{part}#item[{index}]"})
+    return blocks
+
+
+def _check_native_gaps(ir: DocumentIR, native_text: str, has_tables: bool = False) -> None:
+    """只提示可机械发现的差异，不把字符串命中当作完整性证明。"""
+    primary = "\n".join(block.text for block in ir.blocks)
+    numbers = lambda text: set(re.findall(r"\d+(?:\.\d+)?", text.replace(",", "")))
+    if numbers(native_text) - numbers(primary) or (has_tables and not any(b.type == "table" for b in ir.blocks)):
+        ir.warnings.append("NATIVE_TEXT_RECOMMENDED: 原件中的部分数字或表格结构未在主解析找到；"
+                           "请先调用 read_material(view='native_text') 补查内容，再决定是否询问用户。")
 
 
 def _docx_embedded_asset_ids(
@@ -634,10 +658,8 @@ class MaterialService:
             ir = self._parse_native_text(staged, source, suffix)
         elif suffix == ".pptx":
             ir = self._parse_native_pptx(staged, source, material_id, sha256)
-        elif suffix == ".pdf":
-            ir = self._parse_native_pdf(staged, source, material_id, sha256)
-        elif suffix == ".docx":
-            ir = self._parse_native_docx(staged, source, material_id, sha256)
+        elif suffix in {".pdf", ".docx"}:
+            ir = self._parse_mineru_document(staged, source, material_id, sha256)
         elif suffix in _REF_SAFE_SUFFIXES:
             ir = self._parse_native_image(staged, source, material_id, sha256)
         else:
@@ -746,19 +768,10 @@ class MaterialService:
             )
         return self._register(material_id, original, "pptx", sha256, blocks, assets, warnings)
 
-    def _parse_native_pdf(
+    def _parse_mineru_document(
         self, staged: Path, original: Path, material_id: str, sha256: str
     ) -> DocumentIR:
-        """PDF → 共享 DocumentIR：经 MineruService（跨任务持久缓存 + convert_pdf）。
-
-        输出 docx 交给 _parse_native_docx 复用同一份结构解析。MineruService
-        负责 cache key（pdf_sha256 + adapter/cli 版本 + 参数指纹 + 语言 + 模型）、
-        原子提交、COMPLETE 标记与 per-key 锁（实施计划 §6）。
-
-        PDF 是 MinerU 强依赖（实施计划 §3.1）：MinerU CLI 不可用、Token 缺失
-        或转换失败时抛 MaterialError（稳定错误码），由 Runtime 记为解析失败并
-        fail-fast（任务直接失败），不降级、不登记成可继续的 warning。
-        """
+        """PDF/DOCX 的主解析共用 MinerU 与缓存，原件留作显式备用视图。"""
         from skill_toolbox.tools.mineru import (
             MineruOptions,
             MineruService,
@@ -768,7 +781,7 @@ class MaterialService:
         parser = Path(__file__).parent / "parsers" / "mineru_pdf.py"
         if not parser.is_file():
             raise MaterialError(
-                "MINERU_PARSE_FAILED", "convert_pdf 脚本缺失，PDF 富解析不可用"
+                "MINERU_PARSE_FAILED", "MinerU 转换脚本缺失，文档富解析不可用"
             )
         out_root = material_id_dir(self.workspace, material_id)
         out_root.mkdir(parents=True, exist_ok=True)
@@ -789,15 +802,33 @@ class MaterialService:
             raise MaterialError(exc.code, str(exc)) from None
         except subprocess.TimeoutExpired as exc:
             raise MaterialError(
-                "MINERU_PARSE_FAILED", f"PDF 转换超时（{exc}）"
+                "MINERU_PARSE_FAILED", f"文档转换超时（{exc}）"
             ) from None
         except OSError as exc:
-            raise MaterialError("MINERU_PARSE_FAILED", f"PDF 转换调用失败（{exc}）") from None
+            raise MaterialError("MINERU_PARSE_FAILED", f"文档转换调用失败（{exc}）") from None
 
         # 复用 docx 结构解析（MinerU 产出的 docx 同样是 OOXML 包）；
-        # source_format 保留 pdf（不写成 docx，IR 记录真实来源格式）。
-        ir = self._parse_native_docx(converted, original, material_id, sha256, "pdf")
-        self._add_pdf_original_images(staged, ir)
+        # source_format 记录上传文件的真实格式，而非中间产物格式。
+        source_format = _format_for(original.suffix.lower())
+        ir = self._parse_native_docx(converted, original, material_id, sha256, source_format)
+        if source_format == "pdf":
+            self._add_pdf_original_images(staged, ir)
+        else:
+            native_blocks = docx_native_text(staged)
+            _check_native_gaps(ir, "\n".join(b["text"] for b in native_blocks),
+                               has_tables=any(b["type"] == "table" for b in native_blocks))
+            with zipfile.ZipFile(staged) as package:
+                originals, _ = _docx_assets(package, self.workspace, material_id, original=True)
+            by_hash = {asset.sha256: asset for asset in ir.assets}
+            for asset in originals:
+                asset.caption = "DOCX 原件内嵌图片，未裁剪或缩放；作为照片使用前先看图确认。"
+                if asset.sha256 in by_hash:
+                    existing = by_hash[asset.sha256]
+                    existing.source_locator = asset.source_locator
+                    existing.caption = asset.caption
+                else:
+                    ir.assets.append(asset)
+                    by_hash[asset.sha256] = asset
         self._write_ir(ir)
         entry = next(
             item
@@ -805,6 +836,7 @@ class MaterialService:
             if item["material_id"] == material_id
         )
         entry["prepared_docx"] = self._rel(converted)
+        entry["primary_parser"] = "mineru"
         entry["mineru_cache"] = result["status"]
         entry["mineru_cache_key"] = result["cache_key"]
         return ir
@@ -819,6 +851,7 @@ class MaterialService:
         by_hash = {asset.sha256: asset for asset in ir.assets}
         try:
             with fitz.open(source) as pdf:
+                _check_native_gaps(ir, "\n".join(page.get_text() for page in pdf))
                 for page_index, page in enumerate(pdf):
                     for image_info in page.get_images():
                         xref = image_info[0]
@@ -891,7 +924,7 @@ class MaterialService:
                 )
             )
             order = 0
-            locator_prefix = "pdf-mineru" if format_for == "pdf" else "docx"
+            locator_prefix = f"{format_for}-mineru" if format_for else "docx"
             for part_name in parts:
                 try:
                     root = etree.fromstring(archive.read(part_name))

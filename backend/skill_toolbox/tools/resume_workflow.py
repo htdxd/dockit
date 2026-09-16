@@ -78,7 +78,8 @@ class ResumeWorkflow:
                 "material_id": material_id, "name": ir.original_name,
                 "reading_hint": ("图片尚未转成文字。用 read_material(source_id=资产ID) 看图读取简历/经历；先判断是简历截图还是头像，不能直接当照片。"
                                  if ir.source_format == "image" else "正文已在 blocks 中。"),
-                "supplementary_views": ["native_text"] if ir.source_format == "pdf" else [],
+                "supplementary_views": ["native_text"] if ir.source_format in {"pdf", "docx"} else [],
+                "warnings": ir.warnings,
                 "blocks": blocks,
                 "assets": self.materials.material_summary(material_id).data["assets"],
             })
@@ -106,7 +107,7 @@ class ResumeWorkflow:
                 "note": "这是模板默认字号下、未扣除标题和间距的容量上限，实际以测量为准。"
                         "经历丰富且未限定一页时可保留内容分为两三页；只有获准摘要时才精简。",
             },
-        }, next_action="文字材料正文已在 materials.blocks 中，不必重复 read_material(view='blocks')。图片材料须按 reading_hint 用 read_material 看图，简历截图也可提供经历，不要都当作头像。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。PDF 疑似漏标题/指标上下文才补看 native_text。")
+        }, next_action="文字材料正文已在 materials.blocks 中，不必重复 read_material(view='blocks')。图片材料须按 reading_hint 用 read_material 看图，简历截图也可提供经历，不要都当作头像。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。PDF/DOCX 疑似漏标题或指标上下文才补看 native_text；原件图片优先于重建图片。")
 
     def _photo(self, asset_id):
         if not asset_id:
@@ -115,6 +116,16 @@ class ResumeWorkflow:
         if not relative:
             raise ToolError("ASSET_UNKNOWN", f"未知照片资产 {asset_id}")
         return {"photo_path": relative, "hide_photo": False}
+
+    def record_native_read(self, result):
+        """备用视图读到的原文也是事实来源，避免补回的指标被误判为编造。"""
+        data = result.data
+        for index, row in enumerate(data.get("blocks", data.get("pages", [])), data["offset"] + 1):
+            source_id = f"m{data['material_id'][:8]}-native-{index}"
+            self.facts.add(source_id, row["text"], kind="material", material_id=data["material_id"],
+                           view="native_text", page=row.get("page"), source_locator=row.get("source_locator"))
+            row["source_id"] = source_id
+        self.facts.save()
 
     def _plan_sources(self, photo_asset_id=""):
         ids = self.material_ids if self.material_ids is not None else list(self.materials.catalog.irs)

@@ -324,7 +324,9 @@ def test_inline_formula_keeps_surrounding_text(tmp_path: Path) -> None:
     paragraph._p.append(parse_xml(f'<m:oMath {nsdecls("m")}><m:r><m:t>93%</m:t></m:r></m:oMath>'))
     paragraph.add_run("，用于评估召回效果。")
     document.save(source)
-    ir = MaterialService(tmp_path / "workspace").prepare_material(source)
+    from skill_toolbox.tools.workspace import sha256_file
+    ir = MaterialService(tmp_path / "workspace")._parse_native_docx(
+        source, source, material_id_for(source), sha256_file(source))
     assert any(block.text == "内部测试集中检索准确率达到约 93%，用于评估召回效果。" and block.type == "paragraph" for block in ir.blocks)
 
 
@@ -361,7 +363,10 @@ def test_docx_ir_preserves_rich_block_order_and_image_links(tmp_path: Path) -> N
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    ir = MaterialService(workspace).prepare_material(source)
+    # 单测原生 OOXML 投影；MinerU 主解析路由由 test_docx_mineru_primary 覆盖。
+    from skill_toolbox.tools.workspace import sha256_file
+    ir = MaterialService(workspace)._parse_native_docx(
+        source, source, material_id_for(source), sha256_file(source))
 
     types = [block.type for block in ir.blocks]
     assert "heading" in types
@@ -388,7 +393,9 @@ def test_docx_styled_text_keeps_line_breaks_tabs_and_cell_paragraphs(tmp_path):
     cell.text = '第一段'
     cell.add_paragraph('第二段')
     document.save(source)
-    ir = MaterialService(tmp_path / 'workspace').prepare_material(source)
+    from skill_toolbox.tools.workspace import sha256_file
+    ir = MaterialService(tmp_path / 'workspace')._parse_native_docx(
+        source, source, material_id_for(source), sha256_file(source))
     assert ir.blocks[0].text == '加粗内容\t下一字段\n下一行'
     assert '第一段<br>第二段' in ir.blocks[1].text
 

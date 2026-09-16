@@ -181,7 +181,7 @@ class MineruService:
     def convert(
         self, pdf: Path, out_docx: Path, options: MineruOptions | None = None
     ) -> dict[str, Any]:
-        """转换 PDF 为 DOCX，带跨任务持久缓存。
+        """将 PDF/DOCX 源文档经 MinerU 解析成 DOCX，带跨任务持久缓存。
 
         返回 {"status": "cache_hit"|"cache_miss", "output", "cache_key",
         "metadata"}。命中时输出已复制到 out_docx；未命中成功时缓存已提交。
