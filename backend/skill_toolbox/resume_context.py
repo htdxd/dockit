@@ -46,7 +46,8 @@ def current_resume_context(messages):
         if message.role == "assistant" and message.tool_calls and not calls:
             continue
         compact.append(message.model_copy(update={"tool_calls": calls, "tool_results": results}))
-    note = "历史候选和重复材料读取已省略；原材料、用户问答与最新候选完整保留。除非用户要求重新开始，否则修改最新候选，不要重新生成以逃避同一排版问题。"
+    note = (f"当前有效候选：{latest}。历史候选和重复材料读取已省略；修改当前候选，不要重新生成以逃避同一排版问题。"
+            if latest else "当前尚无已生成候选。请修正上次生成参数并调用 resume_generate；不要调用 edit/accept 或向用户索取 candidate_id。")
     if failures and states and failures[-1][0] == states[-1][0].tool_call_id:
         error = failures[-1][1]
         note += " 最近调用未通过：" + str(error.get("code")) + "；" + str(error.get("message", ""))

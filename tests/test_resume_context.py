@@ -42,3 +42,11 @@ def test_bad_arguments_are_not_replayed_but_latest_error_is_explained():
     assert "changes 在位置17多余括号" in result[-1].text
     assert "PAGE_TARGET_EXCEEDED" in encoded and "完整文字" in encoded
     assert len(encoded) < sum(len(message.model_dump_json()) for message in messages) / 3
+
+
+def test_failed_initial_generation_does_not_require_nonexistent_candidate():
+    messages = pair('bad', 'resume_generate', {'code': 'CONTENT_INVALID', 'message': '重复字段 degree'})
+    result = current_resume_context(messages)
+    assert '当前尚无已生成候选' in result[-1].text
+    assert '调用 resume_generate' in result[-1].text
+    assert '重复字段 degree' in result[-1].text

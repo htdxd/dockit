@@ -76,6 +76,8 @@ class ResumeWorkflow:
                 blocks.append({**block.model_dump(), "source_id": source_id})
             documents.append({
                 "material_id": material_id, "name": ir.original_name,
+                "reading_hint": ("图片尚未转成文字。用 read_material(source_id=资产ID) 看图读取简历/经历；先判断是简历截图还是头像，不能直接当照片。"
+                                 if ir.source_format == "image" else "正文已在 blocks 中。"),
                 "supplementary_views": ["native_text"] if ir.source_format == "pdf" else [],
                 "blocks": blocks,
                 "assets": self.materials.material_summary(material_id).data["assets"],
@@ -87,6 +89,7 @@ class ResumeWorkflow:
         body_height = geometry.page_bottom_pt - geometry.page_top_pt
         continuation_top = geometry.continuation_page_top_pt
         return OperationResult(ok=True, status="validated", data={
+            "candidate_state": self.candidate_state(),
             "template_id": self.template_id,
             "person_fields": capabilities["header_fields"],
             "materials": documents,
@@ -103,7 +106,7 @@ class ResumeWorkflow:
                 "note": "这是模板默认字号下、未扣除标题和间距的容量上限，实际以测量为准。"
                         "经历丰富且未限定一页时可保留内容分为两三页；只有获准摘要时才精简。",
             },
-        }, next_action="materials.blocks 已含所选材料全文，不必重复 read_material(view='blocks')。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。只有 PDF 疑似漏标题/指标上下文才补看 native_text，有照片才读取照片资产。")
+        }, next_action="文字材料正文已在 materials.blocks 中，不必重复 read_material(view='blocks')。图片材料须按 reading_hint 用 read_material 看图，简历截图也可提供经历，不要都当作头像。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。PDF 疑似漏标题/指标上下文才补看 native_text。")
 
     def _photo(self, asset_id):
         if not asset_id:
@@ -209,11 +212,25 @@ class ResumeWorkflow:
         if len(keys) != len(set(keys)) or len(ids) != len(set(ids)):
             raise ToolError("CONTENT_INVALID", "栏目 key 和条目 id 必须唯一。")
 
+    def candidate_state(self):
+        candidates = []
+        for path in sorted((self.engine.workspace / "work" / "resume").glob("*/index.json")):
+            index = json.loads(path.read_text(encoding="utf-8"))
+            if index.get("current"):
+                candidates.append(f"{path.parent.name}@{index['current']}")
+        return {"candidate_ids": candidates, "next_action": (
+            "使用上述真实 candidate_id 调用 resume_preview 获取内容后编辑，不向用户索取内部 ID。" if candidates else
+            "尚无候选；修正生成参数后调用 resume_generate。原始文件名不是候选 ID，不向用户索取内部 ID。")}
+
     def _candidate(self, candidate_id):
         artifact_id, sep, revision = candidate_id.rpartition("@")
         if not sep or not revision.isdigit():
-            raise ToolError("CANDIDATE_UNKNOWN", "请原样使用工具返回的 candidate_id。")
-        return artifact_id, int(revision), self.engine.store.load_revision(artifact_id, int(revision))
+            raise ToolError("CANDIDATE_UNKNOWN", "请原样使用工具返回的 candidate_id。",
+                            suggestion=json.dumps(self.candidate_state(), ensure_ascii=False))
+        try:
+            return artifact_id, int(revision), self.engine.store.load_revision(artifact_id, int(revision))
+        except ToolError as exc:
+            raise ToolError(exc.code, str(exc), suggestion=json.dumps(self.candidate_state(), ensure_ascii=False)) from None
 
     @staticmethod
     def _entry_target(content, target):

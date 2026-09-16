@@ -80,6 +80,32 @@ def generate(workflow, **overrides):
     return workflow.generate(GenerateRequest(content=content))
 
 
+def test_candidate_recovery_reports_real_ids_without_accepting_filename(workflow):
+    assert workflow.candidate_state()['candidate_ids'] == []
+    with pytest.raises(ToolError) as missing:
+        workflow._candidate('resume.resume_pro')
+    assert 'resume_generate' in missing.value.suggestion
+    result = generate(workflow)
+    assert workflow.prepare(PrepareRequest()).data['candidate_state']['candidate_ids'] == [result.data['candidate_id']]
+    with pytest.raises(ToolError) as invalid:
+        workflow._candidate('resume.resume_pro')
+    assert result.data['candidate_id'] in invalid.value.suggestion
+
+
+@pytest.mark.asyncio
+async def test_internal_candidate_question_never_opens_user_dialog(workflow):
+    from skill_toolbox.models import ToolCall
+    from skill_toolbox.providers.mock import ScriptedProvider
+    from skill_toolbox.runtime import AgentRuntime, UserInputBroker
+    events = []
+    runtime = AgentRuntime(ScriptedProvider([]), events.append, input_broker=UserInputBroker())
+    result = await runtime._execute_call(ToolCall(id='q', name='ask_user_questions', arguments={
+        'questions': [{'id': 'candidate', 'label': '请提供 candidate_id'}]}), None,
+        domain_services=DomainServices(resume_workflow=workflow))
+    assert not result.success and 'INTERNAL_STATE_QUESTION' in result.content
+    assert not any(event['type'] == 'questions_requested' for event in events)
+
+
 def test_fact_references_survive_partial_edit_and_unknown_ref_fails_before_render(workflow):
     workflow.facts.add("request", "课程项目，完成功能测试")
     workflow.facts.save()

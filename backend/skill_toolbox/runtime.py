@@ -702,7 +702,16 @@ class AgentRuntime:
                 call, False, "task_failed must be the only tool call in its model turn"
             )
         elif call.name == "ask_user_questions":
-            if self.input_broker is None:
+            import re
+            question_text = json.dumps(call.arguments.get("questions", []), ensure_ascii=False)
+            if (domain_services is not None and domain_services.resume_workflow is not None
+                    and re.search(r"candidate[_\s]*id|候选\s*ID", question_text, re.IGNORECASE)):
+                result = self._tool_result(call, False, json.dumps({
+                    "code": "INTERNAL_STATE_QUESTION",
+                    "message": "候选 ID 属于内部状态，不能要求用户提供。",
+                    **domain_services.resume_workflow.candidate_state(),
+                }, ensure_ascii=False))
+            elif self.input_broker is None:
                 result = self._tool_result(call, False, "User input is unavailable")
             else:
                 questions = call.arguments.get("questions", [])
