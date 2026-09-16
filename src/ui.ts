@@ -294,9 +294,10 @@ export function mountLayout(root: HTMLElement): void {
               <div class="u-ic">⭳</div>
               <div class="u-t">拖入文件，或点击选择</div>
               <div class="u-optional">可选 · 不上传也能生成</div>
-              <span class="fmt">pdf / docx / md / txt / jpg / png（jpg/png 作证件照）</span>
+              <span class="fmt">pdf / docx / md / txt / jpg / png（支持简历截图与证件照，可多次添加）</span>
             </div>
             <input id="materials-input-resume" type="file" multiple hidden>
+            <div class="manual-entry"><button type="button" class="btn btn-sm" id="resume-manual">✎ 手动填写</button><span id="manual-status">可与上传材料一起使用</span></div>
             <div id="materials-list-resume"></div>
           </div>
           <div class="card">
@@ -538,6 +539,19 @@ export function mountLayout(root: HTMLElement): void {
     </div>
   </div>
 
+  <div id="manual-resume-modal" class="overlay" hidden>
+    <div class="dialog manual-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-title">
+      <div class="d-head" id="manual-title">✎ 填写简历资料</div>
+      <div class="d-sub">按实际情况填写，暂时没有的信息可以留空；保存后可继续上传文件，一起生成简历。</div>
+      <div class="manual-fields">
+        <label>基本信息<textarea id="manual-basic" placeholder="姓名、联系方式、求职意向；其他希望展示的信息也可填写。"></textarea></label>
+        <label>教育背景<textarea id="manual-education" placeholder="学校、专业、学历、起止时间；相关课程、成绩或荣誉（选填）。"></textarea></label>
+        <label class="manual-experience">项目、工作及其他经历<textarea id="manual-experience" placeholder="工作、实习、项目、社团、竞赛等都写在这里，每段经历分开写。建议说明：名称与时间、你的角色、做了什么、使用的方法或技术、实际成果。没有准确数据可描述真实产出，不必编造。"></textarea></label>
+        <label>技能、成果与补充说明<textarea id="manual-skills" placeholder="技能及熟练程度、证书、奖项、作品链接；希望突出或不展示的内容。"></textarea></label>
+      </div>
+      <div class="d-foot"><button type="button" class="btn" id="manual-cancel">取消</button><button type="button" class="d-ok" id="manual-save">保存资料</button></div>
+    </div>
+  </div>
   <!-- Toast 容器 -->
   <div id="toasts"></div>`;
 

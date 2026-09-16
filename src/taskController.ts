@@ -31,13 +31,13 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       const selected = await open({ multiple: true, title: "选择材料文件" });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
-      materialsByTool[tool] = paths;
+      materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...paths])];
     } catch {
       // 非 Tauri 环境：退回原生文件选择（仅浏览器演示，无法提供真实路径）
       const input = document.getElementById(`materials-input-${tool}`) as HTMLInputElement | null;
       if (!input) return;
       input.onchange = () => {
-        materialsByTool[tool] = Array.from(input.files ?? []).map((f) => f.name);
+        materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...Array.from(input.files ?? []).map((f) => f.name)])];
         renderFileRows(tool);
       };
       input.click();
@@ -81,12 +81,35 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
         toast("桌面端请点击上传区选择文件", "warn");
         return;
       }
-      materialsByTool[tool] = Array.from(files).map((f) => f.name);
+      materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...Array.from(files).map((f) => f.name)])];
       renderFileRows(tool);
     });
   });
 
   /* ===== 任务 ===== */
+  const manualFields = ["basic", "education", "experience", "skills"];
+  const manualLabels = ["基本信息", "教育背景", "项目、工作及其他经历", "技能、成果与补充说明"];
+  let manualValues = manualFields.map(() => "");
+  const manualDialog = document.getElementById("manual-resume-modal");
+  document.getElementById("resume-manual")?.addEventListener("click", () => {
+    manualFields.forEach((key, i) => {
+      (document.getElementById(`manual-${key}`) as HTMLTextAreaElement).value = manualValues[i];
+    });
+    if (manualDialog) manualDialog.hidden = false;
+    document.getElementById("manual-basic")?.focus();
+  });
+  document.getElementById("manual-cancel")?.addEventListener("click", () => {
+    if (manualDialog) manualDialog.hidden = true;
+  });
+  document.getElementById("manual-save")?.addEventListener("click", () => {
+    manualValues = manualFields.map(key => (document.getElementById(`manual-${key}`) as HTMLTextAreaElement).value.trim());
+    if (manualDialog) manualDialog.hidden = true;
+    const status = document.getElementById("manual-status");
+    if (status) status.textContent = manualValues.some(Boolean) ? "已填写，将与上传材料一起提交" : "可与上传材料一起使用";
+  });
+  manualDialog?.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Escape") manualDialog.hidden = true;
+  });
   const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", resume: "resume_pro" };
   let taskState: TaskState = initialTaskState;
   let taskId = "";
@@ -146,6 +169,8 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
         `篇幅：${length}`,
       ];
       if (extra) lines.push(`补充要求：${extra}`);
+      const manual = manualValues.map((value, i) => value ? `${manualLabels[i]}：\n${value}` : "").filter(Boolean);
+      if (manual.length) lines.push("用户手动填写的简历资料：\n" + manual.join("\n\n"));
       const vision = capabilityEffective("vision");
       if (!vision) lines.push("注意：当前模型无视觉能力，将走机械溢出检测流程，不进行视觉版式核验。");
       return { title: role ? `${role} 简历` : "简历制作", prompt: lines.join("\n"), templateId: tpl, outputFormat: format, writingStyle };
