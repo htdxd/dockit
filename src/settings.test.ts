@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   defaultProviderName,
@@ -6,7 +6,17 @@ import {
   legacyToProvider,
   validateProvider,
   _defaultProvider,
+  loadGlobalSettings,
 } from "./settings";
+
+it.each([undefined, '', '   ', 'E:/my-resumes'])('defaults only an empty output directory: %s', async (saved) => {
+  vi.stubGlobal('localStorage', { getItem: () => JSON.stringify({ output_dir: saved }) });
+  try {
+    expect((await loadGlobalSettings()).output_dir).toBe(saved?.trim() || './outputs');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 describe("provider validation", () => {
   it("accepts a complete openai provider", () => {

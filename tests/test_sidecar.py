@@ -15,6 +15,24 @@ EMPTY_DOCX_PLAN = (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('directory', ['', None, './results'])
+async def test_default_output_is_resolved_against_writable_backend_directory(tmp_path, monkeypatch, directory):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('skill_toolbox.sidecar._mineru_preflight', lambda: None)
+    service = SidecarService(lambda _: None, provider_factory=lambda _: ScriptedProvider([]))
+    service._mineru_key = 'test-token'
+    captured = []
+    async def capture(request_id, runtime, request, log_path):
+        captured.append(request.output_dir)
+    monkeypatch.setattr(service, '_run', capture)
+    await service.handle({'id':'default-directory','type':'start_task','payload':{
+        'provider':{'kind':'mock','model':'mock'}, 'skill_id':'resume_pro',
+        'template_id':'t001', 'user_prompt':'test', 'output_dir':directory}})
+    await service.wait_all()
+    assert captured == [(tmp_path / ('results' if directory else 'outputs')).resolve()]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "template_id, expected",
     [("t109", "t109"), (" t001 ", "t001"), ("", None), (None, None), (109, None)],

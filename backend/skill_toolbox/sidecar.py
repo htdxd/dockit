@@ -246,7 +246,7 @@ class SidecarService:
         broker = UserInputBroker()
         self.brokers[request_id] = broker
         materials = [Path(p) for p in payload.get("materials", []) if p]
-        output_dir = Path(payload["output_dir"])
+        output_dir = Path(str(payload.get("output_dir") or "./outputs")).expanduser().resolve()
         log_path = output_dir / DEBUG_LOG_DIR / f"{request_id}.jsonl"
         log_lock = threading.Lock()
 

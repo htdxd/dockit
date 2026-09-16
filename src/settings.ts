@@ -70,7 +70,7 @@ export interface GlobalSettings {
 }
 
 export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
-  output_dir: "",
+  output_dir: "./outputs",
   mineru_key: "",
   active_provider: "",
 };
@@ -395,7 +395,7 @@ export async function loadGlobalSettings(): Promise<GlobalSettings> {
     getSetting("mineru_key", ""),
     getSetting("active_provider", ""),
   ]);
-  return { output_dir, mineru_key, active_provider };
+  return { output_dir: output_dir.trim() || DEFAULT_GLOBAL_SETTINGS.output_dir, mineru_key, active_provider };
 }
 
 export async function saveGlobalSettings(settings: GlobalSettings): Promise<void> {

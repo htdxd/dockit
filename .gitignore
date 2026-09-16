@@ -20,6 +20,7 @@ test-materials/
 
 # User-generated output directory (published artifacts are runtime data)
 output/
+outputs/
 
 # ResumeCollection upstream repo (nested git repo, 805MB; only the selected
 # template copies under resume_pro/templates are tracked in this repo)
