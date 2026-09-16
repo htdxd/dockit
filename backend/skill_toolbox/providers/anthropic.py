@@ -59,6 +59,7 @@ class AnthropicProvider:
         messages: Sequence[ConversationMessage],
         tools: list[dict[str, object]],
     ) -> AssistantTurn:
+        self.client.max_retries = 3
         params: dict[str, Any] = {
             "model": self.model,
             "system": system_prompt,
@@ -140,6 +141,7 @@ class AnthropicProvider:
         carries thinking metadata / usage (thinking_blocks or output_tokens
         beyond the text), and its ``control`` type is "budget".
         """
+        self.client.max_retries = 0
         return await run_probes(capabilities, {
             "tool_calling": self._probe_tool_calling,
             "vision": self._probe_vision,

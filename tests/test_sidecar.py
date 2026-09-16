@@ -198,22 +198,14 @@ def test_request_models_openai_endpoint_and_auth(monkeypatch) -> None:  # type: 
 
     captured: dict[str, object] = {}
 
-    class FakeResponse:
-        def read(self) -> bytes:
-            return b'{"data":[{"id":"gpt-4o"},{"id":"deepseek-v3"},{"id":null}]}'
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
+    import httpx
+    original = sidecar.openai.OpenAI
+    def respond(request):
+        captured["url"] = str(request.url)
         captured["header"] = request.headers.get("Authorization")
-        return FakeResponse()
-
-    monkeypatch.setattr(sidecar.urllib.request, "urlopen", fake_urlopen)
+        return httpx.Response(200, json={'data': [{'id':'gpt-4o'}, {'id':'deepseek-v3'}, {'id':None}]})
+    monkeypatch.setattr(sidecar.openai, 'OpenAI', lambda **kw: original(**kw,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond))))
 
     models, error = sidecar.request_models("openai", "https://gw.example/v1", "sk-test")
     assert error is None
@@ -228,24 +220,15 @@ def test_request_models_anthropic_endpoint_and_auth(monkeypatch) -> None:  # typ
 
     captured: dict[str, object] = {}
 
-    class FakeResponse:
-        def read(self) -> bytes:
-            return b'{"data":[{"id":"claude-4-sonnet"},{"id":"claude-4-haiku"}]}'
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-    def fake_urlopen(request, timeout):
-        headers = {k.lower(): v for k, v in request.headers.items()}
-        captured["url"] = request.full_url
-        captured["x-api-key"] = headers.get("x-api-key")
-        captured["version"] = headers.get("anthropic-version")
-        return FakeResponse()
-
-    monkeypatch.setattr(sidecar.urllib.request, "urlopen", fake_urlopen)
+    import httpx
+    original = sidecar.anthropic.Anthropic
+    def respond(request):
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key")
+        captured["version"] = request.headers.get("anthropic-version")
+        return httpx.Response(200, json={'data':[{'id':'claude-4-sonnet'}, {'id':'claude-4-haiku'}]})
+    monkeypatch.setattr(sidecar.anthropic, 'Anthropic', lambda **kw: original(**kw,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond))))
 
     # base_url without /v1 → append /v1/models; empty base → official endpoint
     models, error = sidecar.request_models("anthropic", "https://api.anthropic.com", "sk-ant")
@@ -262,14 +245,12 @@ def test_request_models_anthropic_endpoint_and_auth(monkeypatch) -> None:  # typ
 
 
 def test_request_models_http_error_returns_message(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import urllib.error
-
     from skill_toolbox import sidecar
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
-
-    monkeypatch.setattr(sidecar.urllib.request, "urlopen", fake_urlopen)
+    import httpx
+    original = sidecar.openai.OpenAI
+    monkeypatch.setattr(sidecar.openai, 'OpenAI', lambda **kw: original(**kw,
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(401)))))
 
     models, error = sidecar.request_models("openai", "https://gw.example/v1", "bad")
     assert models == []

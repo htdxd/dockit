@@ -42,6 +42,7 @@ class OpenAIResponsesProvider(OpenAIProvider):
         return items
 
     async def complete(self, system_prompt, messages, tools):
+        self.client.max_retries = 3
         parameters = {
             "instructions": system_prompt, "input": self._response_input(messages),
             "max_output_tokens": self.max_tokens,

@@ -5,8 +5,8 @@ import json
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+import openai
+import anthropic
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -28,8 +28,8 @@ Emitter = Callable[[dict[str, Any]], None]
 ProviderFactory = Callable[[ProviderConfig], ModelProvider]
 DEBUG_LOG_DIR = ".skill-toolbox-logs"
 MODELS_TIMEOUT_SECONDS = 15
-# 能力探测整体超时：三次最小请求（tool/vision/reasoning）串行执行。
-PROBE_TIMEOUT_SECONDS = 60.0
+# 每项单独限时并保留结果，总上限覆盖四项串行探测。
+PROBE_TIMEOUT_SECONDS = 185.0
 
 # 稳定错误码（实施计划 §9.1）。前端按码渲染可行动提示；原始 stderr 只进
 # 调试日志，不进事件正文。
@@ -101,34 +101,20 @@ def request_models(kind: str, base_url: str, api_key: str) -> tuple[list[str], s
     Runs in a worker thread — never block the asyncio loop with it.
     """
     base = (base_url or "").rstrip("/")
-    if kind == "anthropic":
-        base = base or "https://api.anthropic.com"
-        endpoint = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Accept": "application/json",
-        }
-    else:
-        if not base and kind in {"openai", "openai_responses"}:
-            base = "https://api.openai.com/v1"
-        if not base:
-            return [], "base_url 为空"
-        endpoint = f"{base}/models"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-        }
-    request = urllib.request.Request(endpoint, headers=headers)
+    if not base and kind == "openai_compatible":
+        return [], "base_url 为空"
+    sdk = anthropic.Anthropic if kind == "anthropic" else openai.OpenAI
+    # Anthropic SDK 自带 /v1 前缀；兼容已保存的 /v1 地址。
+    if kind == "anthropic" and base.endswith("/v1"):
+        base = base[:-3]
     try:
-        with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT_SECONDS) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return [], f"HTTP {exc.code}: {exc.reason}"
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-        return [], str(exc)
-    models = [item.get("id") for item in data.get("data", []) if item.get("id")]
-    return models, None
+        with sdk(api_key=api_key, base_url=base or None, timeout=MODELS_TIMEOUT_SECONDS, max_retries=0) as client:
+            models = client.models.list().data
+    except (openai.APIStatusError, anthropic.APIStatusError) as exc:
+        return [], f"HTTP {exc.response.status_code}: {exc.response.reason_phrase}"
+    except (openai.OpenAIError, anthropic.AnthropicError, ValueError, OSError) as exc:
+        return [], _redact(str(exc))
+    return [item.id for item in models if item.id], None
 
 
 class SidecarService:

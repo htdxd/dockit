@@ -66,6 +66,7 @@ class OpenAIProvider:
         messages: Sequence[ConversationMessage],
         tools: list[dict[str, object]],
     ) -> AssistantTurn:
+        self.client.max_retries = 3  # SDK 仅重试连接错误、408/409/429/5xx；最多三次重试。
         api_messages = self._messages(system_prompt, messages)
         api_tools = [
             {
@@ -202,6 +203,7 @@ class OpenAIProvider:
           200 gateway without verifiable metadata stays unknown.
         No raw CoT, no API keys, no user materials are ever returned.
         """
+        self.client.max_retries = 0
         return await run_probes(capabilities, {
             "tool_calling": self._probe_tool_calling,
             "vision": self._probe_vision,
