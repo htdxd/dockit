@@ -302,11 +302,17 @@ def _docx_content_items(root: etree._Element) -> list[etree._Element]:
 
 
 def _docx_text(element: etree._Element) -> str:
-    return "".join(
-        node.text or ""
-        for node in element.iter()
-        if node.tag in {W_NS + "t", M_NS + "t"}
-    ).strip()
+    parts: list[str] = []
+    for node in element.iter():
+        if node.tag in {W_NS + "t", M_NS + "t"}:
+            parts.append(node.text or "")
+        elif node.tag == W_NS + "tab":
+            parts.append("\t")
+        elif node.tag in {W_NS + "br", W_NS + "cr"}:
+            parts.append("\n")
+        elif node.tag == W_NS + "p" and node is not element and parts:
+            parts.append("\n")
+    return "".join(parts).strip()
 
 
 def _docx_heading_level(paragraph: etree._Element) -> int | None:
@@ -980,9 +986,13 @@ class MaterialService:
     ) -> DocumentIR:
         """md/txt 原生解析：标题/列表/表格/代码/图片引用 + 相对资源安全物化。"""
         try:
-            md_text = staged.read_text(encoding="utf-8")
+            raw = staged.read_bytes()
+            md_text = raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
         except UnicodeDecodeError:
-            md_text = staged.read_text(encoding="utf-8", errors="replace")
+            try:
+                md_text = raw.decode("gb18030")
+            except UnicodeDecodeError as exc:
+                raise MaterialError("MATERIAL_CORRUPT", "文本编码无法识别，请另存为 UTF-8 后上传。") from exc
         warnings: list[str] = []
         material_id = material_id_for(original)
 

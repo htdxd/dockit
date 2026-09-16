@@ -13,6 +13,43 @@ from skill_toolbox.runtime import AgentRuntime
 from skill_toolbox.tools.materials import MaterialPlanService
 
 
+@pytest.mark.parametrize('encoding', ['utf-8-sig', 'utf-16', 'gb18030'])
+def test_uploaded_text_encodings_reach_tool_output(tmp_path, encoding):
+    source = tmp_path / 'experience.txt'
+    text = '项目经历：独立设计测试台，完成控制程序开发。'
+    source.write_text(text, encoding=encoding)
+    service = MaterialService(tmp_path / 'workspace')
+    service.prepare_material(source)
+    catalog = service.catalog()
+    ir = next(iter(catalog.irs.values()))
+    result, images, meta = dispatch_with_media('read_material', {'source_id': ir.material_id, 'view': 'blocks'},
+        DomainServices(materials=MaterialPlanService(tmp_path / 'workspace', catalog, 'resume')))
+    assert text in result and meta['ok'] and not images
+
+
+def test_standalone_uploaded_image_reaches_all_protocol_payloads(tmp_path):
+    from skill_toolbox.models import ConversationMessage, ToolCall, ToolResult
+    from skill_toolbox.providers.openai import OpenAIProvider
+    from skill_toolbox.providers.openai_responses import OpenAIResponsesProvider
+    from skill_toolbox.providers.anthropic import AnthropicProvider
+    source = tmp_path / 'resume-screenshot.png'
+    Image.new('RGB', (400, 600), 'white').save(source)
+    workspace = tmp_path / 'workspace'
+    service = MaterialService(workspace)
+    service.prepare_material(source)
+    catalog = service.catalog()
+    ir = next(iter(catalog.irs.values()))
+    output, images, meta = dispatch_with_media('read_material', {'source_id': ir.assets[0].id},
+        DomainServices(materials=MaterialPlanService(workspace, catalog, 'resume', {'vision':True})))
+    assert meta['ok'] and len(images) == 1
+    messages = [ConversationMessage(role='assistant', tool_calls=[ToolCall(id='image',name='read_material')]),
+                ConversationMessage(role='tool', tool_results=[ToolResult(tool_call_id='image',name='read_material',
+                    success=True,content=output,images=images)])]
+    for payload in (OpenAIProvider._messages('test', messages),
+                    OpenAIResponsesProvider._response_input(messages), AnthropicProvider._messages(messages)):
+        assert images[0]['base64_data'] in json.dumps(payload)
+
+
 @pytest.fixture
 def material(tmp_path):
     source = tmp_path / "source"

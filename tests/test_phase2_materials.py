@@ -377,6 +377,22 @@ def test_docx_ir_preserves_rich_block_order_and_image_links(tmp_path: Path) -> N
     )
 
 
+def test_docx_styled_text_keeps_line_breaks_tabs_and_cell_paragraphs(tmp_path):
+    from docx import Document
+    source = tmp_path / 'styled.docx'
+    document = Document()
+    paragraph = document.add_paragraph()
+    paragraph.add_run('加粗内容').bold = True
+    paragraph.add_run('\t下一字段\n下一行').italic = True
+    cell = document.add_table(rows=1, cols=1).cell(0, 0)
+    cell.text = '第一段'
+    cell.add_paragraph('第二段')
+    document.save(source)
+    ir = MaterialService(tmp_path / 'workspace').prepare_material(source)
+    assert ir.blocks[0].text == '加粗内容\t下一字段\n下一行'
+    assert '第一段<br>第二段' in ir.blocks[1].text
+
+
 def test_pdf_preprocessing_exposes_single_prepared_docx(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
