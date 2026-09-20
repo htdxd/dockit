@@ -1,0 +1,8 @@
+# 下载官方 Windows Caddy，复制本文件为 Caddyfile，替换域名。
+# Caddy 负责 HTTPS；只公开 80/443，不向公网开放 8080。
+resume.example.com {
+    request_body {
+        max_size 31MB
+    }
+    reverse_proxy 127.0.0.1:8080
+}

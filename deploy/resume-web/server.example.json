@@ -1,0 +1,21 @@
+{
+  "public_origin": "https://resume.example.com",
+  "secure_cookie": true,
+  "port": 8080,
+  "data_dir": "data",
+  "queue_limit": 20,
+  "max_concurrent_tasks": 1,
+  "task_timeout_seconds": 1800,
+  "retention_days": 7,
+  "mineru_key": "REPLACE_MINERU_TOKEN",
+  "provider": {
+    "kind": "openai_compatible",
+    "base_url": "https://YOUR_PROVIDER/v1",
+    "model": "qwen3.8-flash",
+    "api_key": "REPLACE_LLM_API_KEY",
+    "max_tokens": 65536,
+    "vision": true,
+    "tool_calling": true,
+    "reasoning_level": "auto"
+  }
+}

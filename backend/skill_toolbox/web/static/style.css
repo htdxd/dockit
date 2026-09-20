@@ -1,0 +1,6 @@
+/* 桌面 CSS 原样复用；仅补充浏览器与窄屏适配。 */
+.web-consent{display:flex;align-items:center;gap:8px;color:var(--t2);font-size:12px;margin:16px 0;flex-wrap:wrap}
+.web-history{margin-bottom:16px;max-width:540px}#web-quota{font-size:12px;color:var(--t2);white-space:nowrap}
+#web-login{border:1px solid var(--border);color:var(--text);padding:28px;max-width:460px;margin:auto}
+#web-login::backdrop{background:#18213f80}#web-login-error{color:#d9534f;margin-top:10px}.v-open{text-decoration:none}
+@media(max-width:700px){.side{width:66px;padding:16px 8px}.brand{padding:4px 6px 18px}.brand>div:last-child,.side-card,.nav-item>span:last-child{display:none}.nav-item{padding:9px}.main{padding:16px 12px}.hello{flex-wrap:wrap}.hello .h{font-size:16px}.tmpl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.manual-dialog{max-width:calc(100vw - 24px)}#web-quota{white-space:normal}}
