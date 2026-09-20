@@ -22,6 +22,10 @@ test-materials/
 output/
 outputs/
 
+# Website operator configuration and data are never source assets.
+deploy/resume-web/server.json
+deploy/resume-web/data/
+
 # ResumeCollection upstream repo (nested git repo, 805MB; only the selected
 # template copies under resume_pro/templates are tracked in this repo)
 ResumeCollection/
@@ -41,3 +45,14 @@ ResumeCollection/
 
 # 规划文档（不提交）
 Provider能力探测与Reasoning实现计划.md
+
+# Private local configuration, scratch evidence and conversation exports
+server.json
+.env
+.env.*
+!.env.example
+.tmp_t/
+.pi-loop.json.lock
+sess_*.md
+*.db
+*.sqlite

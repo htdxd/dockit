@@ -170,7 +170,7 @@
     }
   ],
   "notes": "分区标题（职业技能/工作经验/教育背景/自我评价/基本信息）与装饰文本（我一直在努力！/PERSONAL RESUME）保留原样不替换；姓名框内 '年 龄/学 历' 行保留原文。",
-  "template_sha256": "11f49b40d9c41edf9be19908ae592d105b442f60c4fbb060d192d21dcf980c02",
+  "template_sha256": "ed74619c12b1a64e1ee196ab9d031c7ee2c003607d08a2c9ee3ae2397b1060de",
   "components": [
     {
       "id": "name",
@@ -424,5 +424,6 @@
     "photo": [
       "photo"
     ]
-  }
+  },
+  "sample_photo": "Generated neutral placeholder; scripts/sanitize_release_templates.py"
 }

@@ -185,7 +185,7 @@
     }
   ],
   "notes": "分区标题（个人信息/教育背景/自我评价/技能证书/校园经历/实习经历）保留原样不替换。",
-  "template_sha256": "330569f6a477df9d8b86f9fdba6397cf3be36585259e54e5589df82ef82e9401",
+  "template_sha256": "f375fccce924c50ccbe073159165b42cb3c93eac22d311805f0c233855718f52",
   "components": [
     {
       "id": "header_left",
@@ -442,5 +442,6 @@
     "photo": [
       "photo"
     ]
-  }
+  },
+  "sample_photo": "Generated neutral placeholder; scripts/sanitize_release_templates.py"
 }

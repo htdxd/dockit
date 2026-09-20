@@ -1,0 +1,9 @@
+title = "DocKit Resume secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact synthetic credential used by redaction regression tests"
+regexTarget = "secret"
+regexes = ['''^sk-leaktest-abcdef123456\.?$''']

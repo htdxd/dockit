@@ -1,54 +1,13 @@
 {
   "schema_version": "1",
-  "generated_at": "2026-08-12",
-  "note": "受控工具与 Skill 适配重构计划 §4 的来源清单。仅 ppt-master 作为外部可维护更新仓库管理；resume_pro / docx_pro 均为本项目自有代码，不做外部更新跟踪。",
+  "generated_at": "2026-09-20",
+  "note": "当前产品仅保留简历；PPT 上游不再加载或打包。",
   "skills": {
-    "ppt-master": {
-      "source": "external",
-      "upstream_repo": "https://github.com/hugohe3/ppt-master",
-      "ref": "main",
-      "commit": "unpinned-local-snapshot",
-      "vendor_version": "4.2.0",
-      "license": "unknown (SPONSORS.md 声称 free and open source；具体 LICENSE 文件需人工复核)",
-      "vendor_dir": "skill_defs/ppt-master",
-      "adapter": "skill_toolbox/tools/ppt.py",
-      "adapter_status": "fingerprint-and-structure-gate-only; generation-not-connected",
-      "manifest_version": "4.2.0",
-      "local_notes": [
-        "manifest 已精简为项目所需的 action 白名单（fill_analyze/fill_scaffold/fill_check/fill_apply/fill_validate/project_init/project_import/project_validate/source_to_md/svg_quality_check/finalize_svg/svg_to_pptx/total_md_split）",
-        "prompt.md 已含本项目的受控执行与无 Vision 纪律（不随上游更新覆盖）",
-        "ppt_render.py 是本地新增的渲染 action（skills.py 注册），上游无此入口"
-      ],
-      "upgrade_procedure": "仅按计划 §10：独立分支拉取 → 只更新 skill_defs/ppt-master 与 upstream.lock.json → 跑 PptService contract tests → 失败保留旧版本"
-    },
     "resume_pro": {
       "source": "local",
-      "notes": "本项目自有代码：模板 manifest（template_sha256/components/allowed_actions）、fill_resume.py 原位替换与受限组件动作、照片链路。不跟随外部 Skill 自动更新。",
-      "can_overwrite": "no",
-      "local_modified": [
-        "scripts/fill_resume.py",
-        "prompt.md",
-        "templates/*/manifest.json"
-      ]
-    },
-    "docx_pro": {
-      "source": "local",
-      "notes": "本项目深度改造的本地 facade：docx_pro_engine/build_docx/inject_toc/postcheck_docx/render_pages/download_assets 均为本地维护。脚本保留兼容入口，核心逻辑由 DocxService 编排。",
-      "can_overwrite": "no",
-      "local_modified": [
-        "manifest.json",
-        "prompt.md",
-        "scripts/docx_pro_engine.py",
-        "scripts/inject_toc.py",
-        "scripts/postcheck_docx.py",
-        "scripts/download_assets.py"
-      ]
+      "license": "AGPL-3.0-only",
+      "templates_source": "https://github.com/mmmlllnnn/ResumeCollection",
+      "templates_license": "MIT; see templates/LICENSE and THIRD_PARTY_NOTICES.md"
     }
-  },
-  "runtime_versions": {
-    "python": "uv base E:\\python\\base (Python 3.14.3)",
-    "office": "未探测（渲染走 PowerPoint COM / LibreOffice 运行时探测）",
-    "mineru": "mineru-open-api（npm 全局，CLI 运行时解析）",
-    "poppler": "pdftoppm/pdftotext（渲染与 inspect 依赖，运行时探测）"
   }
 }

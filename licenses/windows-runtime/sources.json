@@ -1,0 +1,57 @@
+[
+  {
+    "name": "ICU",
+    "url": "https://raw.githubusercontent.com/unicode-org/icu/main/LICENSE",
+    "sha256": "e09827667e0bb3c808b2a463548ba814a5e6249b67353234d70c8dfc2bcc417d"
+  },
+  {
+    "name": "OpenSSL",
+    "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.6.0/LICENSE.txt",
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+  },
+  {
+    "name": "libssh2",
+    "url": "https://raw.githubusercontent.com/libssh2/libssh2/master/COPYING",
+    "sha256": "a83a4da224ebeaaaea5efb4cd1ef1ab0998c1bd719d6f70b05e1d5c491372137"
+  },
+  {
+    "name": "libdeflate",
+    "url": "https://raw.githubusercontent.com/ebiggers/libdeflate/master/COPYING",
+    "sha256": "4ad69099cb4374836fd27583d9991e2838cd86b6e4666ab26b2d32582c91e73a"
+  },
+  {
+    "name": "Lerc",
+    "url": "https://raw.githubusercontent.com/Esri/lerc/master/LICENSE",
+    "sha256": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671"
+  },
+  {
+    "name": "libjpeg-turbo",
+    "url": "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/main/LICENSE.md",
+    "sha256": "ba6bceebcba0fdd35488477c2cca8c4632ce82c74dbfbc87d886ce6fc4433579"
+  },
+  {
+    "name": "libpng",
+    "url": "https://raw.githubusercontent.com/pnggroup/libpng/libpng16/LICENSE",
+    "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+  },
+  {
+    "name": "libpsl",
+    "url": "https://raw.githubusercontent.com/rockdaboot/libpsl/master/LICENSE",
+    "sha256": "e7c9f0d8498d28a360a7e8293ea70fd7bd952955b636938322c13d60a03b5a45"
+  },
+  {
+    "name": "libtiff",
+    "url": "https://gitlab.com/libtiff/libtiff/-/raw/master/LICENSE.md",
+    "sha256": "0e27c2382d7b8147972bbb746e04059a1152c8d0fda9d03ef1399d1a433c4ade"
+  },
+  {
+    "name": "xz",
+    "url": "https://raw.githubusercontent.com/tukaani-project/xz/master/COPYING",
+    "sha256": "616a3ad264ce29b8f1cb97e53037b139d406899ca8d1f799651e17bfa09830b8"
+  },
+  {
+    "name": "zstd",
+    "url": "https://raw.githubusercontent.com/facebook/zstd/dev/LICENSE",
+    "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+  }
+]

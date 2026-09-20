@@ -1,76 +1,72 @@
-# DocKit · AI 文档产物工具箱（skill-toolbox）
+# DocKit Resume
 
-一个极轻量、即开即用的 AI 文档产物桌面工具。它将 Coding Agent 中经过验证的 Skill 能力封装为面向普通用户的小工具：选择一个日常任务、提供必要的材料与要求，软件在本地受控环境中调用用户自行配置的 LLM，最终输出可由专业软件（Word / WPS / PowerPoint）继续编辑的文件。产品交付的是「可用产物」，而不是通用 AI 对话能力。
+面向中文简历的 AI 制作工具：从零整理经历、优化已有简历、迁移到组件化模板，并用自然语言修改内容与样式。输出可编辑 DOCX 或 PDF。
 
-## V1 工具
+[下载 Windows 版与源码](https://github.com/htdxd/dockit/releases/latest)
 
-| 工具 | 输入 | 输出 |
-|---|---|---|
-| PPT 生成 | 主题、材料、风格、页数 | `.pptx` |
-| 简历生成 | 经历、目标岗位、材料 | `.docx` / `.pdf` |
-| DOCX 生成 | 结构化要求、参考材料、复杂度档位 | `.docx` |
+## 当前能力
 
-## 架构
+- 两套经过实际排版验证的中文模板：t001、t109。
+- 上传 PDF、DOCX、TXT、Markdown、PNG/JPEG/WebP，或手动填写资料，两者可同时使用。
+- 首次生成前准备全部解析文字；视觉模型逐张转录上传图片，保留来源与无法辨认项。原图与机械提取工具用于按需复核。
+- 通过问答补齐项目/实习的关键事实；GitHub、作品集、Stars/Forks 等由用户按需提供，不联网抓取或编造。
+- 自定义个人字段、栏目与项目指标；支持字号、整体缩放、链接、加粗与模板主题色强调。
+- Word 实际测量文本高度与换行，布局后检查边界、重叠、文字完整性，再向视觉模型返回页面进行复核。
+- 桌面版与简历专用网页版。PPT 制作、通用 Word 制作、独立 PDF→DOCX 转换已退出产品。
 
-```
-src/                 Tauri v2 + Vite + TypeScript 前端（无 UI 框架）
-backend/             Python skill-toolbox sidecar（AgentRuntime + Skill 运行时）
-  skill_toolbox/
-    runtime.py       极简 Agent tool-call loop（受控 workspace、超时、可审计日志）
-    capabilities.py  模型能力解析（vision 静态表 + 用户覆盖 + 真实能力探测）
-    skill_defs/      Skill 清单：docx_pro / resume_pro / ppt-master（上游单独跟踪）
-tests/               pytest（运行时、能力路由、能力探测、docx_pro 端到端）
-src-tauri/           Rust 宿主：spawn sidecar、stdin/stdout JSON-lines 协议
-```
+## 环境要求
 
-### 能力感知路由
+高质量生成路径需要 **Windows + Microsoft Word + Poppler**。本机验证使用 Word 16.x；只有 WPS 的环境不支持当前测量引擎。生成的 DOCX 可由兼容软件打开，但不同软件显示可能有差异。
 
-- Skill manifest 声明 `required_capabilities` / `optional_capabilities`（如 `tool_calling`、`vision`）。
-- 任务开始前解析模型能力：用户显式覆盖 > 最近一次同指纹探测结果 > 静态模型表 > 安全默认；缺失必需能力时**明确报错，不静默降级**。
-- 运行时把 `[CAPABILITIES]` 横幅注入 system prompt，Skill 依据横幅路由（如 DOCX 的视觉版式校验 vs 机械质量门）。
+需要配置支持工具调用的 LLM。图片内容理解与视觉验收需要视觉能力；未启用视觉时会明确标记未识别图片与未执行的视觉检查。PDF/DOCX 主解析使用 MinerU 云服务，需要 CLI 与 Token。
 
-### 能力探测与推理控制
+这不是跨平台、无需 Office 的纯浏览器编辑器。当前没有统计意义上的首稿成功率承诺。
 
-- 设置页「检测模型能力」对当前 Provider 发起**真实、最小、确定性**请求：Tool Calling（echo nonce）、Vision（内存生成随机短码图片，模型回读短码）、Reasoning Control（OpenAI `reasoning_effort` / Anthropic `budget_tokens`，仅在响应携带可验证 metadata 时标记 verified）。
-- 探测结果四态：`verified / unsupported / probe_error / unknown`；随 `kind + base_url + model` 指纹缓存于 SQLite（`capability_probe`），三者任一变化即失效。
-- 「生成质量」档位 `auto / fast / balanced / deep` 随任务发送；`auto` 不发送推理参数，其余映射为厂商原生参数，模型不支持时安全省略。
-- 探测与日志不写 API Key、不写 raw CoT、不落盘 thinking block；浏览器演示模式不触发真实探测。
+## 开发运行
 
-### docx_pro 生成流程
-
-`build_docx`（封面配方 / CJK 版式 / WPS 兼容 / OMML 公式）→ `inject_toc`（TOC 域 + updateFields）→ `postcheck_docx`（15 条业务质量门，含表格跨页、CJK 缩进、占位符泄漏）→（vision 模型）`render_pages` 渲染 PNG 逐页核验。复杂档位支持填报表单（SDT + 文档保护）、公文 GB/T 9704、模板套用，OfficeCLI 可用时可委托原生图表/水印/邮件合并。规格支持**顺序 block**（`blocks[]`），图片/表格/公式可插入指定 section/段落之间。
-
-### 共享材料理解（统一 IR）
-
-三个功能（PPT / 简历 / DOCX）共用同一套材料事实：
-
-- **MaterialService 预处理**：任务进入 Agent loop 前完成 hash 暂存（`sources/<id16>/`）、格式路由与 DocumentIR 解析（md/txt 原生；PPTX 复用 ppt-master parser；PDF/DOCX 富解析继续走 read/ingest）；同 hash 只解析一次。
-- **DocumentIR**（`work/materials/<id16>/document.json`）：版本化 block/asset 模型，图片块保留资产位置引用；`content.md` 由 IR 单向投影，供 Agent 顺序阅读。
-- **ContentPlan 纪律**：三个 Prompt 都要求先读材料摘要 → 写 `work/plans/content-plan.json`（selections/exclusions 留痕）→ 再生成。
-- **双模式**：`vision=true` 智能读取候选图并渲染复核；`vision=false` 保守模式（高置信度资源 + 单次批量提问 + 机械门），QA 明确标注「视觉检查未执行」。
-- **MinerU 强依赖**：启动前全局 preflight（CLI/Token），不可用直接以稳定错误码失败，不静默降级。
-- **简历组件能力**：5 套精选模板 manifest 带 `template_sha256` + components/白名单动作（replace_text/replace_asset/resize/shift/clone），hash 不匹配即失败。
-
-## 开发
-
-```bash
-# 前端
-npm install && npm run dev        # vite dev (127.0.0.1:1420)
-npm run build && npm test
-
-# 后端（uv base 环境）
-uv run pytest tests/ -q
-
-# 桌面端（需 Rust toolchain）
+```powershell
+uv sync --extra web
+npm ci
 npm run tauri dev
 ```
 
-## 模型接入
+模型与 MinerU 在桌面设置页配置。用户资料、密钥、日志、数据库和 output/outputs 不应提交到 Git。内部 skill_toolbox 包名、应用 ID 与旧数据目录保留兼容，展示名称为 DocKit Resume。
 
-OpenAI / Anthropic / OpenAI-compatible 网关均可：在设置页填写 `base_url`、`api_key`、模型名，任务开始前校验能力。MinerU 是三个生成功能的强依赖，Token 在设置页「第三方服务」配置，设置页显示 CLI 可解析状态。
+```powershell
+uv run --extra web pytest
+npm test
+npm run build
+```
 
-独立 PDF 转 DOCX 功能已下线；PDF 仍可作为生成材料，内部解析适配器位于 `backend/skill_toolbox/parsers/mineru_pdf.py`。历史转换成果保留在原输出目录，并在 DOCX 产物页显示。
+Word 端到端测试需要本机安装环境；纯逻辑测试不会调用付费模型。真实模型效果仍需单独验证。
 
-## 许可证
+## 部署与打包
 
-内部项目，未发布。第三方参考：MiniMax minimax-docx（MIT，规则参考）、iOfficeAI OfficeCLI（Apache 2.0，可选集成）。
+- 桌面安装包：先 `uv run scripts/release_sources.py`，再 `npm run package`。
+- Windows 网页版：`uv run --extra web scripts/package_web.py`；按 [部署说明](deploy/resume-web/DEPLOY.md) 配置服务器密钥。
+- 环境检查：发行目录运行 `start-web.bat --check`，验证 Word 身份、两模板实际测量、PDF 导出和页面图片。
+- [压测说明](deploy/resume-web/LOADTEST.md)：匿名无限制模式仅用于本机小范围压测，不用于公开访问。
+
+不要把模型/MinerU 密钥放入前端或公开安装包。Microsoft Office 无人值守服务的可靠性与许可需要独立评估。
+
+## 数据处理
+
+桌面版文件与日志保存在本地，但所需材料会发送到配置的模型与 MinerU 服务；不是“数据从不离开本机”。网页版还会将上传材料、产物和任务日志保存到部署服务器。请只上传本次制作需要的信息，并了解供应商的处理政策。
+
+## 代码结构
+
+- `src/`：共享桌面/网页简历界面与控制器。
+- `backend/skill_toolbox/material_intake.py`：生成前的图片转录与材料上下文准备。
+- `contracts/resume_workflow.py`、`tools/resume_workflow.py`：简历语义操作，schema 与后端校验同源。
+- `resume_layout/`：组件模板、Word 测量、布局、DOCX 输出、渲染 QA。
+- `providers/`：官方 SDK 协议适配；可重试的模型请求最多重试 3 次（含首次最多 4 次）。
+- `web/`、`deploy/resume-web/`：网页版服务、环境诊断与压力测试。
+- `docs/`：设计与研究；旧日期文档可能描述已经退役的功能，以当前源码与本 README 为准。
+
+## 开源与第三方许可
+
+项目采用 [AGPL-3.0](LICENSE)，完整代码与构建脚本公开；若修改后以网络服务提供功能，也应按许可向使用者提供对应源码。模板与运行依赖见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+
+PyMuPDF/MuPDF 按 AGPL 开源许可使用，Release 附对应 PDF 引擎源码包。两套模板的示例照片已换成自绘占位图；上游模板原有 MIT 声明继续保留。
+
+本轮同类项目比较与后续优先级见 [开源定位与优化报告](docs/开源定位与优化报告-2026-09-20.md)。
