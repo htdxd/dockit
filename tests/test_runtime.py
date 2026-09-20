@@ -9,7 +9,7 @@ from skill_toolbox.runtime import AgentRuntime, TaskRequest
 from skill_toolbox.skills import load_skill
 
 EMPTY_DOCX_PLAN = (
-    '{"schema_version":"1","task_type":"docx","mode":"conservative",'
+    '{"schema_version":"1","task_type":"resume","mode":"conservative",'
     '"selections":[],"exclusions":[],"questions_asked":false}'
 )
 
@@ -107,14 +107,14 @@ async def test_runtime_publishes_artifact(
 
     result = await runtime.run(
         TaskRequest(
-            skill_id="docx_pro",
+            skill_id="resume_pro",
             user_prompt="生成测试文档",
             output_dir=tmp_path / "published",
         )
     )
 
     assert result.status == "completed"
-    assert result.artifacts == [tmp_path / "published" / "runtime-test.docx_pro.md"]
+    assert result.artifacts == [tmp_path / "published" / "runtime-test.resume_pro.md"]
     assert result.artifacts[0].exists()
     assert any(event["type"] == "tool_started" for event in events)
     assert {
@@ -183,7 +183,7 @@ async def test_finish_task_must_be_the_only_tool_call(
     )
     runtime = AgentRuntime(provider=provider, emit=lambda _: None)
 
-    result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
+    result = await runtime.run(TaskRequest("resume_pro", "测试", tmp_path))
 
     assert result.status == "completed"
     assert result.artifacts[0].exists()
@@ -200,7 +200,7 @@ async def test_runtime_fails_with_clear_error_when_model_times_out(
         model_timeout_seconds=0.01,
     )
 
-    result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
+    result = await runtime.run(TaskRequest("resume_pro", "测试", tmp_path))
 
     assert result.status == "failed"
     assert result.error == "LLM request timed out after 0.01 seconds"

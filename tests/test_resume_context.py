@@ -50,3 +50,23 @@ def test_failed_initial_generation_does_not_require_nonexistent_candidate():
     assert '当前尚无已生成候选' in result[-1].text
     assert '调用 resume_generate' in result[-1].text
     assert '重复字段 degree' in result[-1].text
+
+
+def test_certificate_images_and_user_information_survive_candidate_compaction():
+    messages = [ConversationMessage(role="user", text="手动填写：姓名张三，已有英语六级证书。")]
+    messages += pair("prepare", "resume_prepare", {"data": {"materials": [
+        {"material_id": f"m{i}", "blocks": []} for i in range(6)]}})
+    for i in range(6):
+        messages += pair(f"certificate-{i}", "read_material",
+                         {"data": {"material_id": f"m{i}", "view": "asset"}}, image=True)
+    messages += pair("answer", "ask_user_questions", {"answers": {"date": "2024年"}})
+    messages += pair("old", "resume_generate", {"data": {"candidate_id": "r@1"}}, image=True)
+    messages += pair("current", "resume_edit", {"data": {
+        "candidate_id": "r@2", "content": {"skills": "英语六级、计算机二级"}}}, image=True)
+    compact = current_resume_context(messages)
+    outputs = {r.tool_call_id: r for m in compact for r in m.tool_results}
+    assert "old" not in outputs
+    assert all(outputs[f"certificate-{i}"].images for i in range(6))
+    assert "姓名张三" in compact[0].text
+    assert "2024年" in outputs["answer"].content
+    assert "计算机二级" in outputs["current"].content

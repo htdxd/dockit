@@ -12,7 +12,7 @@ import { escapeHtml, flashSubtab, goSub, renderTaskState, setTaskMeta, toast } f
 export function createTaskController(send: SendBackend, settings: ProviderController) {
   const { validateSettings, capabilityEffective } = settings;
   /* ===== 每工具材料 ===== */
-  const materialsByTool: Record<string, string[]> = { ppt: [], resume: [], docx: [] };
+  const materialsByTool: Record<string, string[]> = { resume: [] };
 
   function renderFileRows(tool: string): void {
     const list = document.getElementById(`materials-list-${tool}`);
@@ -110,7 +110,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
   manualDialog?.addEventListener("keydown", (event) => {
     if ((event as KeyboardEvent).key === "Escape") manualDialog.hidden = true;
   });
-  const SKILLS: Record<string, string> = { ppt: "ppt-master", docx: "docx_pro", resume: "resume_pro" };
+  const SKILLS: Record<string, string> = { resume: "resume_pro" };
   let taskState: TaskState = initialTaskState;
   let taskId = "";
   const backendLogs: string[] = [];
@@ -130,31 +130,6 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       (document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null)?.value.trim() ?? "";
     const chipVal = (id: string): string =>
       document.querySelector<HTMLElement>(`#${id} .chip.on`)?.dataset.v ?? "";
-    if (tool === "ppt") {
-      const topic = val("ppt-topic");
-      if (!topic) {
-        toast("请填写演示主题", "warn");
-        return null;
-      }
-      const style = chipVal("ppt-style") || "商务简洁";
-      const pagesMin = val("pages-min") || "10";
-      const mode = document.querySelector<HTMLElement>(".p-mode.on")?.dataset.m;
-      const pages = mode === "range" ? `${pagesMin}–${val("pages-max") || "15"} 页` : `${pagesMin} 页`;
-      return { title: topic, prompt: `主题：${topic}\n风格：${style}\n目标页数：${pages}` };
-    }
-    if (tool === "docx") {
-      let use = chipVal("use-chips");
-      if (use === "__other") use = val("use-custom") || "其他";
-      const req = val("docx-req");
-      if (!req) {
-        toast("请填写结构化要求", "warn");
-        return null;
-      }
-      const complexity = chipVal("docx-complexity") || "standard";
-      const vision = capabilityEffective("vision");
-      const visionNote = vision ? "" : "\n注意：当前模型无视觉能力，将走机械检查流程，不进行视觉版式核验。";
-      return { title: use, prompt: `文档用途：${use}\n结构化要求：${req}\n生成复杂度：${complexity}${visionNote}` };
-    }
     if (tool === "resume") {
       const role = val("resume-role");
       const tpl = document.querySelector<HTMLElement>("#resume-template .tmpl-card.on")?.dataset.template ?? "t001";

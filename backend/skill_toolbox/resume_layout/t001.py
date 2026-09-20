@@ -86,8 +86,6 @@ def configure_heading_tabs(wsp, entry: dict):
 
 def fit_header(template: Path, fields: dict, work_dir: Path, *, header: dict | None = None) -> dict:
     """保持字体，使用两列之间及正文之前的现有空隙；Word 仍溢出则明确失败。"""
-    import pythoncom
-    from win32com import client
 
     root = emit.load_document_xml(template)
     normalize_positions(root)
@@ -100,10 +98,8 @@ def fit_header(template: Path, fields: dict, work_dir: Path, *, header: dict | N
     components = apply_header_components(boxes, profile.header_labels, header or {"fields": fields})
     host = work_dir / "header_host.docx"
     emit.save_document_xml(root, template, host)
-    pythoncom.CoInitialize()
-    word = client.DispatchEx("Word.Application")
-    word.Visible = False
-    word.DisplayAlerts = 0
+    from skill_toolbox.word_com import start_word, close_word
+    word = start_word()
     doc = None
     try:
         doc = word.Documents.Open(str(host.resolve()), False, True)
@@ -147,10 +143,7 @@ def fit_header(template: Path, fields: dict, work_dir: Path, *, header: dict | N
             results["photo_height_pt"] = round(min(original_height, max(72.0, text_bottom - top)), 2)
         return results
     finally:
-        if doc is not None:
-            doc.Close(False)
-        word.Quit()
-        pythoncom.CoUninitialize()
+        close_word(word, doc)
 
 
 def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, template: Path):
@@ -209,7 +202,7 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
             typography.scale_title(anchor, float(content.get("scale") or 1),
                                     body=wsp, template_id="t001")
             emit.set_box_text(wsp, data["text"], first_is_header=data.get("has_heading"),
-                              header_lines=data.get("heading_lines"), tech_stack_line=data.get("tech_stack_line"))
+                              header_lines=data.get("heading_lines"), tech_stack_line=data.get("tech_stack_line"), detail_styles=data.get("detail_styles"), inline_styles=data.get("inline_styles"))
             metrics = typography.apply_body(wsp, data, content, "t001", numbering)
             anchor.find(emit.WP + "extent").set("cx", str(emit.pt2emu(metrics["body_width_pt"])))
             wsp.find(emit.WPS + "spPr/" + emit.A + "xfrm/" + emit.A + "ext").set(
@@ -268,7 +261,14 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
 
 def ensure_archive(template: Path, path: Path):
     """经 Word 参考原件核准的间距；哈希绑定，实际条目高度仍实时测量。"""
-    if sha256_file(template) != "11f49b40d9c41edf9be19908ae592d105b442f60c4fbb060d192d21dcf980c02":
+    import hashlib
+    # 照片占位图不影响间距；版式绑定所有 Word XML/关系部件，包级完整性仍由 manifest 校验。
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(template) as package:
+        for name in sorted(n for n in package.namelist() if n.startswith('word/') and n.endswith(('.xml', '.rels'))):
+            digest.update(name.encode())
+            digest.update(package.read(name))
+    if digest.hexdigest() != "2da33a603e51cedc88b45b46d13c379fef8931da9bd7c2c69395bb7c7a8315bc":
         raise ValueError("t001 原件哈希变化，需重新校准间距档案")
     if path.is_file():
         archive = spacing.load_archive(path)

@@ -4,6 +4,7 @@ import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from skill_toolbox.contracts.resume_style import DetailField, FieldStyle
 
 FontSize = Annotated[float, Field(ge=8, le=18)]
 ComponentScale = Annotated[float, Field(ge=0.75, le=1.25)]
@@ -24,6 +25,7 @@ class EntryPatch(WorkflowModel):
     organization: str = Field(default="", description="学校、公司或项目名称；不拼接日期或角色。技能/自评等纯文字条目只填 text，不把栏目标题填在这里")
     role: str = Field(default="", description="专业、岗位或项目性质（如公司项目、个人项目）；作为标题信息，不混入正文")
     text: list[str] = Field(default_factory=list)
+    details: list[DetailField] = Field(default_factory=list, description="项目亮点或自定义字段；Stars/Forks 自动放在项目性质前，同占标题行；其他字段位于技术栈后。空列表清除。")
     source_ids: list[str] = Field(default_factory=list, description="可选：本条经历的事实来源 ID，复制 prepare 的 source_id 或问答返回值；只改表达时省略以保留原引用，不填写文件路径")
     tech_stack: str = Field(default="", description="项目技术栈，单独排在项目名称/性质下方；用逗号分隔，不放入 role")
 
@@ -44,7 +46,7 @@ class Entry(EntryPatch):
 
     @model_validator(mode="after")
     def require_content(self):
-        if not any(value.strip() for value in (self.date, self.organization, self.role, self.tech_stack, *self.text)):
+        if not self.details and not any(value.strip() for value in (self.date, self.organization, self.role, self.tech_stack, *self.text)):
             raise ValueError("条目必须包含标题信息或正文")
         return self
 
@@ -56,7 +58,7 @@ class Section(WorkflowModel):
     scale: ComponentScale | None = Field(default=None, description="栏目整体缩放，包含标题、图标和条目，不影响个人信息和照片；1 为原大小，最终字号至少 8pt 且须放得下页面")
 
 
-class PersonalField(WorkflowModel):
+class PersonalField(FieldStyle):
     key: str = Field(min_length=1)
     label: str = Field(min_length=1)
     value: str

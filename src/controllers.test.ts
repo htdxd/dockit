@@ -135,6 +135,10 @@ describe("controller event ownership", () => {
     vi.spyOn(providers, "taskProvider").mockReturnValue({ kind: "mock", model: "mock", api_key: "", base_url: null, vision: true, tool_calling: true, reasoning_level: "auto", capability_probe: "{}" });
     createTaskController(send, providers);
     start();
+    if (tool !== "resume") {
+      expect(send).not.toHaveBeenCalled();
+      return;
+    }
     const payload = send.mock.calls[0][0].payload as Record<string, unknown>;
     if (tool === "resume") {
       expect(payload.template_id).toBe("t109");

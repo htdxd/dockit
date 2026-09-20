@@ -287,14 +287,10 @@ def _frame_geometry(template: Path) -> dict[str, dict]:
 
 
 def _paragraph_geometry(host: Path) -> dict[str, list[dict]]:
-    import pythoncom
-    from win32com import client
+    from skill_toolbox.word_com import start_word, close_word
 
     out: dict[str, list[dict]] = {}
-    pythoncom.CoInitialize()
-    word = client.DispatchEx("Word.Application")
-    word.Visible = False
-    word.DisplayAlerts = 0
+    word = start_word()
     doc = None
     try:
         doc = word.Documents.Open(str(host), False, True)
@@ -310,10 +306,7 @@ def _paragraph_geometry(host: Path) -> dict[str, list[dict]]:
                 })
             out[sid] = rows
     finally:
-        if doc is not None:
-            doc.Close(False)
-        word.Quit()
-        pythoncom.CoUninitialize()
+        close_word(word, doc)
     return out
 
 

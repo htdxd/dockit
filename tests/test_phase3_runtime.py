@@ -76,7 +76,7 @@ async def test_material_preprocessed_before_agent_loop(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=events.append)
 
     await runtime.run(
-        _request("docx_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
+        _request("resume_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
     )
 
     # 预处理事件先于模型调用
@@ -120,7 +120,7 @@ async def test_preprocessing_failure_emits_stable_code(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=events.append)
 
     result = await runtime.run(
-        _request("docx_pro", {"vision": True, "tool_calling": True}, [material], tmp_path / "out")
+        _request("resume_pro", {"vision": True, "tool_calling": True}, [material], tmp_path / "out")
     )
 
     failed = [
@@ -163,7 +163,7 @@ async def test_same_hash_preprocessed_once(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=events.append)
 
     await runtime.run(
-        _request("docx_pro", {"vision": True, "tool_calling": True}, [m1, m2], tmp_path / "out")
+        _request("resume_pro", {"vision": True, "tool_calling": True}, [m1, m2], tmp_path / "out")
     )
 
     done = [e for e in events if e.get("type") == "material_progress" and e.get("phase") == "done"]
@@ -193,7 +193,7 @@ async def test_same_basename_materials_not_overwritten(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=events.append)
 
     await runtime.run(
-        _request("docx_pro", {"vision": True, "tool_calling": True}, [m1, m2], tmp_path / "out")
+        _request("resume_pro", {"vision": True, "tool_calling": True}, [m1, m2], tmp_path / "out")
     )
 
     # 两文件都已解析（对应两个 material_progress done）
@@ -213,7 +213,7 @@ async def test_prompts_require_content_plan_discipline() -> None:
     """三个 Prompt 都包含统一材料协议关键词：先读材料摘要、写 ContentPlan。"""
     from skill_toolbox.skills import load_skill
 
-    for skill_id in ["docx_pro", "resume_pro", "ppt-master"]:
+    for skill_id in ["resume_pro"]:
         prompt = load_skill(skill_id).system_prompt
         assert "[MATERIALS]" in prompt or "材料" in prompt, f"{skill_id} 缺材料协议"
         assert "ContentPlan" in prompt or "content-plan" in prompt, (
@@ -240,7 +240,7 @@ async def test_vision_false_never_receives_image_payload(tmp_path: Path) -> None
     runtime = AgentRuntime(provider=provider, emit=lambda _e: None)
 
     await runtime.run(
-        _request("docx_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
+        _request("resume_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
     )
 
     assert provider.image_payloads == 0
@@ -311,7 +311,7 @@ async def test_vision_false_planning_mode_conservative(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=lambda _e: None)
 
     await runtime.run(
-        _request("docx_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
+        _request("resume_pro", {"vision": False, "tool_calling": True}, [material], tmp_path / "out")
     )
 
     assert "vision: false" in provider.prompts[0]
@@ -328,7 +328,7 @@ async def test_runtime_emits_qa_status_on_failure(tmp_path: Path) -> None:
     runtime = AgentRuntime(provider=provider, emit=events.append)
 
     result = await runtime.run(
-        _request("docx_pro", {"vision": True, "tool_calling": True}, [material], tmp_path / "out")
+        _request("resume_pro", {"vision": True, "tool_calling": True}, [material], tmp_path / "out")
     )
 
     assert result.status == "failed"
@@ -429,7 +429,7 @@ def test_content_plan_validates_mode_and_asset_coverage(tmp_path: Path) -> None:
         json.dumps(
             {
                 "schema_version": "1",
-                "task_type": "docx",
+                "task_type": "resume",
                 "mode": "conservative",
                 "selections": [],
                 "exclusions": [
@@ -442,7 +442,7 @@ def test_content_plan_validates_mode_and_asset_coverage(tmp_path: Path) -> None:
     )
 
     plan = AgentRuntime._load_content_plan(
-        workspace, "docx", {"vision": False}, service.catalog()
+        workspace, "resume", {"vision": False}, service.catalog()
     )
     assert plan.mode == "conservative"
     plan_path.write_text(
@@ -453,7 +453,7 @@ def test_content_plan_validates_mode_and_asset_coverage(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="conservative"):
         AgentRuntime._load_content_plan(
-            workspace, "docx", {"vision": False}, service.catalog()
+            workspace, "resume", {"vision": False}, service.catalog()
         )
 
 
@@ -505,7 +505,7 @@ async def test_runtime_requires_content_plan_without_materials(tmp_path: Path) -
     events: list[dict[str, object]] = []
 
     result = await AgentRuntime(provider, events.append).run(
-        TaskRequest("docx_pro", "test", tmp_path / "out")
+        TaskRequest("resume_pro", "test", tmp_path / "out")
     )
 
     assert result.status == "failed"
@@ -529,7 +529,7 @@ async def test_exec_cmd_rejects_invalid_content_plan_before_action(
     invalid_plan = json.dumps(
         {
             "schema_version": "1",
-            "task_type": "docx",
+            "task_type": "resume",
             "mode": "conservative",
             "selections": [
                 {
@@ -595,7 +595,7 @@ async def test_exec_cmd_rejects_invalid_content_plan_before_action(
 
     result = await AgentRuntime(
         provider, lambda _event: None, debug_logger=debug.append
-    ).run(TaskRequest("docx_pro", "test", tmp_path / "out"))
+    ).run(TaskRequest("resume_pro", "test", tmp_path / "out"))
 
     assert result.status == "failed"
     assert not any((tmp_path / "out").glob("rejected*.docx"))
@@ -748,11 +748,11 @@ async def test_agent_written_qa_cannot_bypass_mechanical_action(tmp_path: Path) 
     )
     events: list[dict[str, object]] = []
     result = await AgentRuntime(provider, events.append).run(
-        TaskRequest("docx_pro", "test", tmp_path / "out")
+        TaskRequest("resume_pro", "test", tmp_path / "out")
     )
 
     assert result.status == "failed"
-    assert not (tmp_path / "out" / "fake.docx_pro.docx").exists()
+    assert not (tmp_path / "out" / "fake.resume_pro.docx").exists()
     assert any(
         event.get("type") == "tool_finished"
         and event.get("tool") == "finish_task"
@@ -901,7 +901,7 @@ async def test_quality_action_for_a_cannot_publish_b(tmp_path: Path) -> None:
         _quality_hash_provider("artifacts/b.docx", mutate_checked=False), events.append
     ).run(
         TaskRequest(
-            "docx_pro",
+            "resume_pro",
             "test",
             tmp_path / "out",
             capabilities={"vision": False},
@@ -909,7 +909,7 @@ async def test_quality_action_for_a_cannot_publish_b(tmp_path: Path) -> None:
     )
 
     assert result.status == "failed"
-    assert not (tmp_path / "out" / "b.docx_pro.docx").exists()
+    assert not (tmp_path / "out" / "b.resume_pro.docx").exists()
     assert any(
         event.get("tool") == "finish_task" and event.get("success") is False
         for event in events
@@ -923,7 +923,7 @@ async def test_checked_docx_modified_after_action_is_rejected(tmp_path: Path) ->
         lambda _event: None,
     ).run(
         TaskRequest(
-            "docx_pro",
+            "resume_pro",
             "test",
             tmp_path / "out",
             capabilities={"vision": False},
@@ -931,4 +931,4 @@ async def test_checked_docx_modified_after_action_is_rejected(tmp_path: Path) ->
     )
 
     assert result.status == "failed"
-    assert not (tmp_path / "out" / "a.docx_pro.docx").exists()
+    assert not (tmp_path / "out" / "a.resume_pro.docx").exists()

@@ -64,7 +64,7 @@ def test_ui_retirement_preserves_history_route_and_pdf_uploads():
     assert 'pdf: "pdf_docx_routing"' not in tasks
     assert 'buckets.docx.push(...(bySkill.pdf ?? []))' in artifacts
     assert 'name.endsWith(".pdf")) buckets.docx.push(f)' in artifacts
-    assert 'if (tool === "pdf") { tool = "docx"; sub = "art"; }' in ui
+    assert 'if (tool === "pdf") { tool = "resume"; sub = "art"; }' in ui
     assert "历史 PDF 转 DOCX（功能已下线）" in artifacts
     assert "pdf / docx / md / txt" in ui
 

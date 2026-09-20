@@ -42,7 +42,7 @@ def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template
                                     body=body, template_id=template_id)
             emit.set_box_text(body, entry["text"], style_roles=roles,
                               first_is_header=entry.get("has_heading"), header_lines=entry.get("heading_lines"),
-                              tech_stack_line=entry.get("tech_stack_line"))
+                              tech_stack_line=entry.get("tech_stack_line"), detail_styles=entry.get("detail_styles"), inline_styles=entry.get("inline_styles"))
             numbering = typography.Numbering(template)
             metrics = typography.apply_body(body, entry, sec, template_id, numbering)
             if template_id == "t001":
@@ -223,7 +223,7 @@ def emit_scenario(
             entry_data = next(e for e in scen_sec["entries"] if e["id"] == entry_plan.instance_id)
             emit.set_box_text(body_wsp, entry_text, style_roles=style_roles,
                               first_is_header=has_heading, header_lines=entry_data.get("heading_lines"),
-                              tech_stack_line=entry_data.get("tech_stack_line"))
+                              tech_stack_line=entry_data.get("tech_stack_line"), detail_styles=entry_data.get("detail_styles"), inline_styles=entry_data.get("inline_styles"))
             typography.apply_body(body_wsp, entry_data, scen_sec, template_id, numbering)
             emit.resize_group_child_bottom(new_anchor, body_wsp, entry_plan.body_h_pt)
             # 宽度覆盖：布局按真实测量给出的宽度（≤ 模板正文宽）；测量侧

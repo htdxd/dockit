@@ -26,6 +26,7 @@ def test_header_width_changes_only_when_word_reports_target_role_wrapped(tmp_pat
     shapes = {"ResumeHeader22": left, "ResumeHeader62": right}
     doc = SimpleNamespace(Shapes=lambda name: shapes[name], Close=lambda _: None)
     word = SimpleNamespace(Documents=SimpleNamespace(Open=lambda *args: doc), Quit=lambda: None)
+    monkeypatch.setattr("skill_toolbox.word_com.start_word", lambda: word)
     monkeypatch.setitem(sys.modules, "pythoncom", SimpleNamespace(
         CoInitialize=lambda: None, CoUninitialize=lambda: None))
     monkeypatch.setitem(sys.modules, "win32com", SimpleNamespace(

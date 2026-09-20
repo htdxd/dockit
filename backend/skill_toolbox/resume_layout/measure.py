@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from skill_toolbox.word_com import start_word, close_word, close_document
 
 EMU_PER_PT = 12700
 WD_VERTICAL_POS = 6     # wdVerticalPositionRelativeToPage
@@ -23,8 +24,7 @@ WD_STAT_LINES = 1       # wdStatisticLines
 
 try:  # 独立进程运行时才导入（布局单测不依赖 COM）
     import pythoncom  # type: ignore
-    from win32com import client  # type: ignore
-    _COM_OK = True
+    _COM_OK = hasattr(pythoncom, 'CoInitialize')
 except ImportError:  # pragma: no cover - 非 Windows 环境标记
     _COM_OK = False
 
@@ -82,10 +82,7 @@ class WordMeasureProbe:
         与 emit 侧写入的 ext.cx 同口径）；不带则复位宿主原始宽度。
         """
         results: list[EntryMeasurement] = []
-        pythoncom.CoInitialize()
-        word = client.DispatchEx("Word.Application")
-        word.Visible = False
-        word.DisplayAlerts = 0
+        word = start_word()
         doc = None
         try:
             doc = word.Documents.Open(str(self.host_docx), False, True)
@@ -123,10 +120,7 @@ class WordMeasureProbe:
                     text_height_pt=height,
                 ))
         finally:
-            if doc is not None:
-                doc.Close(False)
-            word.Quit()
-            pythoncom.CoUninitialize()
+            close_word(word, doc)
         return results
 
 
@@ -143,10 +137,7 @@ def measure_documents(entries: list[dict]) -> list[EntryMeasurement]:
     if not _COM_OK:
         raise RuntimeError("Word COM 测量需要 Windows + pywin32")
     results = []
-    pythoncom.CoInitialize()
-    word = client.DispatchEx("Word.Application")
-    word.Visible = False
-    word.DisplayAlerts = 0
+    word = start_word()
     try:
         for item in entries:
             doc = word.Documents.Open(str(item["host"]), False, True)
@@ -173,10 +164,9 @@ def measure_documents(entries: list[dict]) -> list[EntryMeasurement]:
                     body_pad_pt=item.get("body_pad_pt"),
                 ))
             finally:
-                doc.Close(False)
+                close_document(doc)
     finally:
-        word.Quit()
-        pythoncom.CoUninitialize()
+        close_word(word)
     return results
 
 

@@ -35,14 +35,10 @@ from skill_toolbox.llm_tools.dispatcher import (  # noqa: E402
     dispatch,  # noqa: F401 - 兼容路径/测试
     dispatch_with_media,
 )
-from skill_toolbox.llm_tools.docx import docx_tools
-from skill_toolbox.llm_tools.ppt import ppt_tools
 from skill_toolbox.llm_tools.resume import resume_tools
 from skill_toolbox.llm_tools.resume_workflow import workflow_tools
 from skill_toolbox.tools.resume_workflow import ResumeWorkflow, SUPPORTED_TEMPLATES
-from skill_toolbox.tools.docx import DocxService
 from skill_toolbox.tools.materials import MaterialPlanService
-from skill_toolbox.tools.ppt import PptService
 from skill_toolbox.tools.resume import ResumeService
 from skill_toolbox.unicode_utils import redact_secrets
 
@@ -65,10 +61,6 @@ DOMAIN_TOOL_TIMEOUTS = {
     "resume_accept": 60.0,
     "resume_restore": 420.0,
     "resume_preview": 60.0,
-    "docx_finalize": 330.0,
-    "docx_repair": 330.0,
-    "ppt_generate": 210.0,
-    "ppt_repair": 210.0,
 }
 DOMAIN_ARTIFACT_TOOLS = frozenset(
     {
@@ -80,16 +72,11 @@ DOMAIN_ARTIFACT_TOOLS = frozenset(
         "resume_generate_v2",
         "resume_repair_v2",
         "resume_restore",
-        "docx_finalize",
-        "docx_repair",
-        "ppt_generate",
     }
 )
 PENDING_VISUAL_REVIEW = "pending-visual-review.json"
 TASK_TYPE_BY_SKILL = {
-    "ppt-master": "ppt",
     "resume_pro": "resume",
-    "docx_pro": "docx",
 }
 DOCUMENT_QUALITY_PATH_ARG = {
     "postcheck_docx": "source",
@@ -99,8 +86,6 @@ DOCUMENT_QUALITY_PATH_ARG = {
 # write/edit/exec_cmd/spec_append 等底层工具（计划 §2.1/§5）。
 _DOMAIN_TOOL_FACTORIES: dict[str, Callable[[], list[dict]]] = {
     "resume_pro": resume_tools,
-    "docx_pro": docx_tools,
-    "ppt-master": ppt_tools,
 }
 
 
@@ -273,6 +258,13 @@ class AgentRuntime:
             finally:
                 # 取消/异常时终止仍活动的解析子进程（MinerU/PPT parser）
                 material_service.terminate_active()
+            if workflow_mode:
+                from skill_toolbox.material_intake import prepare_images
+                try:
+                    await prepare_images(material_service, self.provider, vision=request.capabilities.get("vision", False),
+                                         emit=self.emit, debug=self.debug, timeout=self.model_timeout_seconds)
+                except Exception as exc:
+                    return self._failed("图片材料准备失败：" + redact_secrets(str(exc)))
             catalog = material_service.catalog()
             policy = WorkspacePolicy(workspace, read_roots=(skill.dir,))
             tools = ToolRegistry(
@@ -327,8 +319,17 @@ class AgentRuntime:
             materials_banner = self._materials_banner(catalog, domain_mode=domain_mode, workflow=workflow_mode)
             if materials_banner:
                 system_prompt = f"{materials_banner}\n\n{system_prompt}"
+            if workflow_mode:
+                from skill_toolbox.contracts.resume_workflow import PrepareRequest
+                from skill_toolbox.material_intake import initial_material_context
+                from skill_toolbox.tools.resume_workflow import compact_agent_result
+                prepared = await asyncio.to_thread(domain_services.resume_workflow.prepare, PrepareRequest())
+                user_text += initial_material_context(compact_agent_result("resume_prepare", prepared).data)
+                self.debug({"phase": "materials_context_ready", "material_count": len(catalog.irs),
+                            "context_characters": len(user_text)})
             messages.append(ConversationMessage(role="user", text=user_text))
             text_only_turns = 0
+            measurement_failures = 0
             for step in range(1, skill.max_steps + 1):
                 self.emit({"type": "model_started", "step": step})
                 model_started = time.monotonic()
@@ -590,6 +591,21 @@ class AgentRuntime:
                         turn.tool_calls, results, policy, domain_artifacts
                     )
                 messages.append(ConversationMessage(role="tool", tool_results=results))
+                for result in results:
+                    if result.success:
+                        continue
+                    try:
+                        failure = json.loads(result.content)
+                    except (ValueError, TypeError):
+                        continue
+                    if not isinstance(failure, dict):
+                        continue
+                    if failure.get('code') == 'WORD_UNAVAILABLE':
+                        return self._failed('[WORD_UNAVAILABLE] ' + str(failure.get('message', 'Microsoft Word 不可用')))
+                    if failure.get('code') == 'MEASURE_FAILED':
+                        measurement_failures += 1
+                        if measurement_failures >= 3:
+                            return self._failed('[MEASURE_FAILED] Word 测量已失败 3 次，停止模型重试。请执行 start-web.bat --check。最近错误：' + str(failure.get('message', ''))[-2000:])
             self._emit_latest_qa_status(workspace)
             return self._failed(f"Task exceeded the {skill.max_steps}-step limit")
 
@@ -1197,7 +1213,7 @@ class AgentRuntime:
                 f"顺序阅读 {content_rel}{prepared}"
             )
             if workflow:
-                lines.append(f"  material_id={material_id}；先 resume_prepare 获取全文及来源 ID，无需另行读正文。")
+                lines.append(f"  material_id={material_id}；首次用户消息已提供全文及来源 ID，无需重复读取正文。")
             elif domain_mode:
                 lines.append(
                     f"  整篇读取：read_material(source_id=\"{material_id}\", "
@@ -1282,26 +1298,11 @@ def _build_domain_services(
     if workflow is not None:
         workflow.facts.add("request", request.user_prompt, kind="request")
         workflow.facts.save()
-    docx = DocxService(
-        workspace,
-        skill_dir / "scripts",
-        catalog=catalog,
-        capabilities=capabilities,
-    ) if skill.id == "docx_pro" else None
-    ppt = PptService(
-        workspace,
-        skill_dir,
-        catalog=catalog,
-        capabilities=capabilities,
-    ) if skill.id == "ppt-master" else None
-
     return DomainServices(
         materials=materials,
         resume=resume,
         resume_v2=resume_v2,
         resume_workflow=workflow,
-        docx=docx,
-        ppt=ppt,
         cancel_callbacks=[
             lambda permanent: (
                 material_service.terminate_all()

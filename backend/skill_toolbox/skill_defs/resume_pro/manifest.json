@@ -1,10 +1,16 @@
 {
   "id": "resume_pro",
   "name": "简历生成",
-  "description": "基于精选模板库生成/填充中文简历：前端选模板 → 从用户材料抽取信息 → lxml 原位替换文本框内容（保留字体格式与版式）→ 溢出预警 + agent 改写适配 → 渲染校验 → 交付 docx/pdf。",
-  "required_capabilities": ["tool_calling"],
-  "optional_capabilities": ["vision"],
-  "quality_actions": ["fill_resume"],
+  "description": "基于已组件化中文模板生成、优化与迁移简历，真实 Word 测量、机械 QA 与视觉复核，导出 DOCX/PDF。",
+  "required_capabilities": [
+    "tool_calling"
+  ],
+  "optional_capabilities": [
+    "vision"
+  ],
+  "quality_actions": [
+    "fill_resume"
+  ],
   "max_steps": 24,
   "initial_form": {
     "prompt": {
@@ -17,22 +23,32 @@
       "label": "模板",
       "required": true,
       "options": [
-        {"value": "t001", "label": "通用简洁风"},
-        {"value": "t002", "label": "简约风"},
-        {"value": "t046", "label": "蓝灰设计风"},
-        {"value": "t026", "label": "黑色双栏"},
-        {"value": "t109", "label": "简约 word"}
+        {
+          "value": "t001",
+          "label": "通用简洁风"
+        },
+        {
+          "value": "t109",
+          "label": "简约 word"
+        }
       ]
     }
   },
   "scripts": {
     "fill_resume": {
       "entry": "fill_resume.py",
-      "argv": ["${SKILL_DIR}/templates/{template}", "{data}", "{output}"]
+      "argv": [
+        "${SKILL_DIR}/templates/{template}",
+        "{data}",
+        "{output}"
+      ]
     },
     "render_pages": {
       "entry": "render_pages.py",
-      "argv": ["{source}", "{output_dir}"]
+      "argv": [
+        "{source}",
+        "{output_dir}"
+      ]
     }
   }
 }

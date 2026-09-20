@@ -43,27 +43,18 @@ def test_accept_keeps_visual_notes_separate():
 
 def test_nested_contract_validation_returns_tool_error():
     service = Mock()
-    text, images, meta = dispatch_with_media("docx_add_blocks", {
-        "document_id": "d", "blocks": [{"type": "heading", "level": 7}],
-    }, DomainServices(docx=service))
+    text, images, meta = dispatch_with_media("resume_generate_v2", {
+        "template_id": "t001", "content": {"template_id":"t001", "sections": [{"title": "缺少 key"}]},
+    }, DomainServices(resume_v2=service))
     assert json.loads(text)["code"] == "TOOL_ARGUMENTS_INVALID"
-    service.add_blocks.assert_not_called()
+    service.generate.assert_not_called()
     assert images == [] and not meta.get("ok", False)
 
 
 def test_legacy_numeric_table_cells_and_resume_fields_still_become_text():
-    docx, ppt, resume = Mock(), Mock(), Mock()
-    for service, method in [(docx, "add_blocks"), (ppt, "generate"), (resume, "generate"), (resume, "repair")]:
-        getattr(service, method).return_value = OperationResult(ok=True)
-    services = DomainServices(docx=docx, ppt=ppt, resume=resume)
-    dispatch_with_media("docx_add_blocks", {
-        "document_id": "d", "blocks": [{"type": "table", "rows": [[2026, 3.5]]}],
-    }, services)
-    assert docx.add_blocks.call_args.args[0].blocks[0].rows == [["2026", "3.5"]]
-    dispatch_with_media("ppt_generate", {
-        "outline_id": "p", "slides": [{"layout": "table", "table_rows": [[2026, 3.5]]}],
-    }, services)
-    assert ppt.generate.call_args.args[0].slides[0].table_rows == [["2026", "3.5"]]
+    resume = Mock()
+    resume.generate.return_value = resume.repair.return_value = OperationResult(ok=True)
+    services = DomainServices(resume=resume)
     dispatch_with_media("resume_generate", {
         "template_id": "t001", "fields": {"age": 24, "gpa": 3.5},
     }, services)
@@ -79,8 +70,8 @@ def test_legacy_numeric_table_cells_and_resume_fields_still_become_text():
 ])
 def test_media_success_matches_runtime_semantics(ok, status, expected):
     service = Mock()
-    service.start.return_value = OperationResult(ok=ok, status=status)
-    _, _, meta = dispatch_with_media("docx_start", {"title": "示例"}, DomainServices(docx=service))
+    service.prepare.return_value = OperationResult(ok=ok, status=status)
+    _, _, meta = dispatch_with_media("resume_prepare", {"template_id": "t001"}, DomainServices(resume=service))
     assert meta["ok"] is expected
 
 

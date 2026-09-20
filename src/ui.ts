@@ -22,9 +22,9 @@ export function escapeHtml(text: string): string {
 }
 
 /** 记录当前任务的归属工具与标题，供 renderTaskState 定向渲染 */
-export function setTaskMeta(meta: { tool: string; title: string; taskId: string }): void {
+export function setTaskMeta(meta: { tool: string; title: string; taskId: string; startedAt?: number }): void {
   taskMeta = meta;
-  taskStartedAt = Date.now();
+  taskStartedAt = meta.startedAt ?? Date.now();
   lastTaskState = null;
 }
 
@@ -37,7 +37,7 @@ function goTool(tool: string): void {
 }
 
 function showTool(tool: string): boolean {
-  if (!document.getElementById(`page-${tool}`)) tool = "docx";
+  if (!document.getElementById(`page-${tool}`)) tool = "resume";
   const target = document.getElementById(`page-${tool}`);
   if (target && !target.hidden) return false;
   document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
@@ -50,7 +50,7 @@ function showTool(tool: string): boolean {
 }
 
 export function goSub(tool: string, sub: string): void {
-  if (tool === "pdf") { tool = "docx"; sub = "art"; }
+  if (tool === "pdf") { tool = "resume"; sub = "art"; }
   const toolChanged = showTool(tool);
   const page = document.getElementById(`page-${tool}`);
   if (!page) return;
@@ -161,7 +161,7 @@ function setPagesMode(m: "exact" | "range"): void {
 }
 
 /* ===== 布局 ===== */
-export function mountLayout(root: HTMLElement): void {
+export function mountLayout(root: HTMLElement, options: { resumeOnly?: boolean } = {}): void {
   lastTaskState = null;
   renderedDebug = null;
   root.innerHTML = `
@@ -169,26 +169,20 @@ export function mountLayout(root: HTMLElement): void {
     <aside class="side">
       <div class="brand">
         <div class="brand-icon">✦</div>
-        <div><div class="brand-name">DocKit</div><div class="brand-sub">AI 文档产物工具箱</div></div>
+        <div><div class="brand-name">DocKit Resume</div><div class="brand-sub">AI 简历制作</div></div>
       </div>
-      <div class="nav-label">V1 工具</div>
-      <div class="nav-item active" data-tool="ppt"><span class="nav-icon">📊</span><span>PPT 生成</span></div>
-      <div class="nav-item" data-tool="resume"><span class="nav-icon">📄</span><span>简历生成</span></div>
-      <div class="nav-item" data-tool="docx"><span class="nav-icon">📝</span><span>DOCX 生成</span></div>
+      <div class="nav-label">简历</div>
+      <div class="nav-item active" data-tool="resume"><span class="nav-icon">📄</span><span>简历生成</span></div>
       <div class="nav-label">其他</div>
       <div class="nav-item" data-tool="settings"><span class="nav-icon">⚙</span><span>设置</span></div>
       <div class="nav-item" data-tool="logs"><span class="nav-icon">🪵</span><span>运行日志</span></div>
-      <div class="side-card">
-        <div class="t">🔒 数据只在本地</div>
-        <div class="d">材料与产物保存在你选择的目录中，仅按你的模型配置发出请求。</div>
-      </div>
     </aside>
 
     <section class="main">
       <div class="hello">
         <div>
-          <div class="h">下午好 👋 今天要把什么材料变成成品文件？</div>
-          <div class="h-sub">从左侧选择一个工具开始 —— 填信息 → 答少量问题 → 拿到文件</div>
+          <div class="h">简历制作</div>
+          <div class="h-sub">整理经历、迁移模板，或修改已有简历</div>
         </div>
         <div class="w-model" id="w-model"><span class="live"></span><span id="model-summary">未配置模型</span><span class="w-chev">▾</span></div>
         <div class="model-picker" id="model-picker" hidden>
@@ -209,72 +203,8 @@ export function mountLayout(root: HTMLElement): void {
       <div id="startup-status" class="startup-status" role="status" hidden></div>
       <div id="form-error" class="form-error" role="alert"></div>
 
-      <!-- ============ PPT ============ -->
-      <section class="page" id="page-ppt">
-        <nav class="subtabs">
-          <div class="subtab active" data-sub="new">新建任务</div>
-          <div class="subtab" data-sub="run">进行中 <span class="badge" hidden>1</span></div>
-          <div class="subtab" data-sub="art">产物版本 <span class="badge" hidden>0</span></div>
-        </nav>
-        <div class="subpage" id="sub-ppt-new">
-          <div class="card">
-            <div class="card-title"><span class="no">1</span> 演示主题 <span class="sub">必填</span></div>
-            <input class="inp" id="ppt-topic" placeholder="例如：Q3 产品复盘汇报">
-          </div>
-          <div class="card">
-            <div class="card-title"><span class="no">2</span> 上传参考材料 <span class="sub">可选 · 用于丰富演示内容</span></div>
-            <div class="upload-big" data-pick="ppt" tabindex="0" role="button" aria-label="选择参考材料">
-              <div class="u-ic">⭳</div>
-              <div class="u-t">拖入文件，或点击选择</div>
-              <div class="u-optional">可选 · 不上传也能生成</div>
-              <span class="fmt">pdf / docx / md / txt</span>
-            </div>
-            <input id="materials-input-ppt" type="file" multiple hidden>
-            <div id="materials-list-ppt"></div>
-          </div>
-          <div class="card">
-            <div class="card-title"><span class="no">3</span> 风格与页数</div>
-            <label class="fld-l" style="margin-top:0;">风格</label>
-            <div class="chips" id="ppt-style">
-              <span class="chip on" data-v="商务简洁">商务简洁</span>
-              <span class="chip" data-v="学术答辩">学术答辩</span>
-              <span class="chip" data-v="活泼宣讲">活泼宣讲</span>
-              <span class="chip" data-v="极简黑白">极简黑白</span>
-            </div>
-            <label class="fld-l">目标页数 <span class="sub2">— 精确值或区间均可</span></label>
-            <div class="pages-row">
-              <div class="chips" id="pages-quick">
-                <span class="chip on" data-v="10">约 10 页</span>
-                <span class="chip" data-v="20">约 20 页</span>
-                <span class="chip" data-v="30">约 30 页</span>
-              </div>
-              <div class="pages-custom">
-                <span class="p-mode on" data-m="exact">精确</span>
-                <span class="p-mode" data-m="range">区间</span>
-                <span class="p-fields">
-                  <input class="inp p-num mono" id="pages-min" value="10" inputmode="numeric">
-                  <span class="p-sep" id="pages-sep" hidden>–</span>
-                  <input class="inp p-num mono" id="pages-max" value="15" inputmode="numeric" hidden>
-                  <span class="p-unit">页</span>
-                </span>
-              </div>
-            </div>
-            <div class="cta-row">
-              <button class="btn" data-start="ppt">开始生成 PPT</button>
-              <span class="btn-note">缺失关键信息时会先收到少量澄清问题</span>
-            </div>
-          </div>
-        </div>
-        <div class="subpage" id="sub-ppt-run" hidden>
-          <div id="run-ppt"><div class="empty">暂无进行中的任务 —— <a data-go="ppt:new">去新建任务</a></div></div>
-        </div>
-        <div class="subpage" id="sub-ppt-art" hidden>
-          <div id="art-ppt"><div class="empty">暂无产物，生成后的 .pptx 会出现并保留在这里</div></div>
-        </div>
-      </section>
-
       <!-- ============ 简历 ============ -->
-      <section class="page" id="page-resume" hidden>
+      <section class="page" id="page-resume">
         <nav class="subtabs">
           <div class="subtab active" data-sub="new">新建任务</div>
           <div class="subtab" data-sub="run">进行中 <span class="badge" hidden>1</span></div>
@@ -346,71 +276,6 @@ export function mountLayout(root: HTMLElement): void {
           <div id="art-resume"><div class="empty">暂无产物，生成后的文件会出现并保留在这里</div></div>
         </div>
       </section>
-
-      <!-- ============ DOCX ============ -->
-      <section class="page" id="page-docx" hidden>
-        <nav class="subtabs">
-          <div class="subtab active" data-sub="new">新建任务</div>
-          <div class="subtab" data-sub="run">进行中 <span class="badge" hidden>1</span></div>
-          <div class="subtab" data-sub="art">产物版本 <span class="badge" hidden>0</span></div>
-        </nav>
-        <div class="subpage" id="sub-docx-new">
-          <div class="card">
-            <div class="card-title"><span class="no">1</span> 文档用途</div>
-            <div class="chips" id="use-chips">
-              <span class="chip on" data-v="工作报告">工作报告</span>
-              <span class="chip" data-v="会议纪要">会议纪要</span>
-              <span class="chip" data-v="总结复盘">总结复盘</span>
-              <span class="chip" data-v="项目方案">项目方案</span>
-              <span class="chip" data-v="作业报告">作业报告</span>
-              <span class="chip" data-v="__other">✎ 其他…</span>
-            </div>
-            <input class="inp mono" id="use-custom" style="margin-top:10px;display:none;" placeholder="自定义用途，例如：实验报告、读书笔记…">
-          </div>
-          <div class="card">
-            <div class="card-title"><span class="no">2</span> 结构化要求 <span class="sub">主要输入，写越清楚产物越准确</span></div>
-            <textarea class="txa" id="docx-req" style="min-height:100px;" placeholder="例如：面向管理层的 Q3 销售复盘：业绩总览 → 区域对比表 → 改进计划，约 8 页"></textarea>
-          </div>
-          <div class="card">
-            <div class="card-title"><span class="no">3</span> 生成复杂度 <span class="sub">对应不同的生成细粒度</span></div>
-            <div class="chips" id="docx-complexity">
-              <span class="chip" data-v="simple">简单</span>
-              <span class="chip on" data-v="standard">标准（封面+目录+页码）</span>
-              <span class="chip" data-v="academic">学术（论文版式）</span>
-              <span class="chip" data-v="gongwen">公文（GB/T 9704）</span>
-              <span class="chip" data-v="form">填报表单</span>
-              <span class="chip" data-v="template">模板套用</span>
-            </div>
-            <div class="vision-warn" id="docx-vision-warn" hidden>
-              ⚠️ 当前模型没有视觉能力，将会走无视觉的处理流程，可能会导致一些布局问题，如表格跨页错位、图片溢出或截断、封面与目录分页异常等。
-              若您知晓其具有视觉能力，您可以在「设置」的模型页面中将它的视觉标签点亮。
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-title"><span class="no">4</span> 上传参考材料 <span class="sub">可选 · 提供素材可显著提升产物贴合度</span></div>
-            <div class="upload-big" data-pick="docx" tabindex="0" role="button" aria-label="选择参考材料">
-              <div class="u-ic">⭳</div>
-              <div class="u-t">拖入文件，或点击选择</div>
-              <div class="u-optional">可选 · 不上传也能生成</div>
-              <span class="fmt">pdf / docx / md / txt</span>
-            </div>
-            <input id="materials-input-docx" type="file" multiple hidden>
-            <div id="materials-list-docx"></div>
-            <div class="cta-row">
-              <button class="btn" data-start="docx">开始生成文档</button>
-              <span class="btn-note">生成后用 Word / WPS 继续编辑</span>
-            </div>
-          </div>
-        </div>
-        <div class="subpage" id="sub-docx-run" hidden>
-          <div id="run-docx"><div class="empty">暂无进行中的任务 —— <a data-go="docx:new">去新建任务</a></div></div>
-        </div>
-        <div class="subpage" id="sub-docx-art" hidden>
-          <div id="art-docx"><div class="empty">暂无产物，生成后的 .docx 会出现并保留在这里</div></div>
-        </div>
-      </section>
-
-
 
       <!-- ============ 设置 ============ -->
       <section class="page" id="page-settings" hidden>
@@ -490,7 +355,7 @@ export function mountLayout(root: HTMLElement): void {
               <input class="inp mono" id="output-dir" readonly placeholder="请选择目录">
               <button class="btn btn-sm" id="choose-dir">选择</button>
             </div>
-            <div class="sec-note">材料与产物仅保存在本地；工具执行限制在任务目录内，可审计、有超时。</div>
+            <div class="sec-note">桌面版材料与产物保存在本地；生成时相关内容会发送到所选模型与 MinerU 服务。</div>
           </div>
         </div>
         <div class="subpage" id="sub-settings-services" hidden>
@@ -502,7 +367,7 @@ export function mountLayout(root: HTMLElement): void {
                 <input class="inp mono" id="mineru-key" type="password" placeholder="粘贴 MinerU API Token" autocomplete="off">
               </div>
             </div>
-            <div class="sec-note">MinerU 是本产品三个功能（PPT / 简历 / DOCX）的<b>强依赖</b>：
+            <div class="sec-note">MinerU 用于 PDF/DOCX 材料解析：
               任务开始前会校验 CLI 与 Token，不可用时任务直接失败并给出恢复指引，不会静默降级。
               用于 PDF 输入材料的文档解析（扫描件 OCR / 公式识别）。请在
               <a href="https://mineru.net/apiManage/token" target="_blank" rel="noopener">https://mineru.net/apiManage/token</a>
@@ -522,7 +387,7 @@ export function mountLayout(root: HTMLElement): void {
         </div>
       </section>
 
-      <div class="foot">数据只在本地 · 产物用 Word / WPS / PowerPoint 打开 · 每次反馈生成新版本</div>
+      <div class="foot">生成与解析会向配置的 AI / MinerU 服务发送相关材料。<a href="https://github.com/htdxd/dockit" target="_blank" rel="noopener">源码 · AGPL-3.0</a></div>
     </section>
   </main>
 
@@ -547,13 +412,21 @@ export function mountLayout(root: HTMLElement): void {
         <label>基本信息<textarea id="manual-basic" placeholder="姓名、联系方式、求职意向；其他希望展示的信息也可填写。"></textarea></label>
         <label>教育背景<textarea id="manual-education" placeholder="学校、专业、学历、起止时间；相关课程、成绩或荣誉（选填）。"></textarea></label>
         <label class="manual-experience">项目、工作及其他经历<textarea id="manual-experience" placeholder="工作、实习、项目、社团、竞赛等都写在这里，每段经历分开写。建议说明：名称与时间、你的角色、做了什么、使用的方法或技术、实际成果。没有准确数据可描述真实产出，不必编造。"></textarea></label>
-        <label>技能、成果与补充说明<textarea id="manual-skills" placeholder="技能及熟练程度、证书、奖项、作品链接；希望突出或不展示的内容。"></textarea></label>
+        <label>技能、成果与补充说明<textarea id="manual-skills" placeholder="技能、证书、奖项；可提供 GitHub／作品集链接、项目 Stars/Forks 或下载量（用户提供即可，不必齐全），以及希望加粗、主题色强调或不展示的信息。"></textarea></label>
       </div>
       <div class="d-foot"><button type="button" class="btn" id="manual-cancel">取消</button><button type="button" class="d-ok" id="manual-save">保存资料</button></div>
     </div>
   </div>
   <!-- Toast 容器 -->
   <div id="toasts"></div>`;
+
+  if (options.resumeOnly) {
+    root.querySelectorAll('.page:not(#page-resume), .nav-item:not([data-tool="resume"]), #w-model, #model-picker, #startup-status')
+      .forEach((element) => element.remove());
+    root.querySelectorAll('.nav-label').forEach((element) => element.remove());
+    root.querySelector('.nav-item[data-tool="resume"]')?.classList.add('active');
+    root.querySelector<HTMLElement>('#page-resume')!.hidden = false;
+  }
 
   /* ---- 交互接线 ---- */
   initTheme();

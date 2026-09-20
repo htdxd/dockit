@@ -7,22 +7,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-PPT_RUNTIME_PROMPT = """
-## Skill Toolbox Runtime Contract
-
-`[MATERIALS]` is the only parser for uploaded materials. Before writing
-ContentPlan, read the relevant `document.json` pages and use real source_id
-values; never invent IDs. Every candidate Asset must be selected or excluded.
-Do not call `source_to_md` or `import-sources` for uploaded materials.
-
-When `vision: true`, render the final PPTX with `render_pptx`, then use `read`
-on the generated PNG pages before writing `QAReport.visual="passed"`. Check all
-pages for short decks, or the first, media-heavy, and final pages for long decks.
-Visual repairs are limited to three rounds. After all gates pass, call
-`finish_task` immediately.
-"""
-
-
 @dataclass(frozen=True)
 class SkillDefinition:
     id: str
@@ -55,6 +39,8 @@ FEATURE_RETIRED_MESSAGE = "[FEATURE_RETIRED] PDF 转 DOCX 功能已下线；PDF 
 def load_skill(skill_id: str) -> SkillDefinition:
     if skill_id in RETIRED_PDF_IDS:
         raise ValueError(FEATURE_RETIRED_MESSAGE)
+    if skill_id != "resume_pro":
+        raise ValueError("[FEATURE_RETIRED] 当前产品仅支持简历制作。")
     skill_dir = Path(__file__).parent / "skill_defs" / skill_id
     manifest_path = skill_dir / "manifest.json"
     prompt_path = skill_dir / "prompt.md"
@@ -71,13 +57,6 @@ def load_skill(skill_id: str) -> SkillDefinition:
         if spec.get("timeout_seconds")
     }
     system_prompt = prompt_path.read_text(encoding="utf-8")
-    if manifest["id"] == "ppt-master":
-        scripts["render_pptx"] = (
-            "../../../ppt_render.py",
-            ("{source}", "{output_dir}"),
-        )
-        script_timeouts["render_pptx"] = 600.0
-        system_prompt = f"{system_prompt}\n\n{PPT_RUNTIME_PROMPT.strip()}\n"
     raw_tool_mode = str(manifest.get("tool_mode", "legacy"))
     if raw_tool_mode not in {"domain", "legacy"}:
         raise ValueError(

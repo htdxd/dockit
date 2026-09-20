@@ -49,7 +49,7 @@ def test_render_pipeline_preserves_cli_output(tmp_path, monkeypatch, capsys, wor
     }
 
 
-@pytest.mark.parametrize("domain", ["resume_pro", "docx_pro"])
+@pytest.mark.parametrize("domain", ["resume_pro"])
 def test_legacy_cli_imports_from_any_workspace_and_rejects_escape(tmp_path, domain):
     script = Path(docx_render.__file__).parent / "skill_defs" / domain / "scripts/render_pages.py"
     # Isolated mode proves the wrapper does not need a repository PYTHONPATH.

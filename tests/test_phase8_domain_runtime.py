@@ -3,8 +3,8 @@
 覆盖：
 - tool_mode="domain"（TaskRequest 覆盖）时 LLM 只收到领域 schema
   （无 write/edit/exec_cmd/spec_append）
-- 领域工具序列 E2E：read_material → create_content_plan → docx_start →
-  docx_add_blocks → docx_finalize → finish_task 成功交付
+- 领域工具序列 E2E：read_material → create_content_plan → resume_prepare →
+  resume_repair → resume_generate → finish_task 成功交付
 - 步数在目标范围（docx 4-10 步）；legacy 模式默认不回归（现有契约不变）
 - finish 门在领域模式不要求 legacy exec_cmd 质量动作证据（领域 Service 自带机械门）
 """
@@ -71,7 +71,7 @@ def test_domain_mode_only_exposes_domain_tools(tmp_path: Path) -> None:
     asyncio.run(
         runtime.run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "生成文档",
                 tmp_path / "out",
                 materials=[material],
@@ -86,9 +86,9 @@ def test_domain_mode_only_exposes_domain_tools(tmp_path: Path) -> None:
         assert not (_LEGACY_TOOLS & set(schema_names)), (
             f"领域模式暴露了底层工具: {sorted(_LEGACY_TOOLS & set(schema_names))}"
         )
-        assert "docx_start" in schema_names
-        assert "docx_add_blocks" in schema_names
-        assert "docx_finalize" in schema_names
+        assert "resume_prepare" in schema_names
+        assert "resume_repair" in schema_names
+        assert "resume_generate" in schema_names
         assert "read_material" in schema_names
         assert "create_content_plan" in schema_names
     # 无 Vision：模型不收到图片 payload
@@ -108,7 +108,7 @@ def test_legacy_mode_keeps_legacy_tools(tmp_path: Path) -> None:
     asyncio.run(
         runtime.run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "生成文档",
                 tmp_path / "out",
                 materials=[material],
@@ -121,87 +121,6 @@ def test_legacy_mode_keeps_legacy_tools(tmp_path: Path) -> None:
     for schema_names in provider.seen_schemas:
         assert "exec_cmd" in schema_names
         assert "spec_append" in schema_names
-
-
-@pytest.mark.asyncio
-async def test_domain_docx_e2e_within_step_target(tmp_path: Path) -> None:
-    """领域 docx 工作流 E2E：read_material → plan → start → blocks → finalize →
-    finish，步数在 4-10 目标范围，交付成功。"""
-    material = tmp_path / "src" / "notes.md"
-    material.parent.mkdir()
-    material.write_text("# 报告\n\n正文段落", encoding="utf-8")
-
-    turns = [
-        AssistantTurn(
-            tool_calls=[_call("r1", "read_material", {"source_id": "block-any"})]
-        ),
-        AssistantTurn(
-            tool_calls=[
-                _call("p1", "create_content_plan", {"selected_source_ids": []})
-            ]
-        ),
-        AssistantTurn(
-            tool_calls=[
-                _call(
-                    "s1",
-                    "docx_start",
-                    {"title": "领域模式报告", "complexity": "simple"},
-                )
-            ]
-        ),
-        AssistantTurn(
-            tool_calls=[
-                _call(
-                    "b1",
-                    "docx_add_blocks",
-                    {
-                        # document_id 必须与 docx_start(title) 派生一致（docx-<hash8>）
-                        "document_id": "docx-" + _short_hash("领域模式报告"),
-                        "blocks": [
-                            {"type": "heading", "text": "第一章", "level": 1},
-                            {"type": "paragraph", "text": "正文内容"},
-                        ],
-                    },
-                )
-            ]
-        ),
-        AssistantTurn(
-            tool_calls=[
-                _call(
-                    "f1",
-                    "docx_finalize",
-                    {
-                        "document_id": "docx-" + _short_hash("领域模式报告"),
-                        "output_name": "领域报告.docx",
-                    },
-                )
-            ]
-        ),
-        _finish(["artifacts/领域报告.docx"]),
-        AssistantTurn(
-            tool_calls=[_call("abort", "task_failed", {"error": "不应到达"})]
-        ),
-    ]
-    events: list[dict] = []
-    provider = ScriptedProvider(turns)
-    runtime = AgentRuntime(provider=provider, emit=events.append)
-
-    result = await runtime.run(
-        TaskRequest(
-            "docx_pro",
-            "生成领域模式文档",
-            tmp_path / "out",
-            materials=[material],
-            capabilities={"vision": False, "tool_calling": True},
-            tool_mode="domain",
-        )
-    )
-
-    assert result.status == "completed", result.error
-    assert result.artifacts and result.artifacts[0].exists()
-    # 领域工具序列步数 ≤ docx 目标 10 步（此处脚本 6 轮）
-    steps = [e for e in events if e.get("type") == "model_started"]
-    assert len(steps) <= 10, f"步数 {len(steps)} 超出 docx 目标范围"
 
 
 def test_domain_mode_artifact_not_fake(tmp_path: Path) -> None:
@@ -222,7 +141,7 @@ def test_domain_mode_artifact_not_fake(tmp_path: Path) -> None:
     result = asyncio.run(
         AgentRuntime(provider=provider, emit=events.append).run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "test",
                 tmp_path / "out",
                 materials=[material],
@@ -233,7 +152,7 @@ def test_domain_mode_artifact_not_fake(tmp_path: Path) -> None:
     )
 
     assert result.status == "failed"
-    assert not (tmp_path / "out" / "x.docx_pro.docx").exists()
+    assert not (tmp_path / "out" / "x.resume_pro.docx").exists()
     assert any(
         e.get("type") == "tool_finished"
         and e.get("tool") == "finish_task"
@@ -251,12 +170,12 @@ def test_operation_result_data_and_domain_artifact_hash_gate(tmp_path: Path) -> 
     artifact.parent.mkdir()
     artifact.write_text("baseline", encoding="utf-8")
     policy = WorkspacePolicy(tmp_path)
-    call = _call("g", "docx_finalize", {})
+    call = _call("g", "resume_generate", {})
     from skill_toolbox.models import ToolResult
 
     result = ToolResult(
         tool_call_id="g",
-        name="docx_finalize",
+        name="resume_generate",
         success=True,
         content=json.dumps({"ok": True, "data": {"path": "artifacts/a.docx"}}),
     )

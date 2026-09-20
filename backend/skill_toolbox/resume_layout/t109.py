@@ -50,8 +50,6 @@ def photo_top_for_header(text_bottom: float, height: float, band_bottom: float,
 
 def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
     """t109 组内两列沿用原框；增删字段后用 Word 实际检查容量。"""
-    import pythoncom
-    from win32com import client
     from skill_toolbox.resume_layout import emit
     from skill_toolbox.resume_layout.header import apply_header_components
 
@@ -78,10 +76,8 @@ def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
                     return found
         return None
 
-    pythoncom.CoInitialize()
-    word = client.DispatchEx("Word.Application")
-    word.Visible = False
-    word.DisplayAlerts = 0
+    from skill_toolbox.word_com import start_word, close_word
+    word = start_word()
     doc = None
     try:
         doc = word.Documents.Open(str(host.resolve()), False, True)
@@ -119,7 +115,4 @@ def fit_header(template: Path, header: dict, work_dir: Path) -> dict:
                 band_bottom, emit.emu2pt(effect.get("t")), emit.emu2pt(effect.get("b")))
         return result
     finally:
-        if doc is not None:
-            doc.Close(False)
-        word.Quit()
-        pythoncom.CoUninitialize()
+        close_word(word, doc)

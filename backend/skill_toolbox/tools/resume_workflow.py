@@ -16,7 +16,7 @@ from skill_toolbox.tools.workspace import atomic_write_json
 from skill_toolbox.resume_content import canonical_entry
 from skill_toolbox.resume_facts import ResumeFacts
 
-from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES
+from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES as SUPPORTED_TEMPLATES
 
 
 def compact_agent_result(name, result):
@@ -76,7 +76,10 @@ class ResumeWorkflow:
                 blocks.append({**block.model_dump(), "source_id": source_id})
             documents.append({
                 "material_id": material_id, "name": ir.original_name,
-                "reading_hint": ("图片尚未转成文字。用 read_material(source_id=资产ID) 看图读取简历/经历；先判断是简历截图还是头像，不能直接当照片。"
+                "reading_status": ("needs_review" if ir.warnings else
+                                   "transcribed" if any(b.text.strip() for b in ir.blocks) else
+                                   "portrait" if any(a.caption == "独立头像" for a in ir.assets) else "needs_review"),
+                "reading_hint": ("图片已在准备阶段处理；文字在 blocks，类型见 assets.caption。warnings 非空时需核实；只有独立头像可直接作为照片。"
                                  if ir.source_format == "image" else "正文已在 blocks 中。"),
                 "supplementary_views": ["native_text"] if ir.source_format in {"pdf", "docx"} else [],
                 "warnings": ir.warnings,
@@ -94,6 +97,9 @@ class ResumeWorkflow:
             "template_id": self.template_id,
             "person_fields": capabilities["header_fields"],
             "materials": documents,
+            "material_review": {"total": len(documents),
+                                "needs_review": [{"material_id": d["material_id"], "name": d["name"]}
+                                                 for d in documents if d["reading_status"] == "needs_review"]},
             "conversation_sources": [{"source_id": key, "kind": value.get("kind")} for key, value in self.facts.sources.items()
                                      if value.get("kind") != "material"],
             "writing_focus": self.facts.writing_focus(),
@@ -107,7 +113,7 @@ class ResumeWorkflow:
                 "note": "这是模板默认字号下、未扣除标题和间距的容量上限，实际以测量为准。"
                         "经历丰富且未限定一页时可保留内容分为两三页；只有获准摘要时才精简。",
             },
-        }, next_action="文字材料正文已在 materials.blocks 中，不必重复 read_material(view='blocks')。图片材料须按 reading_hint 用 read_material 看图，简历截图也可提供经历，不要都当作头像。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。PDF/DOCX 疑似漏标题或指标上下文才补看 native_text；原件图片优先于重建图片。")
+        }, next_action="文字材料正文已在 materials.blocks 中，不必重复 read_material(view='blocks')。图片转录已提供；仅在 warnings 或内容歧义时按 asset_id 补看原图。结合用户已给信息直接生成；真正缺少必要事实时先 ask_user_questions。PDF/DOCX 疑似漏标题或指标上下文才补看 native_text；原件图片优先于重建图片。")
 
     def _photo(self, asset_id):
         if not asset_id:
@@ -141,6 +147,7 @@ class ResumeWorkflow:
             "id": entry.id or entry_id,
             "source_ids": entry.source_ids,
             "tech_stack": entry.tech_stack,
+            "details": [item.model_dump() for item in entry.details],
             "head": head if any(head.values()) else {},
             "bullets": entry.text if prototype == "experience_v1" else [],
             "lines": entry.text if prototype == "plain_lines_v1" else [],
@@ -277,6 +284,7 @@ class ResumeWorkflow:
                 organization=(e.get("head") or {}).get("org", ""),
                 role=(e.get("head") or {}).get("role", ""),
                 text=e.get("bullets") or e.get("lines") or [], tech_stack=e.get("tech_stack", ""),
+                details=e.get("details", []),
                 font_size_pt=e.get("font_size_pt"), scale=e.get("scale"),
                 source_ids=e.get("source_ids", []),
             ) for e in (canonical_entry(s, raw) for raw in s["entries"])]) for s in content["sections"]],

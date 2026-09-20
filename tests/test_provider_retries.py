@@ -33,6 +33,32 @@ async def test_model_retry_limit_and_nonretryable_failures(kind, status, expecte
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['openai', 'openai_responses', 'anthropic'])
+async def test_remote_protocol_error_retries_three_times(kind):
+    provider = create_provider(ProviderConfig(kind=kind, model='test', api_key='test-key'))
+    requests = []
+
+    def disconnect(request):
+        requests.append(request)
+        raise httpx.RemoteProtocolError('Server disconnected without sending a response.', request=request)
+
+    await provider.client.close()
+    from openai import AsyncOpenAI
+    from anthropic import AsyncAnthropic
+    sdk = AsyncAnthropic if kind == 'anthropic' else AsyncOpenAI
+    provider.client = sdk(api_key='test-key', max_retries=0, timeout=1200.0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(disconnect)))
+    try:
+        with pytest.raises(Exception) as failure:
+            await provider.complete('test', [ConversationMessage(role='user', text='hello')], [])
+        assert type(failure.value).__name__ == 'APIConnectionError'
+        assert isinstance(failure.value.__cause__, httpx.RemoteProtocolError)
+        assert len(requests) == 4
+    finally:
+        await provider.client.close()
+
+
+@pytest.mark.asyncio
 async def test_slow_probe_does_not_discard_other_results(monkeypatch):
     monkeypatch.setattr(probes, 'PROBE_ITEM_TIMEOUT', 0.01)
     async def slow():

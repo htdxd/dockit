@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from skill_toolbox.contracts.resume_style import DetailField, FieldStyle
 
 ResumeAction = Literal[
     "replace_text", "replace_asset", "resize_component", "shift_components",
@@ -89,6 +90,7 @@ class ResumeEntryV2(BaseModel):
     bullets: list[str] = Field(default_factory=list)
     lines: list[str] = Field(default_factory=list)
     tech_stack: str = ""
+    details: list[DetailField] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     font_size_pt: float | None = Field(default=None, ge=8, le=18)
     scale: float | None = Field(default=None, ge=0.75, le=1.25)
@@ -103,7 +105,7 @@ class ResumeSectionV2(BaseModel):
     scale: float | None = Field(default=None, ge=0.75, le=1.25)
 
 
-class ResumePersonalField(BaseModel):
+class ResumePersonalField(FieldStyle):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(min_length=1)

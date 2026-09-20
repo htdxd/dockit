@@ -13,13 +13,15 @@ REQUEST_MODELS = {
 }
 
 _DESCRIPTIONS = {
-    "resume_prepare": "开始简历制作：读取选定材料并查看当前模板支持的栏目与个人信息字段。"
+    "resume_prepare": "重新查看材料、候选状态与模板能力；首次消息已有完整准备结果时无需调用。"
         "material_ids 省略时使用当前任务材料；请根据返回的材料与能力组织内容。",
     "resume_generate": "将准备好的个人信息与栏目条目生成简历候选并返回渲染图。"
         "项目名称 organization 和性质 role 同行，tech_stack 单独在下一行，text 是后续职责和成果。"
+        "details 是用户提供的项目指标或链接；Stars/Forks 紧凑放在项目性质前的标题行，其他字段位于技术栈后；每项含 label/value、可选 link 和 emphasis(normal/bold/accent/bold_accent)。"
+        "personal_fields 同样支持 link 和 emphasis，适合突出 GitHub/作品集，不用替换现有标签冒充新字段。"
         "一页且细节较多时先用 density=compact；不要用缩窄组件的等比缩放压页。"
         "请求顶层为 {content:{person:{…},sections:[…]},target_pages:1}，sections 不能放在 content 外。"
-        "应先 resume_prepare；target_pages 是允许的最大页数，不强制填满页面。"
+        "使用首次准备结果或 resume_prepare 的信息；target_pages 是允许的最大页数，不强制填满页面。"
         "font_size_pt 是缩放前的正文字号；条目可单独指定字号和 scale，栏目 scale 含标题图标但不改个人信息或照片。"
         "缩放后字号不得小于 8pt 且组件须放得下页面，不能保证所有组件都能放大到 1.25。"
         "条目 id 可省略；照片必须使用材料中的 asset_id。失败时按错误提示修改内容。",

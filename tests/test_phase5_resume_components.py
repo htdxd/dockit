@@ -23,7 +23,7 @@ import pytest
 RESUME_TEMPLATES = Path("backend/skill_toolbox/skill_defs/resume_pro/templates")
 FILL_SCRIPT = Path("backend/skill_toolbox/skill_defs/resume_pro/scripts/fill_resume.py")
 
-TEMPLATE_IDS = ["t001", "t002", "t026", "t046", "t109"]
+TEMPLATE_IDS = ["t001", "t109"]
 
 
 def _run_fill(
@@ -238,19 +238,6 @@ def test_shift_photo_component_rejected_by_whitelist(tmp_path: Path) -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert any("不允许动作 shift_components" in item for item in payload["warnings"])
-
-
-def test_shift_shared_anchor_requires_all_components(tmp_path: Path) -> None:
-    result = _run_fill(
-        "t002",
-        {},
-        [{"action": "shift_components", "component_ids": ["header_left"], "dy_pt": 5}],
-        tmp_path,
-    )
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert any("共享 anchor" in item for item in payload["warnings"])
-    assert not any(item.get("action") == "shift_components" for item in payload["actions"])
 
 
 def test_clone_image_component_rejected(tmp_path: Path) -> None:

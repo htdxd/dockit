@@ -6,6 +6,16 @@ def is_project(section):
     return "project" in str(section.get("key", section.get("id", ""))).lower() or "项目" in section.get("title", "")
 
 
+def inline_metrics(section, entry):
+    return [field for field in entry.get("details", [])
+            if is_project(section) and field["label"].strip().lower() in {"stars", "star", "forks", "fork"}]
+
+
+def detail_rows(section, entry):
+    inline = inline_metrics(section, entry)
+    return [field for field in entry.get("details", []) if field not in inline]
+
+
 def canonical_entry(section, entry):
     if not is_project(section):
         return entry

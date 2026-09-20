@@ -48,7 +48,7 @@ async def test_preflight_missing_mineru_fails_before_agent_loop(
             "type": "start_task",
             "payload": {
                 "provider": {"kind": "mock", "model": "mock"},
-                "skill_id": "docx_pro",
+                "skill_id": "resume_pro",
                 "user_prompt": "测试",
                 "output_dir": str(tmp_path),
             },
@@ -94,7 +94,7 @@ async def test_preflight_passes_when_cli_resolvable(tmp_path: Path) -> None:
                             name="write",
                             arguments={
                                 "path": "work/plans/content-plan.json",
-                                "content": '{"schema_version":"1","task_type":"docx","mode":"conservative","selections":[],"exclusions":[],"questions_asked":false}',
+                                "content": '{"schema_version":"1","task_type":"resume","mode":"conservative","selections":[],"exclusions":[],"questions_asked":false}',
                             },
                         )
                     ]
@@ -128,7 +128,7 @@ async def test_preflight_passes_when_cli_resolvable(tmp_path: Path) -> None:
                 "type": "start_task",
                 "payload": {
                     "provider": {"kind": "mock", "model": "mock"},
-                    "skill_id": "docx_pro",
+                    "skill_id": "resume_pro",
                     "user_prompt": "测试",
                     "output_dir": str(tmp_path),
                 },
@@ -210,15 +210,15 @@ async def _execute_action(
 def test_script_timeout_parsed_from_manifest(tmp_path: Path, monkeypatch) -> None:
     import json
     import skill_toolbox.skills as skills
-    root = tmp_path / "skill_defs" / "timeout-test"
+    root = tmp_path / "skill_defs" / "resume_pro"
     root.mkdir(parents=True)
     (root / "prompt.md").write_text("test", encoding="utf-8")
     (root / "manifest.json").write_text(json.dumps({
-        "id": "timeout-test", "name": "Test", "description": "Test",
+        "id": "resume_pro", "name": "Test", "description": "Test",
         "scripts": {"slow": {"entry": "slow.py", "timeout_seconds": 180}}
     }), encoding="utf-8")
     monkeypatch.setattr(skills, "__file__", str(tmp_path / "skills.py"))
-    assert skills.load_skill("timeout-test").script_timeouts == {"slow": 180.0}
+    assert skills.load_skill("resume_pro").script_timeouts == {"slow": 180.0}
 
 
 @pytest.mark.asyncio
@@ -280,7 +280,7 @@ async def test_task_failed_aborts_with_error(tmp_path: Path) -> None:
     )
     events: list[dict[str, object]] = []
     runtime = AgentRuntime(provider=provider, emit=events.append)
-    result = await runtime.run(TaskRequest("docx_pro", "生成", tmp_path))
+    result = await runtime.run(TaskRequest("resume_pro", "生成", tmp_path))
     assert result.status == "failed"
     assert "MinerU 转换失败" in (result.error or "")
     assert events[-1]["type"] == "task_failed"
@@ -303,7 +303,7 @@ async def test_task_failed_must_be_single_tool_call(tmp_path: Path) -> None:
         ]
     )
     runtime = AgentRuntime(provider=provider, emit=lambda _e: None)
-    result = await runtime.run(TaskRequest("docx_pro", "测试", tmp_path))
+    result = await runtime.run(TaskRequest("resume_pro", "测试", tmp_path))
     assert result.status == "failed"
     assert "nope" in (result.error or "")
     # task_failed 立即终止：同轮其它调用未被执行（artifacts/x.md 不存在）

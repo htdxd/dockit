@@ -15,7 +15,7 @@ from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.tools.process import ProcessRunner
 from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
 from skill_toolbox.tools.resume_store import ResumeStore
-from skill_toolbox.resume_content import canonical_entry, is_project
+from skill_toolbox.resume_content import canonical_entry, is_project, inline_metrics, detail_rows
 
 def _normalize_photo(path: Path) -> bytes:
     """把常见图片统一成 PNG；各模板写入对应部件并声明正确的媒体类型。"""
@@ -202,7 +202,10 @@ class ResumeEditService:
             raise ToolError(error_code, "文档处理超时。", retryable=True) from exc
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
-            raise ToolError(error_code, detail[-400:], retryable=True)
+            if 'WORD_UNAVAILABLE:' in detail:
+                message = detail.rsplit('WORD_UNAVAILABLE:', 1)[-1].splitlines()[0]
+                raise ToolError('WORD_UNAVAILABLE', message, retryable=False)
+            raise ToolError(error_code, detail[-2000:], retryable=True)
 
     # ---------- prepare ----------
 
@@ -970,9 +973,13 @@ class ResumeEditService:
         for sec in content.get("sections", []):
             entries = [
                 {"id": e["id"], "text": self._entry_text(sec, e),
-                 "has_heading": any(str(v or "").strip() for v in (e.get("head") or {}).values()),
+                 "has_heading": bool(self._entry_heading(sec, e)),
                  "heading_lines": len(self._entry_heading(sec, e).splitlines()),
                  "tech_stack_line": len(self._entry_heading(sec, e).splitlines()) if e.get("tech_stack") else None,
+                 "detail_styles": {len(self._entry_heading(sec, e).splitlines()) + bool(e.get("tech_stack")) + i: field
+                                   for i, field in enumerate(detail_rows(sec, e))},
+                 "inline_styles": [{**field, "text": f"{field['label']}：{field['value']}"}
+                                   for field in inline_metrics(sec, e)],
                  **{key: e[key] for key in ("width_pt", "font_size_pt", "scale")
                     if e.get(key) is not None}}
                 for e in (canonical_entry(sec, raw) for raw in sec.get("entries", []))
@@ -1027,11 +1034,16 @@ class ResumeEditService:
         if entry.get("tech_stack"):
             stack = entry["tech_stack"]
             parts.append(stack if stack.startswith(("技术栈：", "技术栈:")) else "技术栈：" + stack)
+        parts.extend(f"{field['label']}：{field['value']}" for field in detail_rows(section, entry))
         return "\n".join(parts + (bullets or lines))
 
     def _entry_heading(self, section, entry):
         entry = canonical_entry(section, entry)
-        head = entry.get("head") or {}
+        head = dict(entry.get("head") or {})
+        metrics = inline_metrics(section, entry)
+        if metrics:
+            head["role"] = " · ".join(f"{f['label']}：{f['value']}" for f in metrics) + (
+                " ｜ " + head["role"] if head.get("role") else "")
         order = ("org", "role", "date") if is_project(section) else self.profile.header_slot_order
         slots = [str(head.get(key) or "").strip() for key in order]
         slots = [slot for slot in slots if slot]

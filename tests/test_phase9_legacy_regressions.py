@@ -71,41 +71,14 @@ def test_unrendered_placeholder_rejected(workspace: Path) -> None:
 # ---------------- 2. 图片路径自造 ----------------
 
 def test_domain_rejects_invented_asset_id(workspace: Path) -> None:
-    """领域模式：自造 asset_id 被当场拒绝（DOCX_ASSET_UNKNOWN）。"""
+    from skill_toolbox.materials import MaterialService
+    from skill_toolbox.tools.materials import MaterialPlanService
     from skill_toolbox.contracts.common import ToolError
-    from skill_toolbox.contracts.docx import DocxAddBlocksRequest, DocxBlock
-    from skill_toolbox.tools.docx import DocxService
-
-    service = DocxService(
-        workspace,
-        Path("backend/skill_toolbox/skill_defs/docx_pro/scripts"),
-        capabilities={"vision": False},
-    )
-    started = service.start(
-        _SimpleStartRequest(title="t", complexity="simple")
-    )
+    service = MaterialPlanService(workspace, MaterialService(workspace).catalog(), "resume")
     with pytest.raises(ToolError) as exc:
-        service.add_blocks(
-            DocxAddBlocksRequest(
-                document_id=started.artifact_id,
-                blocks=[DocxBlock(type="image", asset_id="asset-invented-abc")],
-            )
-        )
-    assert exc.value.code == "DOCX_ASSET_UNKNOWN"
+        service.read_material("asset-invented-abc")
+    assert exc.value.code == "MATERIAL_UNKNOWN_ID"
 
-
-class _SimpleStartRequest:
-    """极简 start request 替身（避免引入 pydantic 依赖到本测试）。"""
-
-    def __init__(self, title: str, complexity: str) -> None:
-        self.title = title
-        self.complexity = complexity
-        self.scene = ""
-        self.author = ""
-        self.date = ""
-
-
-# ---------------- 3. old_text 不匹配 ----------------
 
 def test_legacy_edit_old_text_not_found(workspace: Path) -> None:
     """legacy edit：old_text 不匹配明确报错，模型可一次纠正。"""
@@ -196,7 +169,7 @@ def test_domain_mode_step_limit_fails_cleanly(tmp_path: Path) -> None:
     result = asyncio.run(
         AgentRuntime(ScriptedProvider(turns), events.append).run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "test",
                 tmp_path / "out",
                 materials=[material],

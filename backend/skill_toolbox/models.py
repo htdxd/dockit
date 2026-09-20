@@ -51,6 +51,7 @@ class ToolResult(BaseModel):
 class ConversationMessage(BaseModel):
     role: Literal["user", "assistant", "tool"]
     text: str = ""
+    images: list[ImageContent] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
     provider_items: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)

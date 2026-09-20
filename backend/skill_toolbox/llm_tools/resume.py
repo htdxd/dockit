@@ -32,7 +32,7 @@ def _legacy_tools() -> list[dict]:
             "校验模板 hash 并返回字段/组件 schema、容量与白名单动作。"
             "template_id 必须来自 initial_form 的模板选项。",
             {
-                "template_id": {"type": "string", "description": "模板 id（t001/t002/t026/t046/t109）"},
+                "template_id": {"type": "string", "description": "模板 id（t001/t109）"},
             },
             ["template_id"],
         ),

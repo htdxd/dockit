@@ -16,9 +16,7 @@ from skill_toolbox.contracts.common import OperationResult, ToolError
 import json
 
 from skill_toolbox.llm_tools.common import error_text, operation_text
-from skill_toolbox.tools.docx import DocxService
 from skill_toolbox.tools.materials import MaterialPlanService
-from skill_toolbox.tools.ppt import PptService
 from skill_toolbox.tools.resume import ResumeEditService, ResumeService
 from skill_toolbox.tools.resume_workflow import ResumeWorkflow
 
@@ -34,8 +32,6 @@ class DomainServices:
     # 简历 v2（P2-3）：版本化编辑服务；与 legacy resume 并存，按请求形态分流
     resume_v2: ResumeEditService | None = None
     resume_workflow: ResumeWorkflow | None = None
-    docx: DocxService | None = None
-    ppt: PptService | None = None
     cancel_callbacks: list[Callable[[bool], None]] = field(default_factory=list, repr=False)
 
     def cancel_all(self, *, permanent: bool = False) -> None:
@@ -45,7 +41,7 @@ class DomainServices:
         会让 ProcessRunner 拒绝再启动新进程。
         """
         seen: set[int] = set()
-        for service in (self.resume, self.resume_v2, self.docx, self.ppt):
+        for service in (self.resume, self.resume_v2):
             runner = getattr(service, "runner", None)
             if runner is None or id(runner) in seen:
                 continue
@@ -58,7 +54,7 @@ class DomainServices:
 
 
 def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
-    """注册 3 个领域的领域工具处理器。返回 {tool_name: handler}。"""
+    """注册简历与材料工具处理器。返回 {tool_name: handler}。"""
     handlers: dict[str, Handler] = {}
 
     # ---------- 共享材料（阶段 3） ----------
@@ -176,63 +172,6 @@ def build_dispatcher(services: DomainServices) -> dict[str, Handler]:
             model = REQUEST_MODELS[name]
             operation = getattr(services.resume_workflow, method)
             handlers[name] = lambda args, model=model, operation=operation: operation(model.model_validate(args))
-
-    # ---------- DOCX（阶段 5） ----------
-    def _docx_start(args: dict[str, Any]) -> OperationResult:
-        _require(services.docx, "DocxService")
-        from skill_toolbox.contracts.docx import DocxStartRequest
-
-        return services.docx.start(DocxStartRequest.model_validate(args))
-
-    def _docx_add_blocks(args: dict[str, Any]) -> OperationResult:
-        _require(services.docx, "DocxService")
-        from skill_toolbox.contracts.docx import DocxAddBlocksRequest
-
-        return services.docx.add_blocks(DocxAddBlocksRequest.model_validate(args))
-
-    def _docx_finalize(args: dict[str, Any]) -> OperationResult:
-        _require(services.docx, "DocxService")
-        from skill_toolbox.contracts.docx import DocxFinalizeRequest
-
-        return services.docx.finalize(DocxFinalizeRequest.model_validate(args))
-
-    def _docx_repair(args: dict[str, Any]) -> OperationResult:
-        _require(services.docx, "DocxService")
-        from skill_toolbox.contracts.docx import DocxRepairRequest
-
-        return services.docx.repair(DocxRepairRequest.model_validate(args))
-
-    handlers["docx_start"] = _docx_start
-    handlers["docx_add_blocks"] = _docx_add_blocks
-    handlers["docx_finalize"] = _docx_finalize
-    handlers["docx_repair"] = _docx_repair
-
-    # ---------- PPT（阶段 7） ----------
-    def _ppt_create_outline(args: dict[str, Any]) -> OperationResult:
-        _require(services.ppt, "PptService")
-        return services.ppt.create_outline(
-            topic=str(args["topic"]),
-            audience=str(args.get("audience", "")),
-            page_count=int(args.get("page_count", 8)),
-            style=str(args.get("style", "clean")),
-            selected_source_ids=[str(v) for v in args.get("selected_source_ids", [])],
-        )
-
-    def _ppt_generate(args: dict[str, Any]) -> OperationResult:
-        _require(services.ppt, "PptService")
-        from skill_toolbox.contracts.ppt import PptGenerateRequest
-
-        return services.ppt.generate(PptGenerateRequest.model_validate(args))
-
-    def _ppt_repair(args: dict[str, Any]) -> OperationResult:
-        _require(services.ppt, "PptService")
-        from skill_toolbox.contracts.ppt import PptRepairRequest
-
-        return services.ppt.repair(PptRepairRequest.model_validate(args))
-
-    handlers["ppt_create_outline"] = _ppt_create_outline
-    handlers["ppt_generate"] = _ppt_generate
-    handlers["ppt_repair"] = _ppt_repair
 
     return handlers
 

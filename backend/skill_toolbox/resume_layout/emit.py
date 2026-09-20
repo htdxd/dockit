@@ -196,6 +196,8 @@ def set_box_text(
     first_is_header: bool | None = None,
     header_lines: int | None = None,
     tech_stack_line: int | None = None,
+    detail_styles: dict | None = None,
+    inline_styles: list | None = None,
 ) -> None:
     """整框替换文本，**按段落角色复用源样式**（P2-1）。
 
@@ -233,6 +235,7 @@ def set_box_text(
     paras = list(tx.iter(W + "p"))
     first_p = paras[0]
     lines = new_text.split("\n")
+    detail_styles = {int(key): value for key, value in (detail_styles or {}).items()}
     # 清掉除首段外的全部段落
     for p in paras[1:]:
         tx.remove(p)
@@ -254,7 +257,7 @@ def set_box_text(
             if snap["pPr"] is not None:
                 p.append(copy.deepcopy(snap["pPr"]))
             prev_p.addnext(p)
-        if i == tech_stack_line:
+        if i == tech_stack_line or i in detail_styles:
             props = p.find(W + "pPr")
             if props is not None:
                 for tag in ("numPr", "ind"):
@@ -270,6 +273,12 @@ def set_box_text(
             t = etree.SubElement(r, W + "t")
             t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
             t.text = chunk
+        if i in detail_styles:
+            from skill_toolbox.resume_layout.field_style import apply_field_style
+            apply_field_style(p, detail_styles[i])
+        if i < (header_lines or 0) and inline_styles:
+            from skill_toolbox.resume_layout.field_style import apply_inline_styles
+            apply_inline_styles(p, inline_styles)
         prev_p = p
 
 

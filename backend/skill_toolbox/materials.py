@@ -71,7 +71,6 @@ SUPPORTED_SUFFIXES = {
     ".md",
     ".markdown",
     ".txt",
-    ".pptx",
     *_REF_SAFE_SUFFIXES,
 }
 
@@ -634,7 +633,7 @@ class MaterialService:
         if suffix not in SUPPORTED_SUFFIXES:
             raise MaterialError(
                 "MATERIAL_UNSUPPORTED",
-                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/pptx/常见图片）",
+                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/常见图片）",
             )
         material_id = material_id_for(source)
         if material_id in self._irs:
@@ -656,8 +655,6 @@ class MaterialService:
         sha256 = sha256_file(staged)
         if suffix in {".md", ".markdown", ".txt"}:
             ir = self._parse_native_text(staged, source, suffix)
-        elif suffix == ".pptx":
-            ir = self._parse_native_pptx(staged, source, material_id, sha256)
         elif suffix in {".pdf", ".docx"}:
             ir = self._parse_mineru_document(staged, source, material_id, sha256)
         elif suffix in _REF_SAFE_SUFFIXES:
@@ -665,7 +662,7 @@ class MaterialService:
         else:
             raise MaterialError(
                 "MATERIAL_UNSUPPORTED",
-                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/pptx/常见图片）",
+                f"不支持的格式: {suffix or 'unknown'}（支持 pdf/docx/md/txt/常见图片）",
             )
         self._write_manifest()
         return ir
@@ -690,83 +687,6 @@ class MaterialService:
             [asset],
             [],
         )
-
-    def _parse_native_pptx(
-        self, staged: Path, original: Path, material_id: str, sha256: str
-    ) -> DocumentIR:
-        """PPTX → 共享 DocumentIR：复用 ppt-master 成熟的 ppt_to_md parser
-        （实施计划 §10.1：不再为 PPT 另跑一套 source_to_md 产生第二套事实）。
-
-        parser 以 subprocess 调用（避免在 Runtime 进程内 import python-pptx
-        与其私有 API）；输出 md + 关联媒体物化到本材料 assets/。
-        """
-        warnings: list[str] = []
-        parser = Path(__file__).parent / "skill_defs" / "ppt-master" / "scripts" / "source_to_md" / "ppt_to_md.py"
-        if not parser.is_file():
-            raise MaterialError(
-                "MATERIAL_CORRUPT", f"ppt-master parser 缺失: {parser}"
-            )
-        out_root = material_id_dir(self.workspace, material_id)
-        out_root.mkdir(parents=True, exist_ok=True)
-        md_target = out_root / "parser.md"
-        md_target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            completed = self._run_subprocess(
-                [sys.executable, str(parser), str(staged), "-o", str(md_target)],
-                timeout=300,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise MaterialError(
-                "MATERIAL_CORRUPT", f"ppt_to_md parser 调用失败: {exc}"
-            )
-        if completed.returncode or not md_target.is_file():
-            raise MaterialError(
-                "MATERIAL_CORRUPT",
-                f"ppt_to_md parser 失败（rc={completed.returncode}）",
-            )
-
-        try:
-            md_text = md_target.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            raise MaterialError("MATERIAL_CORRUPT", f"parser.md 读取失败: {exc}") from None
-
-        # 物化 parser 引用的媒体（<stem>_files/ 目录）到本材料 assets/
-        assets: list[Asset] = []
-        parser_media_root = md_target.parent / f"{md_target.stem}_files"
-        assets_dir = out_root / "assets"
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        asset_by_ref: dict[str, str] = {}
-        if parser_media_root.is_dir():
-            for media_file in sorted(parser_media_root.iterdir()):
-                if media_file.suffix.lower() not in _REF_SAFE_SUFFIXES:
-                    continue
-                asset = _materialize_asset_into(self.workspace, material_id, media_file)
-                assets.append(asset)
-                asset_by_ref[media_file.name] = asset.id
-
-        blocks: list[Block] = []
-        for order, raw in enumerate(_parse_markdown_blocks(md_text)):
-            block_type = raw["type"]
-            asset_ids: list[str] = []
-            if block_type == "image":
-                for ref in raw.get("asset_refs", []):
-                    ref_name = Path(ref).name
-                    asset_id = asset_by_ref.get(ref_name)
-                    if asset_id:
-                        asset_ids.append(asset_id)
-            blocks.append(
-                Block(
-                    id=_block_id(material_id, order),
-                    type=block_type,
-                    order=order,
-                    text=raw.get("text", ""),
-                    level=raw.get("level") if block_type == "heading" else None,
-                    page=raw.get("page"),
-                    asset_ids=asset_ids,
-                    source_locator=f"pptx:{original.name}#b{order}",
-                )
-            )
-        return self._register(material_id, original, "pptx", sha256, blocks, assets, warnings)
 
     def _parse_mineru_document(
         self, staged: Path, original: Path, material_id: str, sha256: str
@@ -1123,8 +1043,6 @@ def _format_for(suffix: str) -> SourceFormat:
         return "pdf"
     if suffix == ".docx":
         return "docx"
-    if suffix == ".pptx":
-        return "pptx"
     return "image"
 
 

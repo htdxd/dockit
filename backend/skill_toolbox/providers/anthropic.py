@@ -87,7 +87,10 @@ class AnthropicProvider:
         result: list[dict[str, Any]] = []
         for message in messages:
             if message.role == "user":
-                result.append({"role": "user", "content": message.text})
+                content = ([{"type": "text", "text": message.text}] + [
+                    {"type": "image", "source": {"type": "base64", "media_type": im.media_type, "data": im.base64_data}}
+                    for im in message.images]) if message.images else message.text
+                result.append({"role": "user", "content": content})
             elif message.role == "assistant":
                 content: list[dict[str, Any]] = []
                 if message.text:

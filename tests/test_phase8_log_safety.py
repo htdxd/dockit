@@ -51,7 +51,7 @@ def test_debug_logs_never_contain_secrets(tmp_path: Path) -> None:
     result = asyncio.run(
         runtime.run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "test",
                 tmp_path / "out",
                 capabilities={"vision": False},
@@ -93,7 +93,7 @@ def test_domain_prompt_has_no_legacy_exec_cmd_instruction(tmp_path: Path) -> Non
     asyncio.run(
         runtime.run(
             TaskRequest(
-                "docx_pro",
+                "resume_pro",
                 "test",
                 tmp_path / "out",
                 materials=[material],
@@ -109,26 +109,3 @@ def test_domain_prompt_has_no_legacy_exec_cmd_instruction(tmp_path: Path) -> Non
     assert "不要" in provider.prompt and "exec_cmd" in provider.prompt
     assert "read_material" in provider.prompt
     assert "create_content_plan" in provider.prompt
-
-
-def test_pending_visual_review_records_skipped(tmp_path: Path) -> None:
-    """无 Vision：pending-visual-review.json 记录 skipped + review_required。"""
-    ws = tmp_path / "workspace"
-    ws.mkdir()
-    # 直接验证 DocxService 的落盘逻辑（无 Vision 交付路径）
-    from skill_toolbox.materials import MaterialService
-    from skill_toolbox.tools.docx import DocxService
-
-    service = MaterialService(ws)
-    docx_service = DocxService(ws, Path("backend/skill_toolbox/skill_defs/docx_pro/scripts"), service.catalog(), capabilities={"vision": False})
-    docx_service._write_pending_visual("docx-test", ws / "artifacts" / "out.docx")
-
-    pending = json.loads(
-        (ws / "work" / "qa" / "pending-visual-review.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    items = pending["items"]
-    assert items and items[0]["status"] == "skipped"
-    assert items[0]["review_required"] is True
-    assert "reason" in items[0] and "vision" in items[0]["reason"].lower()

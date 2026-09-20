@@ -61,6 +61,7 @@ class ResumeFacts:
                 refs = entry.get("source_ids") or list(self.sources)
                 source_text = "\n".join(self.sources[ref]["text"] for ref in refs if ref in self.sources)
                 text = "\n".join([*(entry.get("head") or {}).values(),
+                                  *(f"{f['label']}：{f['value']}" for f in entry.get("details", [])),
                                   *entry.get("bullets", []), *entry.get("lines", [])])
                 target = f"{section['key']}#{entry['id']}"
                 entries.append({"target_id": target, "source_ids": refs,

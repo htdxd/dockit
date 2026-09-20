@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 import re
+import importlib.util
+from types import SimpleNamespace
 
 import pytest
 from skill_toolbox.models import AssistantTurn
@@ -9,6 +11,20 @@ from skill_toolbox.runtime import AgentRuntime, TaskRequest
 from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_poppler_bundle_follows_transitive_imports(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location('package_desktop', ROOT / 'scripts/package_desktop.py')
+    package = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package)
+    imports = {'pdftoppm.exe': ['poppler.dll'], 'pdfinfo.exe': ['poppler.dll'],
+               'poppler.dll': ['codec.dll'], 'codec.dll': ['api-ms-win-crt-runtime-l1-1-0.dll']}
+    for name in [*imports, 'unused.dll']:
+        (tmp_path / name).touch()
+    monkeypatch.setattr(package.shutil, 'which', lambda _: 'objdump')
+    monkeypatch.setattr(package.subprocess, 'run', lambda args, **kwargs: SimpleNamespace(
+        stdout='\n'.join('DLL Name: ' + name for name in imports[Path(args[-1]).name])))
+    assert {p.name for p in package.poppler_runtime_files(tmp_path)} == set(imports)
 
 
 def test_development_does_not_depend_on_bundled_runtime():

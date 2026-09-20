@@ -18,7 +18,10 @@ class OpenAIResponsesProvider(OpenAIProvider):
         items = []
         for message in messages:
             if message.role == "user":
-                items.append({"role": "user", "content": message.text})
+                content = ([{"type": "input_text", "text": message.text}] + [
+                    {"type": "input_image", "image_url": f"data:{im.media_type};base64,{im.base64_data}", "detail": "high"}
+                    for im in message.images]) if message.images else message.text
+                items.append({"role": "user", "content": content})
             elif message.role == "assistant":
                 if message.provider_items:
                     retained = {call.id for call in message.tool_calls}

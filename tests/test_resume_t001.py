@@ -75,6 +75,7 @@ def test_header_fit_uses_available_gap_or_explicitly_fails(tmp_path, monkeypatch
     doc = SimpleNamespace(Shapes=lambda name: shapes[name], Close=lambda _: closed.append("doc"))
     word = SimpleNamespace(Documents=SimpleNamespace(Open=lambda *args: doc),
                            Quit=lambda: closed.append("word"))
+    monkeypatch.setattr("skill_toolbox.word_com.start_word", lambda: word)
     monkeypatch.setitem(sys.modules, "pythoncom",
                         SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None))
     monkeypatch.setitem(sys.modules, "win32com",

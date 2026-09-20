@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 
 from skill_toolbox.resume_layout import emit
+from skill_toolbox.resume_layout.field_style import apply_field_style
 
 
 def _paragraph_value(paragraph) -> tuple[str, str] | None:
@@ -29,6 +30,9 @@ def _set_label_value(paragraph, label: str, value: str):
     sample = copy.deepcopy(runs[-1]) if runs else emit.etree.Element(emit.W + "r")
     for run in runs:
         run.getparent().remove(run)
+    for child in list(paragraph):
+        if child.tag in {emit.W + "fldSimple", emit.W + "hyperlink"}:
+            paragraph.remove(child)
     for text in (label + "：", value):
         run = copy.deepcopy(sample)
         emit._set_run_text(run, text)
@@ -94,6 +98,7 @@ def apply_header_components(boxes: list, labels: dict[str, str], header: dict) -
             for old in list(run.findall(emit.W + "tab")):
                 run.remove(old)
         emit.etree.SubElement(runs[0], emit.W + "tab")
+        apply_field_style(paragraph, custom.get(key, {}), value_only=True)
         result[key] = {"label": label.strip(), "before": originals.get(key, ""),
                        "after": value, "column": column}
     # 空文本框仍保留合法空段落，不保留已删除的标签或值。

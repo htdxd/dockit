@@ -9,7 +9,7 @@ from skill_toolbox.sidecar import SidecarService
 from skill_toolbox.skills import load_skill
 
 EMPTY_DOCX_PLAN = (
-    '{"schema_version":"1","task_type":"docx","mode":"conservative",'
+    '{"schema_version":"1","task_type":"resume","mode":"conservative",'
     '"selections":[],"exclusions":[],"questions_asked":false}'
 )
 
@@ -138,7 +138,7 @@ async def test_sidecar_runs_task_and_emits_correlated_events(
             "type": "start_task",
             "payload": {
                 "provider": {"kind": "mock", "model": "mock"},
-                "skill_id": "docx_pro",
+                "skill_id": "resume_pro",
                 "user_prompt": "测试",
                 "output_dir": str(tmp_path),
             },
@@ -146,7 +146,7 @@ async def test_sidecar_runs_task_and_emits_correlated_events(
     )
     await asyncio.wait_for(service.wait_all(), timeout=5)
 
-    assert (tmp_path / "sidecar.docx_pro.md").exists()
+    assert (tmp_path / "sidecar.resume_pro.md").exists()
     assert all(event["id"] == "task-1" for event in events)
     assert events[-1]["event"]["type"] == "task_completed"
 
@@ -167,7 +167,7 @@ async def test_sidecar_accepts_skill_with_satisfied_capabilities(tmp_path: Path)
             "type": "start_task",
             "payload": {
                 "provider": {"kind": "openai", "model": "gpt-4o"},
-                "skill_id": "docx_pro",
+                "skill_id": "resume_pro",
                 "user_prompt": "生成报告",
                 "output_dir": str(tmp_path),
             },
@@ -195,7 +195,7 @@ async def test_sidecar_requires_mineru_token(tmp_path: Path) -> None:
             "type": "start_task",
             "payload": {
                 "provider": {"kind": "openai", "model": "gpt-4o"},
-                "skill_id": "docx_pro",
+                "skill_id": "resume_pro",
                 "user_prompt": "生成报告",
                 "output_dir": str(tmp_path),
             },

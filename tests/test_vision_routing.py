@@ -30,7 +30,7 @@ class _CaptureProvider:
 
 def _request(capabilities: dict) -> TaskRequest:
     return TaskRequest(
-        skill_id="docx_pro",
+        skill_id="resume_pro",
         user_prompt="生成测试文档",
         output_dir=Path("_docxpro_e2e_out"),
         capabilities=capabilities,
