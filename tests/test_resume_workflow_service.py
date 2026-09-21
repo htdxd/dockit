@@ -1,16 +1,19 @@
 """Semantic resume operations retain version and content guarantees without Word."""
 import json
-from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 from pydantic import ValidationError
-
+from runtime_support import invoke, task_for
 from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.contracts.resume_workflow import (
-    AcceptRequest, EditRequest, EntryPatch, GenerateRequest, PrepareRequest, PreviewRequest,
+    AcceptRequest,
+    EditRequest,
+    EntryPatch,
+    GenerateRequest,
+    PrepareRequest,
+    PreviewRequest,
 )
-from runtime_support import task_for, invoke
 from skill_toolbox.materials import MaterialService
 from skill_toolbox.resume_layout.t109 import TEMPLATE
 from skill_toolbox.tools.materials import MaterialPlanService
@@ -95,9 +98,6 @@ def test_candidate_recovery_reports_real_ids_without_accepting_filename(workflow
 
 @pytest.mark.asyncio
 async def test_internal_candidate_question_never_opens_user_dialog(workflow):
-    from skill_toolbox.models import ToolCall
-    from skill_toolbox.providers.mock import ScriptedProvider
-    from skill_toolbox.runtime import AgentRuntime, UserInputBroker
     events = []
     result = await invoke(task_for(workflow, events.append), 'ask_user_questions', {
         'questions': [{'id': 'candidate', 'label': '请提供 candidate_id'}]})
@@ -235,6 +235,32 @@ def test_update_preserves_unspecified_fields_and_retry_is_idempotent(workflow, t
     repeated = workflow.edit(request)
     assert repeated.data["candidate_id"] == edited.data["candidate_id"]
     assert workflow.engine.test_render_count == 2
+
+
+def test_edit_computes_actions_once_before_version_commit(workflow, monkeypatch):
+    first = generate(workflow)
+    apply = workflow.engine.actions.apply
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return apply(*args)
+
+    monkeypatch.setattr(workflow.engine.actions, 'apply', counted)
+    edited = workflow.edit(EditRequest(candidate_id=first.data['candidate_id'], changes=[
+        {'op': 'update_entry', 'target_id': 'job-1', 'entry': {'role': '工程师'}}]))
+    assert edited.ok and calls == [1]
+    with pytest.raises(ToolError) as stale:
+        workflow.edit(EditRequest(candidate_id=first.data['candidate_id'], changes=[
+            {'op': 'update_entry', 'target_id': 'job-1', 'entry': {'role': '旧修改'}}]))
+    assert stale.value.code == 'VERSION_CONFLICT'
+    assert workflow.engine.store.index(first.artifact_id)['current'] == edited.revision
+
+
+def test_known_chinese_person_labels_are_normalized(workflow):
+    result = generate(workflow, person={'姓名': '示例人', '邮箱': 'person@example.com'})
+    assert result.ok
+    assert result.data['content']['person'] == {'name': '示例人', 'email': 'person@example.com'}
 
 
 def test_replace_photo_keeps_artifact_and_all_semantic_content(workflow):

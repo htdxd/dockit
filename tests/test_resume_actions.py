@@ -21,7 +21,8 @@ def test_shared_actions_preserve_input_and_apply_fields_format_and_order(templat
         {'op': 'format', 'scope': 'entry', 'target_id': 'projects#b', 'font_size_pt': 12},
         {'op': 'move_entry', 'target_id': 'projects#b', 'before_id': 'a'},
     ])
-    edited, commands, header = actions.compile(content, request.changes)
+    prepared = actions.compile(content, request.changes)
+    edited, commands, header = prepared.content, prepared.commands, prepared.header
     assert content == before
     assert [e['id'] for e in edited['sections'][0]['entries']] == ['b', 'a']
     assert edited['sections'][0]['entries'][0]['font_size_pt'] == 12
@@ -42,3 +43,13 @@ def test_failed_batch_does_not_mutate_original():
     with pytest.raises(ToolError):
         actions.compile(content, request.changes)
     assert content == before
+
+
+def test_person_alias_conflict_is_not_silently_overwritten():
+    actions = ResumeActions(get_profile('t109'))
+    with pytest.raises(ToolError) as error:
+        actions.person_fields({'name': '甲', '姓名': '乙'})
+    assert error.value.code == 'CONTENT_INVALID'
+    with pytest.raises(ToolError) as unknown:
+        actions.person_fields({'不认识的标签': '内容'})
+    assert unknown.value.code == 'FIELD_UNSUPPORTED'

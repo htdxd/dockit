@@ -146,16 +146,14 @@ class ResumeWorkflow:
     def generate(self, request):
         allowed = sorted(set(self.engine.profile.header_labels.values()))
         content = request.content
-        unknown = set(content.person) - set(allowed)
-        if unknown:
-            raise ToolError("FIELD_UNSUPPORTED", f"当前模板不支持个人信息字段 {sorted(unknown)}")
+        person = self.engine.actions.person_fields(content.person)
         custom = [item.model_dump() for item in content.personal_fields]
         if len({item["key"] for item in custom}) != len(custom):
             raise ToolError("CONTENT_INVALID", "个人字段 key 必须唯一。")
         for item in custom:
-            if item["key"] in content.person and content.person[item["key"]] != item["value"]:
+            if item["key"] in person and person[item["key"]] != item["value"]:
                 raise ToolError("CONTENT_INVALID", f"字段 {item['key']} 提供了两个不同的值。")
-        fields = {**dict.fromkeys(allowed, ""), **content.person}
+        fields = {**dict.fromkeys(allowed, ""), **person}
         visible_custom = {item["key"] for item in custom if item["value"].strip()}
         hidden = [key for key, value in fields.items() if not value.strip() and key not in visible_custom]
         sections = [self.engine.actions.from_section(s) for s in content.sections]
@@ -254,17 +252,18 @@ class ResumeWorkflow:
                 self._save_target(artifact_id, request.target_pages)
             return self._result(result)
         photos = {c.asset_id: self._photo(c.asset_id) for c in request.changes if c.op == "replace_photo"}
-        working, actions, header = self.engine.actions.compile(record["content"], request.changes, photo_changes=photos)
+        prepared = self.engine.actions.compile(record["content"], request.changes, photo_changes=photos)
+        working = prepared.content
         self._external(working)  # 在渲染前拒绝空条目/空简历，不能生成后才发现遗漏。
         self._check_ids(working["sections"])
         self.facts.validate_refs(working["sections"])
         self._check_typography(working["sections"])
         result = self.engine.repair(ResumeRepairV2Request(
             density=request.density,
-            artifact_id=artifact_id, base_revision=revision, changes=actions,
-            header=ResumeHeaderV2(**header) if header is not None else None,
+            artifact_id=artifact_id, base_revision=revision, changes=prepared.commands,
+            header=ResumeHeaderV2(**prepared.header) if prepared.header is not None else None,
             request_id=_request_id("edit", request.model_dump()),
-        ))
+        ), prepared=prepared)
         if request.target_pages is not None and result.ok and not result.data.get("idempotent_replay"):
             self._save_target(artifact_id, request.target_pages)
         current = self.engine.store.index(artifact_id)["current"]

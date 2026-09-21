@@ -1,4 +1,5 @@
 """六模板共用的内容编辑动作；纯内存操作，不访问 Word、文件或版本存储。"""
+from dataclasses import dataclass
 from typing import Any
 
 from skill_toolbox.contracts.common import ToolError
@@ -11,9 +12,31 @@ MIN_BODY_W_PT = 200.0
 MAX_BODY_H_PT = 640.0
 
 
+@dataclass(frozen=True)
+class PreparedEdit:
+    content: dict
+    commands: list[ResumeEditV2]
+    header: dict | None
+    changes: list[dict]
+
+
 class ResumeActions:
     def __init__(self, profile):
         self.profile = profile
+
+    def person_fields(self, fields, *, custom_keys=()):
+        """只归一化模板已声明的中文标签，保留明确的自定义字段标识。"""
+        allowed = set(self.profile.header_labels.values()) | set(custom_keys)
+        labels = {''.join(label.split()): key for label, key in self.profile.header_labels.items()}
+        result = {}
+        for name, value in fields.items():
+            key = name if name in allowed else labels.get(''.join(name.split()), name)
+            if key not in allowed:
+                raise ToolError('FIELD_UNSUPPORTED', f'当前模板不支持个人信息字段 {name!r}；额外信息请用 personal_fields。')
+            if key in result and result[key] != value:
+                raise ToolError('CONTENT_INVALID', f'个人字段 {key} 提供了两个不同的值。')
+            result[key] = value
+        return result
 
     @staticmethod
     def next_entry_id(section: dict[str, Any]) -> str:
@@ -325,6 +348,7 @@ class ResumeActions:
 
         working = copy.deepcopy(content)
         actions = []
+        records = []
         header = copy.deepcopy(working.get("header") or {})
         header_changed = False
         hidden = set(header.get("hidden_fields") or [])
@@ -341,11 +365,12 @@ class ResumeActions:
                 edits = [ResumeEditV2(op="format_component", **target,
                                      font_size_pt=change.font_size_pt, scale=change.scale)
                          for target in targets]
-                working, _ = self.apply(working, edits)
+                working, applied = self.apply(working, edits)
+                records.extend(applied)
                 actions.extend(edits)
                 continue
             if op == "update_person":
-                for key, value in change.fields.items():
+                for key, value in self.person_fields(change.fields, custom_keys=custom).items():
                     if key in custom:
                         custom[key]["value"] = value
                         if key in header.get("fields", {}):
@@ -385,7 +410,8 @@ class ResumeActions:
                     ResumeEditV2(op="insert_section", section=section,
                                  before=change.before_id or "", after=change.after_id or ""),
                 ]
-                working, _ = self.apply(working, moved)
+                working, applied = self.apply(working, moved)
+                records.extend(applied)
                 actions.extend(moved)
                 continue
             if op == "update_entry":
@@ -420,16 +446,18 @@ class ResumeActions:
                 self.section(working, change.section_id)
                 action = ResumeEditV2(op="update_section_title" if op == "rename_section" else op,
                                      section_key=change.section_id, title=getattr(change, "title", ""))
-            working, _ = self.apply(working, [action])
+            working, applied = self.apply(working, [action])
+            records.extend(applied)
             actions.append(action)
         # 整批结束再移除空栏；同批“删旧条目→插入新条目”仍可引用该栏目。
         for section in list(working["sections"]):
             if not section["entries"]:
                 removal = ResumeEditV2(op="remove_section", section_key=section["key"])
-                working, _ = self.apply(working, [removal])
+                working, applied = self.apply(working, [removal])
+                records.extend(applied)
                 actions.append(removal)
         header["hidden_fields"] = sorted(hidden)
         header["custom_fields"] = list(custom.values())
         if header_changed:
             working['header'] = header
-        return working, actions, header if header_changed else None
+        return PreparedEdit(working, actions, header if header_changed else None, records)

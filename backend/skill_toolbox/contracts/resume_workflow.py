@@ -4,7 +4,8 @@ import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from skill_toolbox.contracts.resume_style import DetailField, FieldStyle, EntryHighlight
+
+from skill_toolbox.contracts.resume_style import DetailField, EntryHighlight, FieldStyle
 
 FontSize = Annotated[float, Field(ge=8, le=18)]
 ComponentScale = Annotated[float, Field(ge=0.75, le=1.25)]
@@ -27,7 +28,7 @@ class EntryPatch(WorkflowModel):
     text: list[str] = Field(default_factory=list)
     details: list[DetailField] = Field(default_factory=list, description="项目首行按名称、GitHub 简写链接、Stars/Forks、性质排序；其余按 layout 排布。空列表清除。")
     highlights: list[EntryHighlight] = Field(default_factory=list, description="字段或正文原文片段强调；省略保留已有强调，[] 全部撤销。修改文字后仍须能唯一匹配，否则需同时更新 highlights。")
-    source_ids: list[str] = Field(default_factory=list, description="可选：本条经历的事实来源 ID，复制 prepare 的 source_id 或问答返回值；只改表达时省略以保留原引用，不填写文件路径")
+    source_ids: list[str] = Field(default_factory=list, description="可省略。用户在消息中直接提供的资料可填 ['request']；材料或问答来源只能复制已返回的 source_id，不自编 ID、不填文件路径。只改表达时省略以保留原引用。")
     tech_stack: str = Field(default="", description="项目技术栈，单独排在项目名称/性质下方；用逗号分隔，不放入 role")
 
     @field_validator("tech_stack", mode="before")
@@ -66,7 +67,7 @@ class PersonalField(FieldStyle):
 
 
 class Content(WorkflowModel):
-    person: dict[str, str] = Field(default_factory=dict)
+    person: dict[str, str] = Field(default_factory=dict, description="基本信息，以 name（姓名）、phone（电话）、email（邮箱）等字段标识为键；当前模板可用字段见 resume_prepare.person_fields，额外字段用 personal_fields。")
     personal_fields: list[PersonalField] = Field(default_factory=list)
     photo_asset_id: str = ""
     sections: list[Section] = Field(min_length=1)

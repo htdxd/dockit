@@ -39,6 +39,46 @@ class ResumeStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, index)
 
+    def save_revision(self, artifact_id: str, revision: int, record: dict) -> None:
+        atomic_write_json(self.revision_dir(artifact_id, revision) / 'revision.json', record)
+
+    def reserve_revision(self, artifact_id: str, revision: int | None = None):
+        """调用方持有 artifact 锁；已落盘的版本号不可复用。"""
+        root = self.artifact_dir(artifact_id)
+        root.mkdir(parents=True, exist_ok=True)
+        index = self.index(artifact_id) if (root / 'index.json').is_file() else {'current': 0, 'accepted': 0}
+        number = int(revision or index['current'] + 1)
+        folder = self.revision_dir(artifact_id, number)
+        if (folder / 'revision.json').is_file():
+            raise ToolError('REVISION_EXISTS', f'{artifact_id} 的 revision {number} 已存在；版本不可覆盖，请重试。', retryable=True)
+        folder.mkdir(parents=True, exist_ok=True)
+        return index, number, folder
+
+    def publish_revision(self, artifact_id: str, index: dict, revision: int):
+        index['current'] = revision
+        self.save_index(artifact_id, index)
+
+    def accept_revision(self, artifact_id: str, index: dict, record: dict, *, notes: str, visual_status: str):
+        revision = record['revision']
+        record['accepted'] = True
+        visual = record.setdefault('visual', {})
+        visual['notes'] = notes
+        visual['status'] = 'recorded' if notes else visual.get('status', 'not_run')
+        self.save_revision(artifact_id, revision, record)
+        index['accepted'] = revision
+        index.setdefault('accepted_log', []).append({'revision': revision, 'visual': visual_status, 'notes': notes})
+        self.save_index(artifact_id, index)
+
+    def record_delivery(self, artifact_id: str, revision: int, pages: list[int]):
+        record = self.load_revision(artifact_id, revision)
+        visual = record.setdefault('visual', {'status': 'pending', 'delivered_pages': []})
+        merged = sorted(set(visual.get('delivered_pages', [])) | set(pages))
+        visual['delivered_pages'] = merged
+        if merged:
+            visual['status'] = 'delivered' if len(merged) >= int(record.get('page_count') or 0) else 'partial'
+        self.save_revision(artifact_id, revision, record)
+        return record
+
     def load_revision(self, artifact_id: str, revision: int) -> dict[str, Any]:
         path = self.revision_dir(artifact_id, revision) / "revision.json"
         if not path.is_file():

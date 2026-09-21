@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import subprocess
@@ -9,7 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
-from skill_toolbox.resume_actions import MAX_BODY_H_PT, MIN_BODY_W_PT, V2_MIN_ENTRY_GAP_PT, ResumeActions
+from skill_toolbox.resume_actions import (
+    MAX_BODY_H_PT,
+    MIN_BODY_W_PT,
+    V2_MIN_ENTRY_GAP_PT,
+    PreparedEdit,
+    ResumeActions,
+)
 from skill_toolbox.resume_content import (
     canonical_entry,
     detail_groups,
@@ -255,7 +262,7 @@ class ResumeEditService:
                 request_kind="revision",
             )
 
-    def repair(self, request: Any) -> OperationResult:
+    def repair(self, request: Any, *, prepared: PreparedEdit | None = None) -> OperationResult:
         header_change = getattr(request, "header", None)
         density = getattr(request, "density", None)
         if not request.changes and header_change is None and density is None:
@@ -296,7 +303,11 @@ class ResumeEditService:
                 )
             base = self.store.load_revision(request.artifact_id, int(request.base_revision))
             content = base["content"]
-            new_content, records = self.actions.apply(content, request.changes)
+            if prepared is None:
+                new_content, records = self.actions.apply(content, request.changes)
+            else:
+                # prepared 仅由服务端动作模块生成；版本核对通过后直接提交，避免再次应用动作。
+                new_content, records = copy.deepcopy(prepared.content), copy.deepcopy(prepared.changes)
             if density is not None:
                 from skill_toolbox.resume_layout.typography import apply_density
                 apply_density(new_content, density, self.template_id)
@@ -395,19 +406,8 @@ class ResumeEditService:
             delivery = self._write_delivery_report(
                 request.artifact_id, rev, record, notes=notes
             )
-            index["accepted"] = rev
-            index.setdefault("accepted_log", []).append(
-                {"revision": rev, "visual": delivery["visual"]["status"], "notes": notes}
-            )
-            self.store.save_index(request.artifact_id, index)
-            record["accepted"] = True
-            record.setdefault("visual", {})["notes"] = notes
-            record["visual"]["status"] = (
-                "recorded" if notes else visual.get("status", "not_run")
-            )
-            (self.store.revision_dir(request.artifact_id, rev) / "revision.json").write_text(
-                json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            self.store.accept_revision(request.artifact_id, index, record,
+                                       notes=notes, visual_status=delivery['visual']['status'])
             data = {
                 "accepted_revision": rev,
                 "docx": record["docx"],
@@ -579,30 +579,12 @@ class ResumeEditService:
             for entry in section.get("entries", []):
                 if entry.get("highlights"):
                     self._paragraph_styles(section, canonical_entry(section, entry))
-        art_dir = self.store.artifact_dir(artifact_id)
-        art_dir.mkdir(parents=True, exist_ok=True)
-        index_path = art_dir / "index.json"
-        index = (
-            json.loads(index_path.read_text(encoding="utf-8"))
-            if index_path.is_file()
-            else {"current": 0, "accepted": 0}
-        )
-        revision = int(force_revision or index["current"] + 1)
-        rev_dir = self.store.revision_dir(artifact_id, revision)
-        if rev_dir.exists() and (rev_dir / "revision.json").is_file():
-            # 不可变版本：绝不复用已存在的版本号（恢复/并发保护）
-            raise ToolError(
-                "REVISION_EXISTS",
-                f"{artifact_id} 的 revision {revision} 已存在；版本不可覆盖，请重试。",
-                retryable=True,
-            )
-        rev_dir.mkdir(parents=True, exist_ok=True)
+        index, revision, rev_dir = self.store.reserve_revision(artifact_id, force_revision)
         record = self._render_revision(
             artifact_id, revision, content, layout_mode=layout_mode,
             base_revision=base_revision, changes=changes, rev_dir=rev_dir,
         )
-        index["current"] = revision
-        self.store.save_index(artifact_id, index)
+        self.store.publish_revision(artifact_id, index, revision)
         if request_id:
             self.store.record_request(
                 request_id,
@@ -666,9 +648,7 @@ class ResumeEditService:
             "instance_model": self._instance_model(plan, content),
             "renderer": "Word COM ExportAsFixedFormat + pdftoppm 120dpi",
         }
-        (rev_dir / "revision.json").write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self.store.save_revision(artifact_id, revision, record)
         # QAReport（Runtime 的机械硬门读这里）：机械结果来自本版真实 QA；
         # 视觉状态按实际投递记录，未投递即 pending/not_run，不冒充视觉验收。
         self._write_qa_report(revision, qa_report)
@@ -959,17 +939,4 @@ class ResumeEditService:
         只记录**内联进模型视觉输入**（images）的页：路径文本不算视觉覆盖。
         """
         delivered = sorted({int(Path(ref).stem.split('-')[1]) for ref in refs}) if any(images) else []
-        record_path = self.store.revision_dir(artifact_id, revision) / "revision.json"
-        record = self.store.load_revision(artifact_id, revision)
-        visual = record.setdefault("visual", {"status": "pending", "delivered_pages": []})
-        merged = sorted(set(visual.get("delivered_pages", [])) | set(delivered))
-        visual["delivered_pages"] = merged
-        pages = int(record.get("page_count") or 0)
-        if merged and len(merged) >= pages:
-            visual["status"] = "delivered"
-        elif merged:
-            visual["status"] = "partial"
-        record_path.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return record
+        return self.store.record_delivery(artifact_id, revision, delivered)
