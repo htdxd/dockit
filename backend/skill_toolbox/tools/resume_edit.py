@@ -5,17 +5,21 @@ import base64
 import hashlib
 import json
 import subprocess
-import sys
-import math
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
+from skill_toolbox.resume_actions import MAX_BODY_H_PT, MIN_BODY_W_PT, V2_MIN_ENTRY_GAP_PT, ResumeActions
+from skill_toolbox.resume_content import (
+    canonical_entry,
+    detail_groups,
+    is_project,
+    title_metrics,
+)
 from skill_toolbox.tools.process import ProcessRunner
-from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
 from skill_toolbox.tools.resume_store import ResumeStore
-from skill_toolbox.resume_content import canonical_entry, is_project, title_metrics, detail_groups
+from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
+
 
 def _normalize_photo(path: Path) -> bytes:
     """把常见图片统一成 PNG；各模板写入对应部件并声明正确的媒体类型。"""
@@ -34,21 +38,10 @@ def _normalize_photo(path: Path) -> bytes:
     return buf.getvalue()
 
 
-V2_TEMPLATE_ID = "t109"
-V2_ARCHIVE_REL = "work/resume/spacing_archive.json"
 # 图像预算（初始值；真实 provider 探针后固化 —— 见 SCHEMA_FREEZE §5）
 IMAGE_BUDGET_PAGES = 3
 IMAGE_MAX_BYTES = 2 * 1024 * 1024
 IMAGE_TOTAL_BYTES = 4 * 1024 * 1024
-V2_MIN_ENTRY_GAP_PT = 2.0
-V2_MIN_VISIBLE_GAP_PT = 8.0
-# 正文框宽度边界（模板正文列宽 532.5pt 为上限；过窄会无法排版）
-MIN_BODY_W_PT = 200.0
-MAX_BODY_W_PT = 532.5
-# 正文框高度上限（不越过页容量）
-MAX_BODY_H_PT = 640.0
-# 模板照片媒体部件（t109 照片 anchor 组合 12 的 rId4 → media/image1.png）
-V2_PHOTO_PART = "word/media/image1.png"
 
 
 def _payload_hash(payload: object) -> str:
@@ -56,27 +49,8 @@ def _payload_hash(payload: object) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-class _GapOverride:
-    """在档案之上叠加内容层显式声明的条目间距（未声明则回落档案/默认）。"""
-
-    def __init__(self, archive: object, overrides: dict[str, float], section_delta: float | None = None) -> None:
-        self._archive = archive
-        self._overrides = overrides
-        self._section_delta = section_delta
-
-    def delta_after(self, prev_id: str, next_id: str | None, default: float) -> float:
-        if self._section_delta is not None:
-            return self._section_delta
-        return self._archive.delta_after(prev_id, next_id, default)  # type: ignore[attr-defined]
-
-    def entry_gap_for(self, section_id: str, default: float) -> float:
-        if section_id in self._overrides:
-            return float(self._overrides[section_id])
-        return self._archive.entry_gap_for(section_id, default)  # type: ignore[attr-defined]
-
-
 class ResumeEditService:
-    """t109 v2：prepare / generate / repair / accept / restore / preview。"""
+    """候选版本、幂等提交、验收与预览；动作和构建委托给共享模块。"""
 
     def __init__(
         self,
@@ -90,9 +64,10 @@ class ResumeEditService:
         # 一律解析为绝对路径；所有产物路径都从这里派生。
         from skill_toolbox.resume_layout.profiles import get_profile
         self.profile = get_profile(template_id)
+        self.actions = ResumeActions(self.profile)
         self.template_id = template_id
         self.geometry = self.profile.geometry
-        self.archive_rel = V2_ARCHIVE_REL if template_id == "t109" else f"work/resume/{template_id}_spacing_archive.json"
+        self.archive_rel = f"work/resume/{template_id}_spacing_archive.json"
         self.workspace = Path(workspace).resolve()
         self.templates_root = Path(templates_root).resolve()
         self.runner = runner or ProcessRunner()
@@ -158,41 +133,17 @@ class ResumeEditService:
                 f"本任务绑定组件模板 {self.template_id}（收到 {template_id}）。"
                 "请在新任务中选择已组件化的模板。",
             )
+        manifest = json.loads((tpl / 'manifest.json').read_text(encoding='utf-8'))
+        if sha256_file(tpl / 'template.docx') != manifest['template_sha256']:
+            raise ToolError('TEMPLATE_CHANGED', '模板原件已变化，不能继续使用旧组件定义；请恢复模板或重新组件化。')
         return tpl
 
-    def _layout_modules(self):
-        from skill_toolbox.resume_layout import pipeline as RG
-        from skill_toolbox.resume_layout import layout as RL
-        from skill_toolbox.resume_layout import report as RR
-        from skill_toolbox.resume_layout import spacing as RS
-
-        return RG, RL, RR, RS
 
     def _archive(self):
-        from skill_toolbox.resume_layout import spacing
-        path = self.workspace / self.archive_rel
-        self._run_measurement(None, path.parent)
-        return spacing.load_archive(path)
+        from skill_toolbox.resume_layout.component_template import ensure_archive
+        return ensure_archive(self._template_dir(self.template_id) / 'template.docx',
+                              self.workspace / self.archive_rel, self.template_id)
 
-    def _run_measurement(self, scenario: dict | None, work: Path) -> None:
-        """COM 测量和首次间距探测由受控子进程执行。"""
-        work.mkdir(parents=True, exist_ok=True)
-        spec = work / "measure_input.json"
-        if scenario is not None:
-            payload = {"sections": scenario["sections"]}
-            header = scenario.get("header") or {}
-            components = {key: header[key] for key in ("fields", "hidden_fields", "custom_fields", "hide_photo")
-                          if header.get(key)}
-            if components:
-                payload["header"] = components
-            atomic_write_json(spec, payload)
-        self._run_stage(
-            [sys.executable, "-m", "skill_toolbox.resume_layout.pipeline",
-             str(self._template_dir(self.template_id) / "template.docx"),
-             str(spec) if scenario is not None else "-", str(work),
-             str(self.workspace / self.archive_rel), self.template_id],
-            "MEASURE_FAILED",
-        )
 
     def _run_stage(self, command: list[str], error_code: str) -> None:
         try:
@@ -345,7 +296,7 @@ class ResumeEditService:
                 )
             base = self.store.load_revision(request.artifact_id, int(request.base_revision))
             content = base["content"]
-            new_content, records = self._apply_changes(content, request.changes)
+            new_content, records = self.actions.apply(content, request.changes)
             if density is not None:
                 from skill_toolbox.resume_layout.typography import apply_density
                 apply_density(new_content, density, self.template_id)
@@ -678,138 +629,16 @@ class ResumeEditService:
         changes: list[dict[str, Any]],
         rev_dir: Path,
     ) -> dict[str, Any]:
-        import shutil
+        from skill_toolbox.resume_layout import renderer
 
-        RG, RL, RR, RS = self._layout_modules()
         scenario = self._scenario_from_content(content)
-        header_info = self._header_payload(content)
-        if header_info:
-            scenario["header"] = header_info
-        work = rev_dir / "build"
-        work.mkdir(parents=True, exist_ok=True)
-        self._run_measurement(scenario, work)
-        header_fit = work / "header_fit.json"
-        if header_fit.is_file():
-            scenario.setdefault("header", {})["fit"] = json.loads(header_fit.read_text(encoding="utf-8"))
-        measurements = json.loads((work / "measure_result.json").read_text(encoding="utf-8"))
-        measured = {
-            r["entry_id"]: RL.MeasureResult.from_dict(r)
-            for r in measurements["results"]
-        }
-        archive = RS.load_archive(self.workspace / self.archive_rel)
-        overrides = {
-            # v2 内容用 section.key（不是 legacy 的 id）：读错键会在任何带
-            # entry_gap_pt 的请求上抛 KeyError，把可渲染的请求变成工具异常。
-            str(s.get("key") or s.get("id")): float(s["entry_gap_pt"])
-            for s in content.get("sections", [])
-            if s.get("entry_gap_pt") is not None
-        }
-        gap_source = _GapOverride(archive, overrides) if overrides else archive
-        if content.get("density") == "compact":
-            gaps = {s["key"]: 3.0 for s in content["sections"]}
-            gap_source = _GapOverride(archive, {**gaps, **overrides}, section_delta=8.0)
-        # 几何约束按模式处理（P2-R2）：
-        # - reflow：交给完整 flow 排版器（entry_adjust），后续条目/栏目/分页
-        #   一起重排；
-        # - local：先常规排版，再只平移目标条目，并做跨栏目碰撞检查。
-        adjust = self._geometry_adjust(content) if layout_mode == "reflow" else None
-        from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS, plan_scenario
-
-        def plan_with_geometry(geometry):
-            options = dict(spacing=gap_source, min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT,
-                           entry_adjust=adjust, geometry=geometry)
-            if self.template_id in TEMPLATE_IDS:
-                return plan_scenario(scenario, measured, template_id=self.template_id, **options)
-            return RL.plan_layout(scenario['sections'], measured, **options)
-
-        try:
-            plan = plan_with_geometry(self.geometry)
-        except RL.LayoutUnsatisfiable as exc:
-            raise ToolError(
-                "LAYOUT_UNSATISFIABLE", str(exc), retryable=True,
-                suggestion="精简超长条目或拆分为多条；不要删内容绕过检查。",
-            ) from None
-        if layout_mode == "local":
-            plan = self._apply_local_geometry(plan, content, RL)
-        else:
-            self._validate_plan_geometry(plan, RL)
-        single_page_fit = None
-        if layout_mode == "reflow" and plan.pages > 1:
-            unpaged = plan_with_geometry(replace(self.geometry, page_bottom_pt=1_000_000))
-            bottom = max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries)
-            reduction = max(0, bottom - self.geometry.page_bottom_pt)
-            pitch = min(row.get("line_pitch_pt", self.profile.line_pitch_pt) for row in measurements["results"])
-            single_page_fit = {"required_reduction_pt": round(reduction, 1),
-                               "approx_lines_to_save": math.ceil(reduction / pitch),
-                               "reference_line_pitch_pt": pitch}
-        docx = rev_dir / "resume.docx"
-        emit_info = RG.emit_scenario(scenario, plan, docx,
-                                     template=self._template_dir(self.template_id) / "template.docx", template_id=self.template_id)
-        render_dir = rev_dir / "render"
-        render_dir.mkdir(parents=True, exist_ok=True)
-        from skill_toolbox.resume_layout.t109 import RENDER_SCRIPT
-        self._run_stage(
-            [sys.executable, str(RENDER_SCRIPT), str(docx), str(render_dir)], "RENDER_FAILED"
-        )
-        # 使用本版真实渲染边界收紧首屏，再复用测量结果重排；续页仍遵循模板母版。
-        from skill_toolbox.resume_layout.header import body_start_from_render
-        header_components = (emit_info.get("header") or {}).get("fields")
-        if header_components is None:
-            raise ValueError("HEADER_CONTRACT_MISSING: 模板必须返回个人信息组件")
-        body_top = (self.geometry.page_top_pt if self.template_id in TEMPLATE_IDS else
-                    body_start_from_render(render_dir / "resume.pdf", header_components,
-                                           self.geometry.page_top_pt))
-        if abs(body_top - self.geometry.page_top_pt) > 1:
-            dynamic_geometry = replace(self.geometry, page_top_pt=body_top,
-                                       continuation_page_top_pt=self.geometry.continuation_page_top_pt or self.geometry.page_top_pt)
-            plan = plan_with_geometry(dynamic_geometry)
-            if layout_mode == "local":
-                plan = self._apply_local_geometry(plan, content, RL)
-            self._validate_plan_geometry(plan, RL)
-            emit_info = RG.emit_scenario(scenario, plan, docx,
-                template=self._template_dir(self.template_id) / "template.docx", template_id=self.template_id)
-            for stale in render_dir.glob("page-*.png"):
-                stale.unlink()
-            self._run_stage([sys.executable, str(RENDER_SCRIPT), str(docx), str(render_dir)], "RENDER_FAILED")
-            single_page_fit = None
-            if layout_mode == "reflow" and plan.pages > 1:
-                unpaged = plan_with_geometry(replace(dynamic_geometry, page_bottom_pt=1_000_000))
-                reduction = max(0, max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries) - self.geometry.page_bottom_pt)
-                pitch = min(row.get("line_pitch_pt", self.profile.line_pitch_pt) for row in measurements["results"])
-                single_page_fit = {"required_reduction_pt": round(reduction, 1),
-                    "approx_lines_to_save": math.ceil(reduction / pitch), "reference_line_pitch_pt": pitch}
-        (rev_dir / "layout_plan.json").write_text(
-            json.dumps(plan.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        measured_view = {
-            r["entry_id"]: r
-            for r in measurements["results"]
-        }
-        header_values = [
-            info["after"] for info in (emit_info.get("header") or {}).get("fields", {}).values()
-        ]
-        header_components = (emit_info.get("header") or {}).get("fields")
-        if header_components is None:
-            raise ValueError("HEADER_CONTRACT_MISSING: 组件模板必须返回 header.fields（含 column），供共享对齐验收；无字段时显式返回空字典。")
-        if self.template_id in TEMPLATE_IDS:
-            from skill_toolbox.resume_layout.component_qa import check_components
-            component_measurements = json.loads((work / 'component_measurements.json').read_text(encoding='utf-8'))
-            component_measurements = [{**row, 'entry_id': row['measurement_id']}
-                                      for row in component_measurements['parts']]
-            qa_report = check_components(render_dir / 'resume.pdf', scenario, plan.to_dict(),
-                emit_info, component_measurements, header_components)
-        else:
-            qa_report = RR.qa_scenario(
-                rev_dir, scenario, plan.to_dict(), measured_view, pdf_name="resume",
-                header_values=header_values, template_id=self.template_id,
-                template=self._template_dir(self.template_id) / "template.docx",
-                header_components=header_components,
-            )
-        (rev_dir / "qa_report.json").write_text(
-            json.dumps(qa_report, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        pdf = render_dir / "resume.pdf"
-        pngs = sorted(render_dir.glob("page-*.png"))
+        scenario['header'] = self._header_payload(content)
+        built = renderer.build(scenario, content, rev_dir,
+            template=self._template_dir(self.template_id) / 'template.docx', profile=self.profile,
+            run_stage=self._run_stage, layout_mode=layout_mode)
+        plan, qa_report = built.plan, built.qa
+        docx, pdf, pngs = built.docx, built.pdf, built.pages
+        single_page_fit = built.single_page_fit
         record = {
             "artifact_id": artifact_id,
             "revision": revision,
@@ -828,7 +657,7 @@ class ResumeEditService:
                 ],
             },
             "visual": {"status": "pending", "delivered_pages": []},
-            "header": emit_info.get("header") or {},
+            "header": built.header,
             "docx": self._rel(docx),
             "pdf": self._rel(pdf) if pdf.is_file() else None,
             "pages": [self._rel(p) for p in pngs],
@@ -837,7 +666,6 @@ class ResumeEditService:
             "instance_model": self._instance_model(plan, content),
             "renderer": "Word COM ExportAsFixedFormat + pdftoppm 120dpi",
         }
-        shutil.rmtree(work, ignore_errors=True)
         (rev_dir / "revision.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -863,7 +691,7 @@ class ResumeEditService:
                 i["detail"] for i in qa_report.get("issues", [])
                 if i.get("severity") == "error"
             ],
-            "visual": visual or ("not_run" if not self.vision else "not_run"),
+            "visual": visual or "not_run",
             "template": self.template_id,
             "revision": revision,
             "checks_run": qa_report.get("checks_run", []),
@@ -972,14 +800,6 @@ class ResumeEditService:
             out["photo_part"] = self.profile.photo_part
         return out
 
-    @staticmethod
-    def _next_entry_id(section: dict[str, Any]) -> str:
-        """自动生成不冲突的条目 id（`<栏目key>-<n>`），并保证全局稳定可复现。"""
-        used = {str(e.get("id")) for e in section.get("entries", [])}
-        n = len(used) + 1
-        while f"{section['key']}-{n}" in used:
-            n += 1
-        return f"{section['key']}-{n}"
 
     def _scenario_from_content(self, content: dict[str, Any]) -> dict[str, Any]:
         sections = []
@@ -1005,13 +825,8 @@ class ResumeEditService:
                 "scale": sec.get("scale") or 1.0,
                 "density": content.get("density", "normal"),
             })
-        if self.template_id == "t001":
-            from skill_toolbox.resume_layout.t001 import SECTIONS, source_key
-            for sec in sections:
-                sec["body_offset_pt"] = SECTIONS[source_key(sec)][2]
-        from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS, prepare_sections
-        if self.template_id in TEMPLATE_IDS:
-            prepare_sections(sections, self.template_id)
+        from skill_toolbox.resume_layout.component_template import prepare_sections
+        prepare_sections(sections, self.template_id)
         return {"sections": sections}
 
     def _paragraph_styles(self, section, entry):
@@ -1029,33 +844,6 @@ class ResumeEditService:
                 offset += len(text) + 3  # ' · '
         return result
 
-    def _head_pattern(self, prototype: str) -> str:
-        """原型条目标题段的**原件原文**（列位基准；运行时从原件 XML 读取）。"""
-        from skill_toolbox.resume_layout import emit
-
-        if self.template_id == "t001":
-            from skill_toolbox.resume_layout.t001 import body_for
-            root = emit.load_document_xml(self._template_dir(self.template_id) / "template.docx")
-            tx = body_for(root, {"id": "work" if prototype == "experience_v1" else "skills"}).find(
-                ".//" + emit.W + "txbxContent")
-            return "".join(next(tx.iter(emit.W + "p")).itertext())
-        anchor_name = {"experience_v1": "组合 216", "plain_lines_v1": "组合 219"}.get(
-            prototype
-        )
-        if not anchor_name:
-            return ""
-        root = emit.load_document_xml(self._template_dir(self.template_id) / "template.docx")
-        anchor = emit._anchor_by_docpr_name(root, anchor_name)
-        if anchor is None:
-            return ""
-        tx = emit.find_body_wsp(anchor).find(".//" + emit.W + "txbxContent")
-        first = list(tx.iter(emit.W + "p"))[0]
-        return "".join(t.text or "" for t in first.iter(emit.W + "t"))
-
-    @staticmethod
-    def _display_width(text: str) -> int:
-        """仅用于调整槽位间隔的宽度估计（CJK=2，其余=1）；不用于高度测量。"""
-        return sum(2 if ord(ch) > 0x2E80 else 1 for ch in text)
 
     def _entry_text(self, section: dict[str, Any], entry: dict[str, Any]) -> str:
         entry = canonical_entry(section, entry)
@@ -1084,363 +872,9 @@ class ResumeEditService:
 
     # ---------- 内部：编辑动作 ----------
 
-    def _apply_changes(
-        self, content: dict[str, Any], changes: list[Any]
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        import copy
-
-        new = copy.deepcopy(content)
-        records: list[dict[str, Any]] = []
-        for change in changes:
-            op = change.op
-            if op == "format_component":
-                values = {key: getattr(change, key) for key in ("font_size_pt", "scale")
-                          if getattr(change, key) is not None}
-                if not values:
-                    raise ToolError("CONTENT_INVALID", "格式调整需要 font_size_pt 或 scale。")
-                if change.instance_id or change.entry_id:
-                    _, entry = self._locate(new, change)
-                    entry.update(values)
-                else:
-                    sec = self._section(new, change.section_key)
-                    if "scale" in values:
-                        sec["scale"] = values["scale"]
-                    if "font_size_pt" in values:
-                        for entry in sec["entries"]:
-                            entry["font_size_pt"] = values["font_size_pt"]
-                records.append({"op": op, "instance_id": change.instance_id,
-                                "section": change.section_key, **values})
-            elif op == "update_entry":
-                sec, entry = self._locate(new, change)
-                if change.entry is not None:
-                    # 只覆盖**调用方显式给的**字段：pydantic 的默认值（head={}、
-                    # bullets=[]）不代表“清空”，否则「只改 bullets」会把条目标题
-                    # 槽整行抹掉（内容完整性检查会因此失败）。
-                    provided = set(change.entry.model_fields_set) - {"id"}
-                    payload = change.entry.model_dump(exclude_none=True)
-                    for key in provided:
-                        entry[key] = payload.get(key, entry.get(key))
-                records.append({"op": op, "instance_id": change.instance_id,
-                                "fields": sorted(set(change.entry.model_fields_set) - {"id"})
-                                if change.entry is not None else []})
-            elif op == "insert_entry":
-                section_key = change.section_key or str(change.after or "").split("#", 1)[0]
-                if not section_key:
-                    raise ToolError(
-                        "CONTENT_INVALID",
-                        "insert_entry 需要 section_key（栏目 key，来自 resume_prepare_v2）"
-                        "，或用 after=<section>#<entry> 指定插入位置。",
-                    )
-                sec = self._section(new, section_key)
-                if change.entry is None:
-                    raise ToolError("CONTENT_INVALID", "insert_entry 必须给 entry")
-                entry = change.entry.model_dump(exclude_none=True)
-                if not str(entry.get("id") or "").strip():
-                    entry["id"] = self._next_entry_id(sec)
-                elif any(e["id"] == entry["id"] for e in sec["entries"]):
-                    raise ToolError(
-                        "CONTENT_INVALID",
-                        f"条目 id 已存在: {entry['id']}（省略 id 时后端自动生成）。",
-                    )
-                idx = self._index_of(sec, change.after) + 1 if change.after else len(sec["entries"])
-                sec["entries"].insert(idx, entry)
-                records.append({"op": op, "section": sec["key"], "entry_id": entry["id"]})
-            elif op == "remove_entry":
-                sec, entry = self._locate(new, change)
-                sec["entries"] = [e for e in sec["entries"] if e is not entry]
-                records.append({"op": op, "instance_id": change.instance_id})
-            elif op == "move_entry":
-                sec, entry = self._locate(new, change)
-                sec["entries"] = [e for e in sec["entries"] if e is not entry]
-                if change.before:
-                    idx = self._index_of(sec, change.before)
-                elif change.after:
-                    idx = self._index_of(sec, change.after) + 1
-                else:
-                    idx = int(change.dy_pt) if change.dy_pt else len(sec["entries"])
-                sec["entries"].insert(max(0, min(idx, len(sec["entries"]))), entry)
-                records.append({"op": op, "instance_id": change.instance_id})
-            elif op == "insert_section":
-                if change.section is None:
-                    raise ToolError("CONTENT_INVALID", "insert_section 必须给 section")
-                sec = change.section.model_dump(exclude_none=True)
-                target = change.before or change.after
-                idx = len(new["sections"])
-                if target:
-                    anchor = self._section(new, target)
-                    idx = new["sections"].index(anchor) + (0 if change.before else 1)
-                new["sections"].insert(idx, sec)
-                records.append({"op": op, "section": sec["key"]})
-            elif op == "remove_section":
-                new["sections"] = [
-                    s for s in new["sections"] if s["key"] != change.section_key
-                ]
-                records.append({"op": op, "section": change.section_key})
-            elif op == "update_section_title":
-                sec = self._section(new, change.section_key)
-                sec["title"] = change.title
-                records.append({"op": op, "section": sec["key"], "title": change.title})
-            elif op == "set_entry_gap":
-                sec = self._section(new, change.section_key)
-                gap = float(change.gap_pt or 0.0)
-                if gap < V2_MIN_ENTRY_GAP_PT or gap > 24.0:
-                    raise ToolError(
-                        "BOUNDS_VIOLATION",
-                        f"gap_pt={gap} 超出允许范围 [{V2_MIN_ENTRY_GAP_PT}, 24.0]",
-                    )
-                sec["entry_gap_pt"] = gap
-                records.append({"op": op, "section": sec["key"], "gap_pt": gap})
-            elif op in {"move_component", "resize_component"}:
-                # 几何动作在布局结果上落地（见 _apply_geometry），此处只做参数
-                # 校验并记录；**不支持的参数直接拒绝**，不返回成功却未执行。
-                sec, entry = self._locate(new, change)
-                if op == "move_component":
-                    if change.width_pt is not None or change.height_pt is not None \
-                            or change.height_delta_pt is not None:
-                        raise ToolError(
-                            "ACTION_NOT_ALLOWED",
-                            "move_component 只接受 dx_pt/dy_pt；"
-                            "宽高请用 resize_component（width_pt/height_pt/"
-                            "height_delta_pt）。",
-                        )
-                    if abs(change.dx_pt) > 1e-9 and abs(change.dy_pt) > 1e-9:
-                        raise ToolError(
-                            "BOUNDS_VIOLATION",
-                            "同一条动作禁止同时给 dx_pt 与 dy_pt（计划 §6.1）",
-                        )
-                    if change.dx_pt:
-                        raise ToolError(
-                            "ACTION_NOT_ALLOWED",
-                            "正文组件不允许横向重定位（会改变文字测量宽度）；"
-                            "如需变窄请用 resize_component(width_pt=…)。",
-                        )
-                    dy = float(change.dy_pt)
-                    if not (-120.0 <= dy <= 120.0):
-                        raise ToolError("BOUNDS_VIOLATION", f"dy_pt={dy} 超出 [-120, 120]")
-                    if abs(dy) < 1e-9:
-                        raise ToolError("CONTENT_INVALID", "move_component 的 dy_pt 不能为 0")
-                    entry["dy_pt"] = float(entry.get("dy_pt", 0.0)) + dy
-                    records.append({"op": op, "instance_id": change.instance_id, "dy_pt": dy})
-                else:
-                    if abs(change.dx_pt) > 1e-9 or abs(change.dy_pt) > 1e-9:
-                        raise ToolError(
-                            "ACTION_NOT_ALLOWED",
-                            "resize_component 不接受 dx_pt/dy_pt；位移请用 "
-                            "move_component（避免「用 dy_pt 当高度增量」的歧义）。",
-                        )
-                    if change.width_pt is None and change.height_pt is None \
-                            and change.height_delta_pt is None:
-                        raise ToolError(
-                            "CONTENT_INVALID",
-                            "resize_component 需要 width_pt / height_pt / "
-                            "height_delta_pt 至少一个。",
-                        )
-                    if change.height_pt is not None and change.height_delta_pt is not None:
-                        raise ToolError(
-                            "BOUNDS_VIOLATION",
-                            "height_pt 与 height_delta_pt 不能同时给（绝对/增量语义冲突）。",
-                        )
-                    record: dict[str, Any] = {"op": op, "instance_id": change.instance_id}
-                    if change.width_pt is not None:
-                        width = float(change.width_pt)
-                        if not (MIN_BODY_W_PT <= width <= self.profile.body_width_pt):
-                            raise ToolError(
-                                "BOUNDS_VIOLATION",
-                                f"width_pt={width} 超出 [{MIN_BODY_W_PT}, {self.profile.body_width_pt}]"
-                                "（模板正文列宽为上限）。",
-                            )
-                        entry["width_pt"] = width
-                        record["width_pt"] = width
-                    if change.height_pt is not None:
-                        height = float(change.height_pt)
-                        if not (0.0 < height <= MAX_BODY_H_PT):
-                            raise ToolError(
-                                "BOUNDS_VIOLATION",
-                                f"height_pt={height} 超出 (0, {MAX_BODY_H_PT}]。",
-                            )
-                        entry["height_pt"] = height
-                        record["height_pt"] = height
-                    if change.height_delta_pt is not None:
-                        delta = float(change.height_delta_pt)
-                        if not (0.0 <= delta <= 200.0):
-                            raise ToolError(
-                                "BOUNDS_VIOLATION",
-                                f"height_delta_pt={delta} 超出 [0, 200]",
-                            )
-                        entry["height_delta_pt"] = (
-                            float(entry.get("height_delta_pt", 0.0)) + delta
-                        )
-                        record["height_delta_pt"] = delta
-                    records.append(record)
-            else:
-                raise ToolError("ACTION_UNKNOWN", f"不支持的动作: {op}")
-        return new, records
-
-    @staticmethod
-    def _section(content: dict[str, Any], key: str) -> dict[str, Any]:
-        keys = [str(s.get("key")) for s in content.get("sections", [])]
-        if not key or key not in keys:
-            raise ToolError(
-                "TARGET_NOT_FOUND",
-                f"栏目不存在: {key!r}。当前栏目: {keys}",
-                suggestion="insert_entry/remove_section/update_section_title/"
-                           "set_entry_gap 用 section_key；"
-                           "目标既有条目时直接用 instance_id（形如 <栏目key>#<条目id>）。",
-            )
-        return next(s for s in content["sections"] if s["key"] == key)
-
-    @staticmethod
-    def _entry_ref(value: str) -> str:
-        """实例引用归一化：`section#entry` / `entry` 都接受（before/after 亦然）。"""
-        text = str(value or "")
-        return text.split("#", 1)[1] if "#" in text else text
-
-    @classmethod
-    def _index_of(cls, section: dict[str, Any], entry_id: str) -> int:
-        if not entry_id:
-            return len(section["entries"]) - 1
-        wanted = cls._entry_ref(entry_id)
-        for i, entry in enumerate(section["entries"]):
-            if entry["id"] == wanted:
-                return i
-        raise ToolError("TARGET_NOT_FOUND", f"条目不存在: {entry_id}")
-
-    def _locate(
-        self, content: dict[str, Any], change: Any
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        instance_id = str(getattr(change, "instance_id", "") or "")
-        section_key = str(getattr(change, "section_key", "") or "")
-        entry_id = str(getattr(change, "entry_id", "") or "")
-        if instance_id and "#" in instance_id:
-            section_key, entry_id = instance_id.split("#", 1)
-        elif instance_id and not section_key:
-            section_key, entry_id = instance_id, entry_id
-        section_key = section_key.split("#", 1)[0]
-        sec = self._section(content, section_key)
-        entry = sec["entries"][self._index_of(sec, entry_id)]
-        return sec, entry
 
     # ---------- 内部：几何动作落地 ----------
 
-    def _geometry_adjust(self, content: dict[str, Any]) -> dict[str, dict[str, float]]:
-        """把内容里的几何覆盖整理成 layout 的 `entry_adjust`（仅 reflow 用）。
-
-        reflow 语义下，几何约束必须**参与完整 flow 排版**：下移/改高后，其后的
-        条目、后续栏目与分页一起重排（P2-R2 修复——旧实现只在布局结果上平移
-        本栏条目，后续栏目不动，留下交叠）。
-        """
-        adjust: dict[str, dict[str, float]] = {}
-        for sec in content.get("sections", []):
-            for entry in sec.get("entries", []):
-                per: dict[str, float] = {}
-                if entry.get("dy_pt"):
-                    per["dy_pt"] = float(entry["dy_pt"])
-                if entry.get("height_pt") is not None:
-                    per["height_pt"] = float(entry["height_pt"])
-                elif entry.get("height_delta_pt"):
-                    per["height_delta_pt"] = float(entry["height_delta_pt"])
-                if per:
-                    adjust[str(entry["id"])] = per
-        return adjust
-
-    def _apply_local_geometry(
-        self, plan: Any, content: dict[str, Any], RL: Any
-    ) -> Any:
-        """`local` 模式：只动目标条目，其它组件保持规划位置。
-
-        目标与相邻条目/栏目碰撞、或越出页容量 → 整批失败（不偷偷推开别人）。
-        """
-        import copy
-
-        plan = copy.deepcopy(plan)
-        for sec_content in content.get("sections", []):
-            sec_plan = next(
-                (s for s in plan.sections if s.section_id == sec_content["key"]), None
-            )
-            if sec_plan is None:
-                continue
-            for entry_content in sec_content.get("entries", []):
-                dy = float(entry_content.get("dy_pt", 0.0) or 0.0)
-                delta_h = float(entry_content.get("height_delta_pt", 0.0) or 0.0)
-                height_abs = entry_content.get("height_pt")
-                if not dy and not delta_h and height_abs is None:
-                    continue
-                plan_entry = next(
-                    (e for e in sec_plan.entries if e.instance_id == entry_content["id"]),
-                    None,
-                )
-                if plan_entry is None:
-                    raise ToolError("TARGET_NOT_FOUND", f"条目不存在: {entry_content['id']}")
-                offset = getattr(plan_entry, "text_top_offset_pt", None)
-                min_h = (self.geometry.text_top_pt if offset is None else offset) + plan_entry.text_height_pt + 0.5
-                if height_abs is not None:
-                    target_h = float(height_abs)
-                    if target_h < min_h:
-                        raise ToolError(
-                            "BOUNDS_VIOLATION",
-                            f"height_pt={target_h} 小于文字实际需要的高度 "
-                            f"{min_h:.1f}pt（会裁切文字）",
-                        )
-                    delta_h = target_h - plan_entry.body_h_pt
-                if delta_h:
-                    new_h = plan_entry.body_h_pt + delta_h
-                    if new_h < min_h:
-                        raise ToolError(
-                            "BOUNDS_VIOLATION",
-                            f"{plan_entry.instance_id} 调整后高度 {new_h:.1f}pt "
-                            f"小于文字高度 {min_h:.1f}pt（会裁切文字）",
-                        )
-                    plan_entry.body_h_pt = new_h
-                if dy:
-                    plan_entry.anchor_y_pt += dy
-                if entry_content.get("id") == sec_content["entries"][0]["id"] and dy:
-                    sec_plan.anchor_y_pt += dy
-        self._validate_plan_geometry(plan, RL)
-        return plan
-
-    def _validate_plan_geometry(self, plan: Any, RL: Any) -> None:
-        """终检：条目不越界、同栏相邻文字不相撞、**跨栏目**文字不相撞。
-
-        跨页时页内坐标重新起算（同一栏目可跨页）。
-        """
-        for sec_plan in plan.sections:
-            prev_text_bottom: float | None = None
-            prev_page: int | None = None
-            for entry in sec_plan.entries:
-                if entry.page_index != prev_page:
-                    prev_text_bottom = None
-                    prev_page = entry.page_index
-                if entry.anchor_y_pt < 0:
-                    raise ToolError(
-                        "BOUNDS_VIOLATION",
-                        f"{entry.instance_id} 被移动到页面上边界之外 "
-                        f"(anchor_y={entry.anchor_y_pt:.1f})",
-                    )
-                offset = getattr(entry, "text_top_offset_pt", None)
-                text_top = entry.anchor_y_pt + (self.geometry.text_top_pt if offset is None else offset)
-                if (
-                    prev_text_bottom is not None
-                    and text_top - prev_text_bottom < RL.MIN_ENTRY_GAP_PT
-                ):
-                    raise ToolError(
-                        "COLLISION",
-                        f"{entry.instance_id} 与上一条文字重叠 "
-                        f"(间距 {text_top - prev_text_bottom:.1f}pt < "
-                        f"{RL.MIN_ENTRY_GAP_PT}pt)",
-                    )
-                bottom = entry.anchor_y_pt + entry.body_h_pt
-                if bottom > self.geometry.page_bottom_pt + 1e-6:
-                    raise ToolError(
-                        "BOUNDS_VIOLATION",
-                        f"{entry.instance_id} 移动后越界：底 {bottom:.1f}pt > "
-                        f"{self.geometry.page_bottom_pt}pt",
-                    )
-                prev_text_bottom = text_top + entry.text_height_pt
-        try:
-            for region in {s.region for s in plan.sections}:
-                RL.check_section_flow([s for s in plan.sections if s.region == region], geometry=self.geometry)
-        except RL.LayoutUnsatisfiable as exc:
-            raise ToolError("COLLISION", str(exc)) from None
 
     # ---------- 内部：实例模型与预览 ----------
 
@@ -1451,7 +885,7 @@ class ResumeEditService:
         for sec in plan.sections:
             section_content = next(s for s in content["sections"] if s["key"] == sec.section_id)
             widths = {e["id"]: e.get("width_pt") for e in section_content["entries"]}
-            body_width = 493.75 if self.template_id == "t001" and sec.section_id == "summary" else self.profile.body_width_pt
+            body_width = self.profile.body_width_pt
             model.append({
                 "section_key": sec.section_id,
                 "title": sec.title,
@@ -1524,13 +958,7 @@ class ResumeEditService:
 
         只记录**内联进模型视觉输入**（images）的页：路径文本不算视觉覆盖。
         """
-        delivered = sorted({
-            int(Path(ref).stem.split("-")[1])
-            for ref in refs
-            if any(img for img in images)
-        })
-        if not images:
-            delivered = []
+        delivered = sorted({int(Path(ref).stem.split('-')[1]) for ref in refs}) if any(images) else []
         record_path = self.store.revision_dir(artifact_id, revision) / "revision.json"
         record = self.store.load_revision(artifact_id, revision)
         visual = record.setdefault("visual", {"status": "pending", "delivered_pages": []})
@@ -1545,29 +973,3 @@ class ResumeEditService:
             json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return record
-
-
-def format_head_slots(slots: list[str], pattern: str) -> str:
-    """按原件的列位模式拼接条目标题槽位（不猜测字体度量）。
-
-    pattern 是原型标题段的**原件原文**（date/org/role 以 2+ 空白分列）。
-    替换文本后按显示宽度差调整间隔长度（下限 2 个空白），保持列位大体对齐；
-    缺失槽位不写空白字符。这样新条目沿用模板自己的对齐方式，不伪造字宽。
-    """
-    import re
-
-    parts = [str(s or "").strip() for s in slots]
-    if not any(parts):
-        return ""
-    pieces = re.split(r"([ \u3000]{2,})", str(pattern or "").strip())
-    orig = pieces[0::2]
-    seps = pieces[1::2]
-    out = parts[0]
-    for i in (1, 2):
-        if not parts[i]:
-            continue
-        base = ResumeEditService._display_width(orig[i - 1]) if i - 1 < len(orig) else 0
-        sep = len(seps[i - 1]) if i - 1 < len(seps) else 12
-        gap = sep - max(0, ResumeEditService._display_width(parts[i - 1]) - base)
-        out += " " * max(2, gap) + parts[i]
-    return out

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from resume_templates import TEMPLATE_IDS
 from skill_toolbox.resume_layout import component_header as header
 from skill_toolbox.resume_layout import component_template as template
 from skill_toolbox.resume_layout import emit
@@ -11,7 +12,7 @@ from skill_toolbox.resume_layout import emit
 ROOT = Path(__file__).resolve().parents[1] / "backend/skill_toolbox/skill_defs/resume_pro/templates"
 
 
-@pytest.mark.parametrize("template_id", ["t002", "t003", "t015", "t024"])
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
 def test_header_replace_hide_and_add_without_source_fields(template_id):
     spec = template.get_spec(template_id)
     source = ROOT / template_id / "template.docx"

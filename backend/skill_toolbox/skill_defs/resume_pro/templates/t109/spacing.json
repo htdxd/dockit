@@ -1,0 +1,125 @@
+{
+  "schema_version": "spacing-archive-1",
+  "template_id": "t109",
+  "template_sha256": "f375fccce924c50ccbe073159165b42cb3c93eac22d311805f0c233855718f52",
+  "title_text_top_off_pt": 10.55,
+  "line_pitch_pt": 18.0,
+  "sections": [
+    {
+      "section_id": "education",
+      "frame_top_pt": 193.35,
+      "frame_bottom_pt": 302.55,
+      "body_wsp_off_y_pt": 29.25,
+      "body_h_pt": 79.95,
+      "text_ink_top_pt": 226.65,
+      "text_ink_bottom_pt": 298.65,
+      "bottom_slack_pt": 3.9,
+      "content_paragraphs": 3,
+      "content_lines": 4,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        4
+      ]
+    },
+    {
+      "section_id": "internship",
+      "frame_top_pt": 318.0,
+      "frame_bottom_pt": 504.43,
+      "body_wsp_off_y_pt": 29.23,
+      "body_h_pt": 157.2,
+      "text_ink_top_pt": 351.35,
+      "text_ink_bottom_pt": 500.65,
+      "bottom_slack_pt": 3.78,
+      "content_paragraphs": 6,
+      "content_lines": 8,
+      "entry_count": 2,
+      "entry_gap_pt": 5.3,
+      "entry_lines": [
+        4,
+        4
+      ]
+    },
+    {
+      "section_id": "campus",
+      "frame_top_pt": 519.85,
+      "frame_bottom_pt": 647.1,
+      "body_wsp_off_y_pt": 29.22,
+      "body_h_pt": 98.02,
+      "text_ink_top_pt": 553.35,
+      "text_ink_bottom_pt": 643.35,
+      "bottom_slack_pt": 3.75,
+      "content_paragraphs": 3,
+      "content_lines": 5,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        5
+      ]
+    },
+    {
+      "section_id": "skills",
+      "frame_top_pt": 644.5,
+      "frame_bottom_pt": 735.71,
+      "body_wsp_off_y_pt": 29.21,
+      "body_h_pt": 62.0,
+      "text_ink_top_pt": 678.0,
+      "text_ink_bottom_pt": 732.0,
+      "bottom_slack_pt": 3.71,
+      "content_paragraphs": 3,
+      "content_lines": 3,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        3
+      ]
+    },
+    {
+      "section_id": "summary",
+      "frame_top_pt": 751.15,
+      "frame_bottom_pt": 824.31,
+      "body_wsp_off_y_pt": 29.21,
+      "body_h_pt": 43.95,
+      "text_ink_top_pt": 784.65,
+      "text_ink_bottom_pt": 820.65,
+      "bottom_slack_pt": 3.66,
+      "content_paragraphs": 1,
+      "content_lines": 2,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        2
+      ]
+    }
+  ],
+  "pairs": [
+    {
+      "prev_section_id": "education",
+      "next_section_id": "internship",
+      "anchor_gap_pt": 15.45,
+      "visible_gap_pt": 29.9,
+      "anchor_delta_from_prev_text_pt": 19.35
+    },
+    {
+      "prev_section_id": "internship",
+      "next_section_id": "campus",
+      "anchor_gap_pt": 15.42,
+      "visible_gap_pt": 29.75,
+      "anchor_delta_from_prev_text_pt": 19.2
+    },
+    {
+      "prev_section_id": "campus",
+      "next_section_id": "skills",
+      "anchor_gap_pt": -2.6,
+      "visible_gap_pt": 11.7,
+      "anchor_delta_from_prev_text_pt": 1.15
+    },
+    {
+      "prev_section_id": "skills",
+      "next_section_id": "summary",
+      "anchor_gap_pt": 15.44,
+      "visible_gap_pt": 29.7,
+      "anchor_delta_from_prev_text_pt": 19.15
+    }
+  ]
+}

@@ -5,9 +5,15 @@ import copy
 import json
 from pathlib import Path
 
-from skill_toolbox.resume_layout import component_header, emit, layout, typography
+from skill_toolbox.resume_content import is_project
+from skill_toolbox.resume_layout import (
+    component_header,
+    emit,
+    layout,
+    measure,
+    typography,
+)
 from skill_toolbox.resume_layout import component_template as ct
-from skill_toolbox.word_com import close_document, close_word, start_word
 
 
 def _body(anchor):
@@ -78,7 +84,7 @@ def _parts(root, section, entry, spec, template_id, numbering):
     section = {**section, "body_offset_pt": section.get("body_offset_pt", config["body_offset_pt"]),
                "line_pitch_pt": section.get("line_pitch_pt", config.get("line_pitch_pt", spec["line_pitch_pt"]))}
     main = ct.box_anchor(root, config["body"])
-    split = bool(config.get("side_body") and entry.get("head") and section["id"] != "projects")
+    split = bool(config.get("side_body") and entry.get("head") and not is_project(section))
     raw_parts = []
     if split:
         head = entry["head"]
@@ -177,7 +183,7 @@ def _empty_host(source_root):
     return root
 
 
-def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template_id: str) -> dict:
+def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template_id: str = 't109') -> dict:
     work_dir.mkdir(parents=True, exist_ok=True)
     spec = ct.get_spec(template_id)
     source_root = ct.load_normalized(template, spec)
@@ -200,38 +206,7 @@ def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template
                               "host": str(host.resolve()), "body_top_pt": top,
                               "component_width_pt": part["component_width_pt"],
                               "box": [*ct.position(anchor), *ct.extent(anchor)], **part["metrics"]})
-    rows = []
-    word = start_word()
-    try:
-        for host in hosts:
-            doc = word.Documents.Open(host["host"], False, True)
-            shape = paras = rng = None
-            try:
-                doc.Repaginate()
-                shape = doc.Shapes("ResumeMeasureBody")
-                if shape.TextFrame.Overflowing:
-                    raise ValueError(f"LAYOUT_OVERFLOW: 条目 {host['entry_id']} 的 {host['part']} 单框超过一页")
-                paras = shape.TextFrame.TextRange.Paragraphs
-                tops, counts = [], []
-                for i in range(1, paras.Count + 1):
-                    rng = paras(i).Range
-                    tops.append(float(rng.Characters(1).Information(6)))
-                    counts.append(max(1, int(rng.ComputeStatistics(1))))
-                if min(tops, default=-1) < 0:
-                    raise ValueError(f"MEASURE_INVALID: 条目 {host['entry_id']} 无法测得真实行位")
-                pitch = host["line_pitch_pt"]
-                bottom = max(top + count * pitch for top, count in zip(tops, counts))
-                rows.append({**host, "wrapped_lines": sum(counts), "paragraphs": len(counts),
-                             "first_line_top_pt": tops[0], "last_line_top_pt": tops[-1],
-                             "text_top_offset_pt": round(tops[0] - host["body_top_pt"], 3),
-                             "text_height_pt": round(bottom - tops[0], 3),
-                             "text_bottom_offset_pt": round(bottom - host["body_top_pt"], 3)})
-            finally:
-                rng = paras = shape = None
-                close_document(doc)
-                doc = None
-    finally:
-        close_word(word)
+    rows = measure.measure_documents(hosts)
     results = []
     for section in scenario["sections"]:
         for entry in section["entries"]:
@@ -265,7 +240,7 @@ def _title_sources(root, config):
     return titles
 
 
-def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, template: Path, template_id: str) -> dict:
+def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, template: Path, template_id: str = 't109') -> dict:
     spec = ct.get_spec(template_id)
     source = ct.load_normalized(template, spec)
     root = copy.deepcopy(source)

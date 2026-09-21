@@ -1,6 +1,6 @@
 """长标题列不再通过制表符挤出文本框；逻辑标题段仍保留标题样式。"""
+from resume_templates import body_for
 from skill_toolbox.resume_layout import emit
-from skill_toolbox.resume_layout.t001 import body_for
 from skill_toolbox.resume_layout.t109 import TEMPLATE
 from skill_toolbox.tools.resume_edit import ResumeEditService
 
@@ -15,8 +15,7 @@ def test_long_heading_stacks_without_dropping_text(tmp_path):
     assert data["heading_lines"] == 1 and data["tech_stack_line"] == 1
     assert data["text"].splitlines() == [entry["head"]["org"] + " · 个人项目 | 独立开发",
         "技术栈：" + entry["head"]["role"].split(" · ", 1)[1].strip(), entry["bullets"][0]]
-    root = emit.load_document_xml(TEMPLATE.parent.parent / "t001/template.docx")
-    body = body_for(root, {"id": "work"})
+    body = body_for(TEMPLATE.parent.parent / "t001/template.docx")
     emit.set_box_text(body, data["text"], first_is_header=True, header_lines=1, tech_stack_line=1)
     paragraphs = body.findall(".//" + emit.W + "txbxContent/" + emit.W + "p")
     assert paragraphs[0].find(emit.W + "pPr/" + emit.W + "numPr") is None

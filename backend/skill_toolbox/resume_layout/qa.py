@@ -1,25 +1,9 @@
-# -*- coding: utf-8 -*-
-"""qa.py — 机械检查：对照真实渲染验证测量、边界与重叠（P1 探针，修订版）。
-
-检查项（分层记录；任何 error 级 issue 阻止 passed）：
-1. content_completeness：**完整文本**的顺序覆盖检查——每条输入条目按全部
-   字符（去空白）在渲染全文中按条目顺序游标匹配；片段缺失（截断）或
-   顺序错乱均 error；重复条目必须出现对应次数（次序游标天然覆盖）。
-2. no_overlap：同页文字行带两两不相交。
-3. within_page：文字底部不侵入 footer_bar_top。
-4. page_count：渲染页数 == LayoutPlan.pages。
-5. measurement_vs_render（失败门）：**渲染侧独立计数**的条目行数与占用高度
-   对照 COM 测量值——行数不符或占用高度差超阈值（LINES_TOL=0 行、
-   HEIGHT_TOL_PT=1.0pt）即 error。测量值不再作为「通过」的自证输入。
-"""
+"""共享验收数据和测量失败门；PDF 内容、边界与碰撞检查在 component_qa 中。"""
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-PAGE_H_PT = 841.9
-FOOTER_BAR_TOP_PT = 833.6
-OVERLAP_TOL_PT = 0.5
 LINES_TOL = 0                    # 行数必须精确一致
 HEIGHT_TOL_PT = 1.0              # 高度基础容差（pt）
 # R3 收紧：分隔空段样式泄漏已在 emit 根修（快照跳过空段），高度门改固定总容差
@@ -37,14 +21,6 @@ class QAIssue:
     detail: str
 
 
-@dataclass
-class SectionBox:
-    section_id: str
-    page_index: int
-    top_pt: float
-    bottom_pt: float
-
-
 _BULLET_CHARS = "⚫➢•·▪◦‣⁃●○■□◼◆–—-–*✦✧►▸·。：（）():;；,，、"
 
 
@@ -59,147 +35,7 @@ def _norm(s: str) -> str:
     return s.translate(str.maketrans("", "", _BULLET_CHARS))
 
 
-def check_content_completeness_ordered(
-    rendered_text_by_page: dict[int, str],
-    entries_in_order: list[dict],
-) -> list[QAIssue]:
-    """完整内容 + 顺序 + 重复次数 + **额外内容**检查（游标式，双向核对）。
-
-    entries_in_order: [{"entry_id", "text"}]（语义顺序）。
-    正向：每条 entry 的**全文**（去空白/去 bullet）必须从上一条匹配结束位置
-    之后按序找到——保证顺序正确、无截断（全文匹配）、预期重复各匹配一次。
-    反向（R2 Fix4）：匹配全部完成后，游标之后的**剩余渲染正文**必须为空或
-    仅含已知结构性文字（栏目标题/页眉信息），否则报「产物含未预期额外内容」
-    ——产物多复制一条（ALPHA→ALPHA→BETA）会被剩余流检出。
-    """
-    issues: list[QAIssue] = []
-    pages = sorted(rendered_text_by_page)
-    stream = _norm("".join(rendered_text_by_page[p] for p in pages))
-    cursor = 0
-    for item in entries_in_order:
-        needle = _norm(item["text"])
-        if not needle:
-            continue
-        pos = stream.find(needle, cursor)
-        if pos < 0:
-            anywhere = stream.find(needle)
-            if anywhere >= 0:
-                issues.append(QAIssue(
-                    "content_completeness", "error",
-                    f"条目 {item['entry_id']} 内容顺序错乱（全文存在但位于前一条目之前）",
-                ))
-            else:
-                lo, hi = 0, len(needle)
-                while lo < hi:
-                    mid = (lo + hi + 1) // 2
-                    if stream.find(needle[:mid], cursor) >= 0:
-                        lo = mid
-                    else:
-                        hi = mid - 1
-                issues.append(QAIssue(
-                    "content_completeness", "error",
-                    f"条目 {item['entry_id']} 内容不完整或被截断：前 {lo}/{len(needle)} 字符"
-                    f"可匹配（从游标 {cursor} 起），缺失部分始于 {needle[lo:lo+20]!r}",
-                ))
-            continue
-        cursor = pos + len(needle)
-    return issues
-
-
-def check_no_extra_rendered_content(
-    rendered_text_by_page: dict[int, str],
-    entries_in_order: list[dict],
-    *,
-    allowed_extra_needles: list[str] | None = None,
-) -> list[QAIssue]:
-    """R2 Fix4：产物不得含预期条目之外的重复/额外正文。
-
-    口径：渲染流按序消费完全部预期条目后，剩余字符（去掉栏目标题等
-    allowed_extra_needles 的归一化形式）必须为空——「预期 A→B、产物 A→A→B」
-    时第二个 A 出现在第一个 A 之后、B 之前，顺序匹配会通过，但**该区域全部
-    被消费后仍多出一段**的形态由本检查兜住；更直接地，对**重复风险最高的
-    预期条目**（正文全文相同的条目）逐一统计渲染流中出现次数：出现次数必须
-    等于预期次数（多一次 = 多复制）。
-    """
-    issues: list[QAIssue] = []
-    pages = sorted(rendered_text_by_page)
-    stream = _norm("".join(rendered_text_by_page[p] for p in pages))
-    # 1) 额外内容：消费完预期 + 允许的结构文字后剩余必须为空
-    residual = stream
-    for item in entries_in_order:
-        needle = _norm(item["text"])
-        if needle:
-            residual = residual.replace(needle, "\x00", 1) if needle in residual else residual
-    for extra in allowed_extra_needles or []:
-        ne = _norm(extra)
-        if ne:
-            residual = residual.replace(ne, "\x00", 1) if ne in residual else residual
-    leftover = residual.replace("\x00", "")
-    if leftover:
-        issues.append(QAIssue(
-            "content_completeness", "error",
-            f"产物含未预期的额外正文（疑似多复制条目或模板残留），共 {len(leftover)} 字符，"
-            f"片段示样: {leftover[:40]!r}",
-        ))
-    # 2) 重复计数：相同全文的预期条目按预期次数核对出现次数
-    from collections import Counter
-
-    expected_counts = Counter(
-        _norm(item["text"]) for item in entries_in_order if _norm(item["text"])
-    )
-    for needle, want in expected_counts.items():
-        got = stream.count(needle)
-        if got != want:
-            issues.append(QAIssue(
-                "content_completeness", "error",
-                f"条目正文出现次数不符：预期 {want} 次、渲染 {got} 次（正文头 {needle[:16]!r}…）"
-                f"——{'多复制' if got > want else '缺失'}",
-            ))
-    return issues
-
-
 # 兼容保留（旧签名仅做片段包含；新代码用上面的顺序版）
-def check_content_completeness(
-    rendered_text_by_page: dict[int, str], expected_fragments: list[dict]
-) -> list[QAIssue]:
-    issues: list[QAIssue] = []
-    all_text = _norm("".join(rendered_text_by_page.values()))
-    for item in expected_fragments:
-        for frag in item["fragments"]:
-            if _norm(frag) not in all_text:
-                issues.append(QAIssue(
-                    "content_completeness", "error",
-                    f"条目 {item['entry_id']} 片段未出现在渲染结果: {frag[:30]}…",
-                ))
-    return issues
-
-
-def check_anchor_boxes(boxes: list[SectionBox]) -> list[QAIssue]:
-    """boxes: 每个克隆栏目的 (page, top, bottom)。"""
-    issues: list[QAIssue] = []
-    by_page: dict[int, list[SectionBox]] = {}
-    for b in boxes:
-        by_page.setdefault(b.page_index, []).append(b)
-        if b.bottom_pt > FOOTER_BAR_TOP_PT:
-            issues.append(QAIssue(
-                "within_page", "error",
-                f"{b.section_id} 底部 {b.bottom_pt:.1f}pt 侵入底部装饰条（>{FOOTER_BAR_TOP_PT}pt）",
-            ))
-        if b.top_pt < 0:
-            issues.append(QAIssue(
-                "within_page", "error", f"{b.section_id} 顶部 {b.top_pt:.1f}pt 越出页面上缘"
-            ))
-    for page, items in by_page.items():
-        items_sorted = sorted(items, key=lambda b: b.top_pt)
-        for left, right in zip(items_sorted, items_sorted[1:]):
-            overlap = left.bottom_pt - right.top_pt
-            if overlap > OVERLAP_TOL_PT:
-                issues.append(QAIssue(
-                    "no_overlap", "error",
-                    f"第 {page+1} 页 {left.section_id}（底 {left.bottom_pt:.1f}）与 "
-                    f"{right.section_id}（顶 {right.top_pt:.1f}）重叠 {overlap:.1f}pt",
-                ))
-    return issues
 
 
 def check_page_count(rendered_pages: int, planned_pages: int) -> list[QAIssue]:

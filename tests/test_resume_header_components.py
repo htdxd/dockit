@@ -2,19 +2,13 @@
 from pathlib import Path
 
 import pytest
-
-from skill_toolbox.resume_layout import emit, t001, t109
+from resume_templates import header_boxes as boxes_for
+from skill_toolbox.resume_layout import component_template as ct
+from skill_toolbox.resume_layout import emit, pipeline
 from skill_toolbox.resume_layout.header import apply_header_components
 from skill_toolbox.resume_layout.profiles import get_profile
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "backend/skill_toolbox/skill_defs/resume_pro/templates"
-
-
-def boxes_for(template_id):
-    root = emit.load_document_xml(TEMPLATES / template_id / "template.docx")
-    if template_id == "t109":
-        return t109.header_boxes(root)
-    return [emit.find_body_wsp(t001.anchor_by_id(root, ident)) for ident in (22, 62)]
 
 
 @pytest.mark.parametrize("template_id", ["t109", "t001"])
@@ -81,47 +75,21 @@ def test_render_alignment_rejects_shifted_values_and_continuations(tmp_path, shi
     assert all(issue.severity == "error" for issue in issues)
 
 
-def test_body_start_follows_text_and_respects_photo_decoration(tmp_path):
-    import pymupdf
-    from skill_toolbox.resume_layout.header import body_start_from_render
-    starts = []
-    for y, photo in [(60, False), (100, False), (60, True)]:
-        path = tmp_path / f"{y}-{photo}.pdf"
-        with pymupdf.open() as pdf:
-            page = pdf.new_page()
-            page.insert_text((40, y), "Name: Alice")
-            if photo:
-                page.draw_rect((300, 40, 370, 150), fill=(1, 1, 1))
-            pdf.save(path)
-        starts.append(body_start_from_render(path, {"name": {"label": "Name", "after": "Alice"}}, 200))
-    assert starts[1] - starts[0] == pytest.approx(40)
-    assert starts[2] == pytest.approx(158.5)
-    assert max(starts) < 200
-
-
-def test_t109_photo_tracks_header_without_crossing_top_band():
-    from skill_toolbox.resume_layout.t109 import photo_top_for_header
-    short = photo_top_for_header(140, 110, 36, 9, 9)
-    tall = photo_top_for_header(185, 110, 36, 9, 9)
-    assert short - 9 == 44  # 色带以下 8pt，包括装饰外沿。
-    assert tall + 110 + 9 == 185
-    assert tall > short
-
-
 @pytest.mark.parametrize("size", [(206, 210), (200, 300), (300, 200)])
 def test_t001_compact_photo_keeps_aspect_and_updates_outer_bounds(tmp_path, size):
     import io
+
     from PIL import Image
     from skill_toolbox.resume_layout.layout import LayoutPlan
 
     image = io.BytesIO()
     Image.new("RGB", size).save(image, format="PNG")
     output = tmp_path / "photo.docx"
-    result = t001.emit_scenario({"sections": [], "header": {
-        "photo_bytes": image.getvalue(), "fit": {"photo_height_pt": 72.0}}},
+    result = pipeline.emit_scenario({"sections": [], "header": {
+        "photo_bytes": image.getvalue(), "fit": {"photo": {"height_pt": 72.0}}}},
         LayoutPlan(1, [], 243.7, 815.0), output,
-        template=TEMPLATES / "t001" / "template.docx")
-    photo = t001.anchor_by_id(emit.load_document_xml(output), 5)
+        template=TEMPLATES / "t001" / "template.docx", template_id='t001')
+    photo = ct.anchor(emit.load_document_xml(output), 5)
     extent = photo.find(emit.WP + "extent")
     width, height = [emit.emu2pt(extent.get(key)) for key in ("cx", "cy")]
     assert height <= 72.01

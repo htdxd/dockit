@@ -1,11 +1,11 @@
 """多区域组件的 PDF 独立验收：逐组件文字、基线、内容守恒与页级碰撞。"""
 from collections import Counter
+from pathlib import Path
 
 import pymupdf as fitz
 
 from skill_toolbox.resume_layout import qa
 from skill_toolbox.resume_layout.header import check_rendered_alignment
-from skill_toolbox.resume_layout.report import rendered_words, overlap_pairs
 
 
 def inspect_component(page, component, measured):
@@ -86,3 +86,31 @@ def check_components(pdf_path, scenario, plan, emit_info, measurements, header_c
         'within_page', 'no_overlap', 'no_extra_rendered_content', 'header_alignment', 'title_uniqueness',
         'measurement_vs_render'], issues=issues,
         measurement_error_table=qa.measurement_error_rows(measurements, rendered)).to_dict()
+
+
+def rendered_words(pdf_path: Path) -> list[dict]:
+    doc = fitz.open(str(pdf_path))
+    rows = []
+    for pi in range(len(doc)):
+        for w in doc[pi].get_text("words"):
+            rows.append({
+                "page": pi, "y0": w[1], "y1": w[3], "x0": w[0], "x1": w[2], "text": w[4],
+            })
+    return rows
+
+
+def overlap_pairs(rows: list[dict]) -> list[dict]:
+    bad = []
+    for page in {r["page"] for r in rows}:
+        pr = sorted([r for r in rows if r["page"] == page], key=lambda r: (r["y0"], r["x0"]))
+        for i, a in enumerate(pr):
+            for b in pr[i + 1:]:
+                if b["y0"] >= a["y1"] - 0.5:
+                    break
+                if a["x1"] > b["x0"] + 0.5 and b["x1"] > a["x0"] + 0.5:
+                    bad.append({
+                        "page": page + 1,
+                        "a": f"{a['text'][:20]}@y{a['y0']:.0f}",
+                        "b": f"{b['text'][:20]}@y{b['y0']:.0f}",
+                    })
+    return bad

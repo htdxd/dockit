@@ -1,4 +1,4 @@
-"""新组件模板的头部回填与 Word 实测，测量和落盘共用同一重写路径。"""
+"""共享头部回填与 Word 实测；测量和输出使用同一组件构造过程。"""
 from __future__ import annotations
 
 import copy
@@ -168,15 +168,23 @@ def _set_photo(root, template: Path, spec: dict, header: dict, overrides: dict):
             data = package.read(ref["part"])
     if not data:
         return None
-    info = emit.replace_photo(photo, data, frame_cx_pt=fit.get("width_pt", geometry["width_pt"]),
-                              frame_cy_pt=fit.get("height_pt", geometry["height_pt"]))
-    ct.set_extent(photo, width=info["width_pt"], height=info["height_pt"])
-    ct.set_position(photo, x=fit.get("x_pt", geometry["x_pt"]) + info["off_x_pt"],
-                    y=fit.get("y_pt", geometry["y_pt"]) + info["off_y_pt"])
-    pic = photo.find(".//{http://schemas.openxmlformats.org/drawingml/2006/picture}spPr/" + emit.A + "xfrm/" + emit.A + "off")
-    if pic is not None:
-        pic.set("x", "0")
-        pic.set("y", "0")
+    grouped = photo.find('.//' + emit.WPG + 'wgp') is not None
+    if grouped:
+        from skill_toolbox.resume_layout.typography import scale_anchor
+        factor = min(fit.get('width_pt', geometry['width_pt']) / geometry['width_pt'],
+                     fit.get('height_pt', geometry['height_pt']) / geometry['height_pt'])
+        scale_anchor(photo, factor)
+        info = emit.replace_photo(photo, data)
+    else:
+        info = emit.replace_photo(photo, data, frame_cx_pt=fit.get("width_pt", geometry["width_pt"]),
+                                  frame_cy_pt=fit.get("height_pt", geometry["height_pt"]))
+        ct.set_extent(photo, width=info["width_pt"], height=info["height_pt"])
+        ct.set_position(photo, x=fit.get("x_pt", geometry["x_pt"]) + info["off_x_pt"],
+                        y=fit.get("y_pt", geometry["y_pt"]) + info["off_y_pt"])
+        pic = photo.find(".//{http://schemas.openxmlformats.org/drawingml/2006/picture}spPr/" + emit.A + "xfrm/" + emit.A + "off")
+        if pic is not None:
+            pic.set("x", "0")
+            pic.set("y", "0")
     overrides[ref["part"]] = data
     with zipfile.ZipFile(template) as package:
         types = emit.etree.fromstring(package.read("[Content_Types].xml"))
@@ -321,6 +329,7 @@ def fit_header(template: Path, spec: dict, header: dict, work_dir: Path) -> dict
         text_bottom = max((v["y_pt"] + v["height_pt"] for v in columns.values()), default=0)
         if photo_geometry:
             photo_geometry["height_pt"] = min(photo_geometry["height_pt"], max(72.0, text_bottom - photo_geometry["y_pt"]))
+            photo_geometry['y_pt'] = max(photo_geometry['y_pt'], text_bottom - photo_geometry['height_pt'])
             result["photo"] = photo_geometry
         header_bottom = max(text_bottom, (photo_geometry["y_pt"] + photo_geometry["height_pt"]) if photo_geometry else 0)
         start = round(header_bottom + 12, 2)

@@ -91,29 +91,3 @@ SPEC = {
     "line_pitch_pt": 18.0,
     "title_text_top_pt": 0.65,
 }
-
-
-def source_key(section: dict) -> str:
-    """未知栏目留在主栏；只有评价默认流入侧栏。"""
-    if section["id"] in SECTIONS:
-        return section["id"]
-    return "skills" if section.get("prototype") == "plain_lines_v1" else "work"
-
-
-def section_region(section: dict) -> str:
-    return "sidebar" if section["id"] in SIDEBAR_SECTIONS else "main"
-
-
-def normalize_positions(root) -> None:
-    """保留原件外观，将段落相对锚点冻结为页面坐标；可重复调用。"""
-    from skill_toolbox.resume_layout import emit
-    from skill_toolbox.resume_layout.t001 import set_page_position
-
-    for anchor in root.iter(emit.WP + "anchor"):
-        ident = int(anchor.find(emit.WP + "docPr").get("id"))
-        horizontal = anchor.find(emit.WP + "positionH")
-        vertical = anchor.find(emit.WP + "positionV")
-        if horizontal.get("relativeFrom") == vertical.get("relativeFrom") == "page":
-            continue
-        x, y = PAGE_POSITIONS[ident]
-        set_page_position(anchor, x=x, y=y)

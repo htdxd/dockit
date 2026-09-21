@@ -1,0 +1,101 @@
+{
+  "schema_version": "spacing-archive-1",
+  "template_id": "t001",
+  "template_sha256": "ed74619c12b1a64e1ee196ab9d031c7ee2c003607d08a2c9ee3ae2397b1060de",
+  "title_text_top_off_pt": 3.9,
+  "line_pitch_pt": 18.0,
+  "sections": [
+    {
+      "section_id": "summary",
+      "frame_top_pt": 243.7,
+      "frame_bottom_pt": 330.8,
+      "body_wsp_off_y_pt": 25.2,
+      "body_h_pt": 61.9,
+      "text_ink_top_pt": 272.8,
+      "text_ink_bottom_pt": 326.8,
+      "bottom_slack_pt": 4.0,
+      "content_paragraphs": 1,
+      "content_lines": 3,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        3
+      ]
+    },
+    {
+      "section_id": "education",
+      "frame_top_pt": 339.05,
+      "frame_bottom_pt": 444.3,
+      "body_wsp_off_y_pt": 26.25,
+      "body_h_pt": 79.0,
+      "text_ink_top_pt": 369.2,
+      "text_ink_bottom_pt": 441.2,
+      "bottom_slack_pt": 3.1,
+      "content_paragraphs": 1,
+      "content_lines": 4,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        4
+      ]
+    },
+    {
+      "section_id": "work",
+      "frame_top_pt": 451.75,
+      "frame_bottom_pt": 710.35,
+      "body_wsp_off_y_pt": 29.4,
+      "body_h_pt": 229.2,
+      "text_ink_top_pt": 485.2,
+      "text_ink_bottom_pt": 706.4,
+      "bottom_slack_pt": 3.95,
+      "content_paragraphs": 2,
+      "content_lines": 12,
+      "entry_count": 2,
+      "entry_gap_pt": 5.2,
+      "entry_lines": [
+        7,
+        5
+      ]
+    },
+    {
+      "section_id": "skills",
+      "frame_top_pt": 720.15,
+      "frame_bottom_pt": 808.25,
+      "body_wsp_off_y_pt": 26.2,
+      "body_h_pt": 61.9,
+      "text_ink_top_pt": 750.4,
+      "text_ink_bottom_pt": 804.4,
+      "bottom_slack_pt": 3.85,
+      "content_paragraphs": 1,
+      "content_lines": 3,
+      "entry_count": 1,
+      "entry_gap_pt": null,
+      "entry_lines": [
+        3
+      ]
+    }
+  ],
+  "pairs": [
+    {
+      "prev_section_id": "summary",
+      "next_section_id": "education",
+      "anchor_gap_pt": 8.25,
+      "visible_gap_pt": 16.15,
+      "anchor_delta_from_prev_text_pt": 12.25
+    },
+    {
+      "prev_section_id": "education",
+      "next_section_id": "work",
+      "anchor_gap_pt": 7.45,
+      "visible_gap_pt": 14.45,
+      "anchor_delta_from_prev_text_pt": 10.55
+    },
+    {
+      "prev_section_id": "work",
+      "next_section_id": "skills",
+      "anchor_gap_pt": 9.8,
+      "visible_gap_pt": 17.65,
+      "anchor_delta_from_prev_text_pt": 13.75
+    }
+  ]
+}

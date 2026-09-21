@@ -8,15 +8,19 @@ from pathlib import Path
 
 from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.contracts.resume import (
-    ResumeAcceptRequest, ResumeContentV2, ResumeEditV2, ResumeGenerateV2Request,
-    ResumeHeaderV2, ResumePreviewRequest, ResumeRepairV2Request,
+    ResumeAcceptRequest,
+    ResumeContentV2,
+    ResumeGenerateV2Request,
+    ResumeHeaderV2,
+    ResumePreviewRequest,
+    ResumeRepairV2Request,
 )
-from skill_toolbox.contracts.resume_workflow import Content, Entry, Section
-from skill_toolbox.tools.workspace import atomic_write_json
-from skill_toolbox.resume_content import canonical_entry
+from skill_toolbox.contracts.resume_workflow import Content
 from skill_toolbox.resume_facts import ResumeFacts
-
-from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES as SUPPORTED_TEMPLATES
+from skill_toolbox.resume_layout.profiles import (
+    SUPPORTED_TEMPLATES as SUPPORTED_TEMPLATES,
+)
+from skill_toolbox.tools.workspace import atomic_write_json
 
 
 def compact_agent_result(name, result):
@@ -139,39 +143,6 @@ class ResumeWorkflow:
             selected.append(photo_asset_id)
         self.materials.create_content_plan(selected_source_ids=selected)
 
-    @staticmethod
-    def _entry(entry, prototype, entry_id):
-        head = {"date": entry.date, "org": entry.organization, "role": entry.role}
-        return {
-            "id": entry.id or entry_id,
-            "source_ids": entry.source_ids,
-            "tech_stack": entry.tech_stack,
-            "details": [item.model_dump() for item in entry.details],
-            "highlights": [item.model_dump() for item in entry.highlights],
-            "head": head if any(head.values()) else {},
-            "bullets": entry.text if prototype == "experience_v1" else [],
-            "lines": entry.text if prototype == "plain_lines_v1" else [],
-            "font_size_pt": entry.font_size_pt,
-            "scale": entry.scale,
-        }
-
-    @classmethod
-    def _section(cls, section):
-        # 纯文字栏目的重复栏目名不是经历标题，避免把它渲染成第二个标题。
-        if section.key in {"skills", "summary"}:
-            section = section.model_copy(update={"entries": [
-                entry.model_copy(update={"organization": ""})
-                if entry.organization == section.title and not entry.date and not entry.role else entry
-                for entry in section.entries]})
-        has_head = any(e.date or e.organization or e.role for e in section.entries)
-        prototype = "experience_v1" if has_head else "plain_lines_v1"
-        return {
-            "key": section.key, "title": section.title, "prototype": prototype,
-            "scale": section.scale,
-            "entries": [cls._entry(e, prototype, f"{section.key}-{i}")
-                        for i, e in enumerate(section.entries, 1)],
-        }
-
     def generate(self, request):
         allowed = sorted(set(self.engine.profile.header_labels.values()))
         content = request.content
@@ -187,7 +158,7 @@ class ResumeWorkflow:
         fields = {**dict.fromkeys(allowed, ""), **content.person}
         visible_custom = {item["key"] for item in custom if item["value"].strip()}
         hidden = [key for key, value in fields.items() if not value.strip() and key not in visible_custom]
-        sections = [self._section(s) for s in content.sections]
+        sections = [self.engine.actions.from_section(s) for s in content.sections]
         if request.font_size_pt is not None:
             for section in sections:
                 for entry in section["entries"]:
@@ -250,15 +221,6 @@ class ResumeWorkflow:
         except ToolError as exc:
             raise ToolError(exc.code, str(exc), suggestion=json.dumps(self.candidate_state(), ensure_ascii=False)) from None
 
-    @staticmethod
-    def _entry_target(content, target):
-        if "#" in target:
-            return target
-        for section in content["sections"]:
-            if any(entry["id"] == target for entry in section["entries"]):
-                return f"{section['key']}#{target}"
-        raise ToolError("TARGET_NOT_FOUND", f"条目不存在: {target}")
-
     def _target_path(self, artifact_id):
         return self.engine.store.artifact_dir(artifact_id) / "workflow.json"
 
@@ -279,21 +241,10 @@ class ResumeWorkflow:
             person={key: value for key, value in header.get("fields", {}).items()
                     if key not in hidden and key not in custom_keys},
             personal_fields=custom, photo_asset_id=photo,
-            sections=[Section(key=s["key"], title=s["title"], scale=s.get("scale"), entries=[Entry(
-                id=e["id"], date=(e.get("head") or {}).get("date", ""),
-                organization=(e.get("head") or {}).get("org", ""),
-                role=(e.get("head") or {}).get("role", ""),
-                text=e.get("bullets") or e.get("lines") or [], tech_stack=e.get("tech_stack", ""),
-                details=e.get("details", []),
-                highlights=e.get("highlights", []),
-                font_size_pt=e.get("font_size_pt"), scale=e.get("scale"),
-                source_ids=e.get("source_ids", []),
-            ) for e in (canonical_entry(s, raw) for raw in s["entries"])]) for s in content["sections"]],
+            sections=self.engine.actions.to_sections(content["sections"]),
         )
 
     def edit(self, request):
-        import copy
-
         artifact_id, revision, record = self._candidate(request.candidate_id)
         if not request.changes and request.density is None:
             if revision != self.engine.store.index(artifact_id)["current"]:
@@ -302,121 +253,16 @@ class ResumeWorkflow:
             if result.ok:
                 self._save_target(artifact_id, request.target_pages)
             return self._result(result)
-        working = copy.deepcopy(record["content"])
-        actions = []
-        header = copy.deepcopy(working.get("header") or {})
-        header_changed = False
-        hidden = set(header.get("hidden_fields") or [])
-        custom = {item["key"]: item for item in header.get("custom_fields", [])}
-        for change in request.changes:
-            op = change.op
-            if op == "format":
-                if change.scope == "entry":
-                    targets = [{"instance_id": self._entry_target(working, change.target_id)}]
-                else:
-                    selected = (working["sections"] if change.scope == "all" else
-                                [self.engine._section(working, change.target_id)])
-                    targets = [{"section_key": section["key"]} for section in selected]
-                edits = [ResumeEditV2(op="format_component", **target,
-                                     font_size_pt=change.font_size_pt, scale=change.scale)
-                         for target in targets]
-                working, _ = self.engine._apply_changes(working, edits)
-                actions.extend(edits)
-                continue
-            if op == "update_person":
-                for key, value in change.fields.items():
-                    if key in custom:
-                        custom[key]["value"] = value
-                        if key in header.get("fields", {}):
-                            header["fields"][key] = value
-                    else:
-                        header.setdefault("fields", {})[key] = value
-                    hidden.discard(key) if value.strip() else hidden.add(key)
-                header_changed = True
-                continue
-            if op == "set_person_field":
-                item = change.field.model_dump()
-                custom[item["key"]] = item
-                if item["key"] in header.get("fields", {}):
-                    header["fields"][item["key"]] = item["value"]
-                hidden.discard(item["key"]) if item["value"].strip() else hidden.add(item["key"])
-                header_changed = True
-                continue
-            if op == "remove_person_field":
-                if change.key not in header.get("fields", {}) and change.key not in custom:
-                    raise ToolError("TARGET_NOT_FOUND", f"个人字段不存在: {change.key}")
-                custom.pop(change.key, None)
-                if change.key in header.get("fields", {}):
-                    header["fields"][change.key] = ""
-                    hidden.add(change.key)
-                else:
-                    hidden.discard(change.key)
-                header_changed = True
-                continue
-            if op == "replace_photo":
-                header.update(self._photo(change.asset_id))
-                header_changed = True
-                continue
-            if op == "move_section":
-                section = copy.deepcopy(self.engine._section(working, change.section_id))
-                moved = [
-                    ResumeEditV2(op="remove_section", section_key=change.section_id),
-                    ResumeEditV2(op="insert_section", section=section,
-                                 before=change.before_id or "", after=change.after_id or ""),
-                ]
-                working, _ = self.engine._apply_changes(working, moved)
-                actions.extend(moved)
-                continue
-            if op == "update_entry":
-                target = self._entry_target(working, change.target_id)
-                section, current = self.engine._locate(working, ResumeEditV2(
-                    op=op, instance_id=target))
-                external = self._external({"sections": [section]}).sections[0]
-                old = next(e for e in external.entries if e.id == current["id"])
-                patch = change.entry.model_dump(exclude_unset=True)
-                for key in ("font_size_pt", "scale"):
-                    if patch.get(key) is None:
-                        patch.pop(key, None)
-                entry = Entry.model_validate({**old.model_dump(), **patch})
-                action = ResumeEditV2(op=op, instance_id=target,
-                                     entry=self._entry(entry, section["prototype"], current["id"]))
-            elif op == "insert_entry":
-                section = self.engine._section(working, change.section_id)
-                used = {e["id"] for s in working["sections"] for e in s["entries"]}
-                number = 1
-                while f"{change.section_id}-{number}" in used:
-                    number += 1
-                entry = self._entry(change.entry, section["prototype"], f"{change.section_id}-{number}")
-                action = ResumeEditV2(op=op, section_key=change.section_id,
-                                     after=change.after_id or "", entry=entry)
-            elif op in {"remove_entry", "move_entry"}:
-                action = ResumeEditV2(op=op, instance_id=self._entry_target(working, change.target_id),
-                                     before=getattr(change, "before_id", None) or "",
-                                     after=getattr(change, "after_id", None) or "")
-            elif op == "insert_section":
-                action = ResumeEditV2(op=op, section=self._section(change.section), after=change.after_id or "")
-            else:
-                self.engine._section(working, change.section_id)
-                action = ResumeEditV2(op="update_section_title" if op == "rename_section" else op,
-                                     section_key=change.section_id, title=getattr(change, "title", ""))
-            working, _ = self.engine._apply_changes(working, [action])
-            actions.append(action)
-        # 整批结束再移除空栏；同批“删旧条目→插入新条目”仍可引用该栏目。
-        for section in list(working["sections"]):
-            if not section["entries"]:
-                removal = ResumeEditV2(op="remove_section", section_key=section["key"])
-                working, _ = self.engine._apply_changes(working, [removal])
-                actions.append(removal)
+        photos = {c.asset_id: self._photo(c.asset_id) for c in request.changes if c.op == "replace_photo"}
+        working, actions, header = self.engine.actions.compile(record["content"], request.changes, photo_changes=photos)
         self._external(working)  # 在渲染前拒绝空条目/空简历，不能生成后才发现遗漏。
         self._check_ids(working["sections"])
         self.facts.validate_refs(working["sections"])
         self._check_typography(working["sections"])
-        header["hidden_fields"] = sorted(hidden)
-        header["custom_fields"] = list(custom.values())
         result = self.engine.repair(ResumeRepairV2Request(
             density=request.density,
             artifact_id=artifact_id, base_revision=revision, changes=actions,
-            header=ResumeHeaderV2(**header) if header_changed else None,
+            header=ResumeHeaderV2(**header) if header is not None else None,
             request_id=_request_id("edit", request.model_dump()),
         ))
         if request.target_pages is not None and result.ok and not result.data.get("idempotent_replay"):

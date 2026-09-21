@@ -1,23 +1,9 @@
-# -*- coding: utf-8 -*-
-"""P1 探针测试：简历组件化排版（resume_layout 包）。
-
-分层（实施计划 §8：布局纯单测 + 环境标记端到端）：
-- layout：确定性排版纯函数（顺序/绑定/翻页/UNSATISFIABLE）——无环境依赖
-- emit：XML 克隆/组伸展/分页段落（lxml，无需 Word）
-- e2e：Word COM 测量 + 渲染（标记 resume_e2e，无 Word 时 skip 并明确记录）
-
-运行：
-  uv run pytest tests/test_p1_resume_layout.py -q           # 纯单测
-  uv run pytest tests/test_p1_resume_layout.py -q -k e2e    # 需 Windows+Word+pywin32
-"""
+"""纯布局边界、测量失败门和段落样式回归；PDF 内容检查见 test_resume_component_qa。"""
 from __future__ import annotations
 
-import json
-import zipfile
 from pathlib import Path
 
 import pytest
-
 from skill_toolbox.resume_layout import emit
 from skill_toolbox.resume_layout.layout import (
     LayoutUnsatisfiable,
@@ -172,170 +158,7 @@ def _root():
     return emit.load_document_xml(TEMPLATE)
 
 
-def test_emit_proto_snapshot_and_strip_title() -> None:
-    """克隆条第 2+ 条必须剥掉标题框/图标/横线（复制条目不复制标题）。"""
-    import copy as _copy
-    from lxml import etree
-
-    root = _root()
-    proto = emit._anchor_by_docpr_name(root, "组合 216")
-    node = proto
-    while node is not None and etree.QName(node).localname != "AlternateContent":
-        node = node.getparent()
-    snap = _copy.deepcopy(node)
-    anchor = emit.insert_proto(root, snap)
-    clone = emit.clone_section_anchor(root, anchor, title_text="项目经历（Projects）")
-    # strip 前有 4 wsp；strip 后只留正文框
-    before = len(list(clone.iter(emit.WPS + "wsp")))
-    removed = emit.strip_title_decorations(clone)
-    after = len(list(clone.iter(emit.WPS + "wsp")))
-    assert before == 4
-    assert removed == 3
-    assert after == 1
-    # 剩余的是正文框（含 txbxContent 且可写文本）
-    body = emit.find_body_wsp(clone)
-    emit.set_box_text(body, "2020.01-2020.02           机构                           角色\n正文行")
-    assert "机构" in emit._box_text(body)
-
-
-def test_emit_clone_writes_title_text() -> None:
-    import copy as _copy
-    from lxml import etree
-
-    root = _root()
-    proto = emit._anchor_by_docpr_name(root, "组合 216")
-    node = proto
-    while node is not None and etree.QName(node).localname != "AlternateContent":
-        node = node.getparent()
-    anchor = emit.insert_proto(root, _copy.deepcopy(node))
-    clone = emit.clone_section_anchor(root, anchor, title_text="项目经历（Projects）")
-    title = emit.find_title_wsp(clone)
-    assert title is not None
-    assert emit._box_text(title) == "项目经历（Projects）"
-
-
-def test_emit_full_chain_resize_updates_all_extents() -> None:
-    """全链组伸展：wsp ext → wgp chExt/ext → anchor extent 全部同步。"""
-    import copy as _copy
-    from lxml import etree
-
-    root = _root()
-    proto = emit._anchor_by_docpr_name(root, "组合 216")
-    node = proto
-    while node is not None and etree.QName(node).localname != "AlternateContent":
-        node = node.getparent()
-    anchor = emit.insert_proto(root, _copy.deepcopy(node))
-    clone = emit.clone_section_anchor(root, anchor, title_text="X（Y）")
-    emit.strip_title_decorations(clone)
-    body = emit.find_body_wsp(clone)
-    emit.resize_group_child_bottom(clone, body, 200.0)
-    # anchor extent ≥ 200+29.2
-    aext = clone.find(emit.WP + "extent")
-    assert int(aext.get("cy")) / 12700 >= 200.0 + 29.0
-    # wgp ext 同步
-    wgp = clone.find(".//{http://schemas.microsoft.com/office/word/2010/wordprocessingGroup}wgp")
-    gxf = emit._xfrm_of_group(wgp)
-    assert int(gxf.find(emit.A + "ext").get("cy")) / 12700 >= 200.0
-
-
-def test_emit_output_opens_as_valid_docx(tmp_path: Path) -> None:
-    """emit 产物 zip/XML 合法且 body 直接子级只有 p/sectPr。"""
-    import copy as _copy
-    from lxml import etree
-
-    root = _root()
-    # 快照全部栏目并重挂
-    snaps = {}
-    for sid, name in {
-        "education": "组合 215", "internship": "组合 216", "campus": "组合 218",
-        "skills": "组合 219", "summary": "组合 220",
-    }.items():
-        a = emit._anchor_by_docpr_name(root, name)
-        node = a
-        while node is not None and etree.QName(node).localname != "AlternateContent":
-            node = node.getparent()
-        snaps[sid] = _copy.deepcopy(node)
-        # 移除原件栏目
-        host_run = node.getparent()
-        host_run.getparent().remove(host_run)
-    proto = emit.insert_proto(root, snaps["internship"])
-    clone = emit.clone_section_anchor(root, proto, title_text="教育背景（Education）")
-    emit.set_box_text(emit.find_body_wsp(clone), "内容\n第二行")
-    emit.resize_group_child_bottom(clone, emit.find_body_wsp(clone), 60.0)
-    # 删除 proto 段
-    p = proto.getparent()
-    while etree.QName(p).localname != "p":
-        p = p.getparent()
-    p.getparent().remove(p)
-    out = tmp_path / "out.docx"
-    emit.save_document_xml(root, TEMPLATE, out)
-    with zipfile.ZipFile(out) as z:
-        assert z.testzip() is None
-        xml = z.read("word/document.xml")
-    r = etree.fromstring(xml)
-    W = emit.W
-    body = r.find(W + "body")
-    kinds = {etree.QName(c).localname for c in body}
-    assert kinds <= {"p", "sectPr"}, f"body 非法子级: {kinds}"
-    # sectPr 必须是最后
-    assert etree.QName(body[-1]).localname == "sectPr"
-
-
 # ---------------- QA 反例（review Fix1/Fix2） ----------------
-
-def _qa_stream(pages: dict[int, str]) -> dict[int, str]:
-    return pages
-
-
-def test_qa_ordered_completeness_passes_on_full_stream() -> None:
-    from skill_toolbox.resume_layout.qa import check_content_completeness_ordered
-
-    entries = [
-        {"entry_id": "a", "text": "第一段内容\n第二段内容"},
-        {"entry_id": "b", "text": "另起一段的内容"},
-    ]
-    issues = check_content_completeness_ordered(
-        _qa_stream({1: "第一段内容 第二段内容 另起一段的内容"}), entries
-    )
-    assert issues == []
-
-
-def test_qa_ordered_completeness_catches_truncation() -> None:
-    """review 反例：追加渲染中不存在的文字必须失败（旧版只查前 12 字会漏）。"""
-    from skill_toolbox.resume_layout.qa import check_content_completeness_ordered
-
-    entries = [{"entry_id": "a", "text": "正常内容\n尾部新增不存在的字XYZQWE"}]
-    issues = check_content_completeness_ordered(
-        _qa_stream({1: "正常内容"}), entries
-    )
-    assert any(i.severity == "error" and "不完整" in i.detail for i in issues)
-
-
-def test_qa_ordered_completeness_catches_duplication() -> None:
-    """重复条目：产物只渲染一份时，第二条（游标后）必须匹配失败。"""
-    from skill_toolbox.resume_layout.qa import check_content_completeness_ordered
-
-    entries = [
-        {"entry_id": "a", "text": "重复内容"},
-        {"entry_id": "a-dup", "text": "重复内容"},
-    ]
-    issues = check_content_completeness_ordered(
-        _qa_stream({1: "重复内容"}), entries
-    )
-    assert any(i.severity == "error" for i in issues)
-
-
-def test_qa_ordered_completeness_catches_reordering() -> None:
-    from skill_toolbox.resume_layout.qa import check_content_completeness_ordered
-
-    entries = [
-        {"entry_id": "a", "text": "条目甲"},
-        {"entry_id": "b", "text": "条目乙"},
-    ]
-    issues = check_content_completeness_ordered(
-        _qa_stream({1: "条目乙条目甲"}), entries
-    )
-    assert any("顺序错乱" in i.detail for i in issues)
 
 
 def test_qa_measurement_gate_rejects_tampered_measurements() -> None:
@@ -387,21 +210,6 @@ def test_qa_empty_measurements_fail_id_set_gate() -> None:
     assert any("缺少渲染对照" in i.detail for i in errs)
 
 
-def test_qa_extra_duplication_in_output_detected() -> None:
-    """R2 反例：预期 A→B、产物 A→A→B 必须失败（额外重复内容检查）。"""
-    from skill_toolbox.resume_layout.qa import check_no_extra_rendered_content
-
-    pages = {1: "ALPHA内容 ALPHA内容 BETA内容"}
-    entries = [
-        {"entry_id": "a", "text": "ALPHA内容"},
-        {"entry_id": "b", "text": "BETA内容"},
-    ]
-    issues = check_no_extra_rendered_content(pages, entries, allowed_extra_needles=[])
-    errs = [i for i in issues if i.severity == "error"]
-    assert any("额外正文" in i.detail for i in errs)
-    assert any("出现次数不符" in i.detail and "多复制" in i.detail for i in errs)
-
-
 def test_qa_abnormal_render_pitch_fails_pitch_gate() -> None:
     """R2 反例：两行起点相隔 21pt（行距异常）必须失败——行距门用真实行位置。"""
     from skill_toolbox.resume_layout.qa import check_measurement_vs_render
@@ -437,24 +245,6 @@ def test_qa_duplicate_entry_ids_rejected() -> None:
                  "render_pitch_pt": 18.0}]
     issues = check_measurement_vs_render(measured, rendered, expected_entry_ids=["e1"])
     assert any("重复" in i.detail for i in issues)
-
-
-def test_replay_uses_verbatim_xml_texts() -> None:
-    """R2 Fix1：重放内容 = document.xml 原文（含自我评价 87 字 / 2 行版本）。"""
-    import sys
-
-    sys.path.insert(0, str(PROJECT_ROOT / "backend"))
-    from skill_toolbox.resume_layout.generate import _original_section_texts
-
-    orig = _original_section_texts()
-    # 自我评价 87 字单段（manifest 是 106 字旧版——不得混入）
-    assert len(orig["summary"]) == 1
-    assert len(orig["summary"][0]) == 87
-    assert "管控工作" in orig["summary"][0]      # XML 版特有表述
-    assert "项目经验" not in orig["summary"][0]  # manifest 版表述（不得出现）
-    # 实习栏 7 段（含中间空段）
-    assert len(orig["internship"]) == 7
-    assert orig["internship"][3] == ""
 
 
 # ---------------- QA 反例（review R3 Fix1/Fix2） ----------------
@@ -540,7 +330,6 @@ def test_qa_tight_tolerance_passes_normal_variance() -> None:
 
 def test_style_snapshots_skip_empty_separator_paras() -> None:
     """R3 根修验证：样式快照跳过空段（实习 p3 的 sz=6 分隔段不进快照）。"""
-    import copy as _copy
 
     root = emit.load_document_xml(TEMPLATE)
     proto = emit._anchor_by_docpr_name(root, "组合 216")
@@ -552,68 +341,3 @@ def test_style_snapshots_skip_empty_separator_paras() -> None:
         if s["rPr"] is not None:
             sz = s["rPr"].find(emit.W + "sz")
             assert sz is None or int(sz.get(emit.W + "val")) >= 18  # ≥9pt
-
-
-# ---------------- e2e（Word COM，环境标记） ----------------
-
-e2e = pytest.mark.e2e
-
-
-@e2e
-def test_e2e_measure_probe_line_pitch() -> None:
-    """Word COM 探针：模板宿主中 3 行文本 pitch=18.0、行数正确。"""
-    pytest.importorskip("pythoncom")
-    import shutil
-
-    from skill_toolbox.resume_layout.measure import WordMeasureProbe
-
-    host = Path(__file__).parent / "_t109_measure_host.docx"
-    shutil.copy(TEMPLATE, host)
-    try:
-        probe = WordMeasureProbe(host)
-        rs = probe.measure_entries(3, 2, [
-            {"id": "x", "text": "一\r二\r三\r四\r五\r六"},
-        ])
-        r = rs[0]
-        assert r.wrapped_lines == 6
-        assert r.line_pitch_pt == pytest.approx(18.0, abs=0.05)
-        assert r.text_height_pt == pytest.approx(108.0, abs=0.5)
-    finally:
-        host.unlink(missing_ok=True)
-
-
-@e2e
-def test_e2e_generate_scenario_replay(tmp_path: Path) -> None:
-    """端到端：replay 生成 + 渲染页数一致 + **QA 报告必须通过**（含测量门）。"""
-    pytest.importorskip("pythoncom")
-    import subprocess
-    import sys
-
-    gen = (
-        PROJECT_ROOT
-        / "backend/skill_toolbox/resume_layout/generate.py"
-    )
-    report_cli = (
-        PROJECT_ROOT
-        / "backend/skill_toolbox/resume_layout/report.py"
-    )
-    out = tmp_path / "ev"
-    rc = subprocess.run(
-        [sys.executable, str(gen), str(out), "replay"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=600,
-    )
-    assert rc.returncode == 0, rc.stderr[-500:]
-    result = json.loads(rc.stdout)
-    assert result["ok"] is True
-    assert result["rendered_pages"] == result["plan_pages"]
-    assert (out / "replay" / "resume_replay.docx").is_file()
-    # QA 汇总（review Fix2：e2e 必须检查 QA，不能只看生成成功）
-    rc2 = subprocess.run(
-        [sys.executable, str(report_cli), str(out)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=300,
-    )
-    assert rc2.returncode == 0, rc2.stderr[-500:]
-    summary = json.loads(rc2.stdout)
-    assert summary["replay"]["passed"] is True, summary["replay"]["errors"]

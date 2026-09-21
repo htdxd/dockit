@@ -3,8 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
-from skill_toolbox.resume_layout import emit, layout, t001
+from skill_toolbox.resume_layout import emit, layout, pipeline
 from skill_toolbox.resume_layout.profiles import get_profile
 
 
@@ -50,7 +49,7 @@ def test_continuation_banner_text_keeps_original_z_order(tmp_path):
                                "b": layout.MeasureResult("b", 1, 180)},
                               geometry=get_profile("t001").geometry)
     out = tmp_path / "two.docx"
-    t001.emit_scenario(scenario, plan, out, template=template)
+    pipeline.emit_scenario(scenario, plan, out, template=template, template_id='t001')
     root = emit.load_document_xml(out)
     banner = next(a for a in root.iter(emit.WP + "anchor")
                   if a.find(emit.WP + "docPr").get("name", "").startswith("组合 14 Clone"))

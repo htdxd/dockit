@@ -1,7 +1,6 @@
 """隔离进程执行真实 Word 检查，不调用 LLM 或 MinerU 云端。"""
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
@@ -9,10 +8,11 @@ import sys
 import tempfile
 import time
 import traceback
+from pathlib import Path
 
 
 def probe(stage: str):
-    from skill_toolbox.word_com import check_registered_word, start_word, close_word
+    from skill_toolbox.word_com import check_registered_word, close_word, start_word
     if stage == 'identity':
         registration = check_registered_word()
         word = start_word()
@@ -21,15 +21,12 @@ def probe(stage: str):
                     'application_path':str(word.Path)}
         finally:
             close_word(word)
-    from skill_toolbox.resume_layout import pipeline, spacing
-    from skill_toolbox.resume_layout import t001
+    from skill_toolbox.resume_layout import pipeline
+    from skill_toolbox.resume_layout.component_template import ensure_archive
     template = Path(__file__).resolve().parents[1]/'skill_defs/resume_pro/templates'/stage/'template.docx'
     with tempfile.TemporaryDirectory(prefix='dockit-word-check-') as temporary:
         work = Path(temporary)
-        if stage == 't109':
-            spacing.ensure_archive(template, work/'spacing.json')
-        else:
-            t001.ensure_archive(template, work/'spacing.json')
+        ensure_archive(template, work/'spacing.json', stage)
         scenario = {'header':{'fields':{'name':'环境校验'}}, 'sections':[{'id':'education', 'entries':[
             {'id':'probe', 'text':'环境测量校验：测试大学 软件工程 本科\n完成文档排版和文字高度测量。'}]}]}
         pipeline.measure_scenario(scenario,work,template=template,template_id=stage)
@@ -40,7 +37,7 @@ def probe(stage: str):
         word = start_word()
         doc = None
         try:
-            doc = word.Documents.Open(str(work/'measure-0.docx'),False,True)
+            doc = word.Documents.Open(str(work/'measure-component-0.docx'),False,True)
             doc.ExportAsFixedFormat(str(pdf),17)
         finally:
             close_word(word,doc)

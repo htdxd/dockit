@@ -1,7 +1,8 @@
-"""四个真实模板的正文抽取、克隆与分列角色回归。"""
+"""六模板共享正文抽取、克隆、分列与样式回归。"""
 from pathlib import Path
 
 import pytest
+from resume_templates import TEMPLATE_IDS
 from skill_toolbox.resume_layout import component_body as body
 from skill_toolbox.resume_layout import component_template as ct
 from skill_toolbox.resume_layout import emit, layout, typography
@@ -9,7 +10,7 @@ from skill_toolbox.resume_layout import emit, layout, typography
 ROOT = Path(__file__).resolve().parents[1] / "backend/skill_toolbox/skill_defs/resume_pro/templates"
 
 
-@pytest.mark.parametrize("template_id", ["t002", "t003", "t015", "t024"])
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
 def test_new_project_replaces_source_and_has_independent_text_box(template_id):
     template = ROOT / template_id / "template.docx"
     spec = ct.get_spec(template_id)
@@ -49,6 +50,17 @@ def test_t015_work_keeps_role_date_and_organization_in_correct_parts():
     assert date.find(emit.W+'pPr/'+emit.W+'numPr') is None
 
 
+@pytest.mark.parametrize('section_id', ['personal_projects', 'opensource'])
+def test_project_semantics_do_not_depend_on_exact_section_key(section_id):
+    template = ROOT / 't015/template.docx'
+    spec = ct.get_spec('t015')
+    section = {'id': section_id, 'title': '开源项目'}
+    entry = {'id': 'custom', 'head': {'org': '工具', 'role': '个人项目'},
+             'heading_lines': 1, 'text': '工具 · owner/repo · Stars 100 · 个人项目\n正文'}
+    parts = body._parts(ct.load_normalized(template, spec), section, entry, spec, 't015', typography.Numbering(template))
+    assert len(parts) == 1 and parts[0]['entry']['text'] == entry['text']
+
+
 @pytest.mark.parametrize("changes", [{"width_pt": 200}, {"scale": 1.25}])
 def test_sidebar_width_is_bounded_by_its_own_region(changes):
     template = ROOT / "t024/template.docx"
@@ -60,7 +72,7 @@ def test_sidebar_width_is_bounded_by_its_own_region(changes):
         body._parts(root, section, entry, spec, "t024", typography.Numbering(template))
 
 
-@pytest.mark.parametrize("template_id", ["t002", "t003", "t015", "t024"])
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
 def test_emit_removes_unused_columns_and_clones_only_requested_entries(template_id, tmp_path):
     template = ROOT / template_id / "template.docx"
     scenario = {"header": {"hide_photo": True}, "sections": [{

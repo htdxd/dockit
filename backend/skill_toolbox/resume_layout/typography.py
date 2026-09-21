@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from skill_toolbox.resume_layout import emit
+from skill_toolbox.resume_layout.component_template import get_spec
 from skill_toolbox.resume_layout.profiles import get_profile
 
 
@@ -123,11 +124,12 @@ def scale_anchor(anchor, factor: float):
 def scale_title(anchor, factor: float, *, body=None, template_id: str):
     """栏目标题、图标、横线一起缩放；正文文字另按条目设置。"""
     position = anchor.find(emit.WP + "positionH")
+    spec = get_spec(template_id)
     left = int(position.find(emit.WP + "posOffset").text) / emit.EMU
     if position.get("relativeFrom") == "column":
-        left += 90.0 if template_id == "t001" else 42.0
+        left += spec.get('origin', {}).get('column', 0)
     width = int(anchor.find(emit.WP + "extent").get("cx")) / emit.EMU * factor
-    if left + width > 595.3 + 0.1:
+    if left + width > spec['page_width_pt'] + 0.1:
         raise ValueError("TYPOGRAPHY_BOUNDS: 栏目标题/图标缩放后越过页面右边界")
     scale_anchor(anchor, factor)
     if abs(factor - 1) < 1e-9:
@@ -135,7 +137,7 @@ def scale_title(anchor, factor: float, *, body=None, template_id: str):
     for box in anchor.iter(emit.WPS + "wsp"):
         if box is body:
             continue
-        _scale_text(box, factor, 12.0 if template_id == "t001" else 13.0)
+        _scale_text(box, factor, spec.get('title_font_pt', 13.0))
         _scale_metrics(box, factor)
         for spacing in box.iter(emit.W + "spacing"):
             for key in ("before", "after", "line"):
@@ -168,7 +170,7 @@ def configure_heading_tabs(body, entry: dict, *, template_id: str = "t109"):
              - int(props.get("rIns", 91440))) / emit.EMU
     stops = ([("center", width / 2), ("right", width)]
              if entry["text"].split("\n", 1)[0].count("\t") > 1
-             else [("right", width)] if template_id == "t001" else [("left", width * 0.6)])
+             else [("right", width)] if get_spec(template_id).get('two_slot_tab') == 'right' else [("left", width * 0.6)])
     for align, position in stops:
         tab = emit.etree.SubElement(tabs, emit.W + "tab")
         tab.set(emit.W + "val", align)

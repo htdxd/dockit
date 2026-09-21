@@ -1,23 +1,10 @@
-# -*- coding: utf-8 -*-
-"""P2-3 测试：版本化编辑服务（ResumeEditService）与多模态投递契约。
-
-分层：
-- 逻辑层（无 Word）：渲染步骤以 stub 替换，验证 revision/幂等/并发/原子性/
-  动作边界/视觉覆盖门 —— 这些判定与渲染实现无关，必须能在任何环境跑。
-- e2e（Word COM，标记 e2e）：真实 t109 生成 → 编辑 → 接受，检查产物与 QA。
-
-运行：
-  uv run pytest tests/test_p2_edit_service.py -q            # 逻辑层
-  uv run pytest tests/test_p2_edit_service.py -q -k e2e     # 需 Windows+Word
-"""
+"""版本、幂等、原子性和视觉覆盖的逻辑测试；真实 Word 由六模板矩阵验证。"""
 from __future__ import annotations
 
 import json
-import zipfile
 from pathlib import Path
 
 import pytest
-
 from skill_toolbox.contracts.common import ToolError
 from skill_toolbox.contracts.resume import (
     ResumeAcceptRequest,
@@ -28,7 +15,8 @@ from skill_toolbox.contracts.resume import (
     ResumeRepairV2Request,
     ResumeRestoreRequest,
 )
-from skill_toolbox.tools.resume_edit import ResumeEditService, format_head_slots
+from skill_toolbox.resume_layout import renderer
+from skill_toolbox.tools.resume_edit import ResumeEditService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = PROJECT_ROOT / "backend/skill_toolbox/skill_defs/resume_pro/templates"
@@ -395,63 +383,6 @@ def test_qa_report_written_for_runtime_gate(svc: ResumeEditService) -> None:
 
 # ---------------- 槽位与工具面 ----------------
 
-def test_format_head_slots_keeps_columns_and_skips_missing() -> None:
-    pattern = "2012.06-至今               广州简历模板资源网信息科技有限公司           市场营销（实习生）"
-    full = format_head_slots(["2019.07-2021.08", "某某科技股份有限公司", "产品运营"], pattern)
-    assert full.startswith("2019.07-2021.08")
-    assert "某某科技股份有限公司" in full and full.endswith("产品运营")
-    assert "  " in full, "槽位之间必须有列间隔"
-    two = format_head_slots(["2019.07-2021.08", "", "产品运营"], pattern)
-    assert two.startswith("2019.07-2021.08") and two.endswith("产品运营")
-    assert "  " in two.strip()
-    assert format_head_slots(["", "", ""], pattern) == ""
-
-
-# ---------------- e2e（Word COM） ----------------
-
-e2e = pytest.mark.e2e
-
-
-@e2e
-def test_e2e_v2_full_cycle_with_real_render(tmp_path: Path) -> None:
-    """真实 Word：generate(1 页) → repair 新增条目 → accept；产物可打开、
-    revision 记录含 hash、QA 报告与视觉覆盖一致。"""
-    pytest.importorskip("pythoncom")
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    content = _content()
-    gen = svc.generate(ResumeGenerateV2Request(
-        template_id="t109", content=ResumeContentV2(**content), request_id="gen-1"))
-    assert gen.ok is True and gen.revision == 1
-    assert gen.data["visual"] == "delivered"
-    assert len(gen.images) == gen.data["page_count"] >= 1
-
-    aid = gen.artifact_id
-    rep = svc.repair(ResumeRepairV2Request(
-        artifact_id=aid, base_revision=1, request_id="rep-1",
-        changes=[ResumeEditV2(op="insert_entry", section_key="internship",
-                              entry={"id": "intern-3",
-                                     "head": {"date": "2019.07-2021.08",
-                                              "org": "某某科技股份有限公司",
-                                              "role": "产品运营"},
-                                     "bullets": ["负责增长实验设计与复盘；",
-                                                 "搭建渠道数据看板。"]})]))
-    assert rep.ok is True, rep.issues
-    record = svc.store.load_revision(aid, rep.revision)
-    docx = svc.workspace / record["docx"]
-    assert docx.is_file() and record["docx_sha256"]
-    with zipfile.ZipFile(docx) as z:
-        xml = z.read("word/document.xml")
-    assert "2019.07-2021.08".encode() in xml
-
-    acc = svc.accept(ResumeAcceptRequest(
-        artifact_id=aid, candidate_revision=rep.revision,
-        expected_accepted_revision=0, request_id="acc-1"),
-        visual_notes="测试：看图确认无重叠与越界。")
-    assert acc.ok is True and acc.data["accepted_revision"] == rep.revision
-    qa = json.loads((svc.workspace / "work" / "qa" / "resume.json").read_text(encoding="utf-8"))
-    assert qa["mechanical"] == "passed"
-    assert qa["accepted_revision"] == rep.revision
-
 
 # ============ P2-R1 修订：review 5 项反例（先复现缺陷再验证修复） ============
 
@@ -567,7 +498,7 @@ def test_cross_page_section_is_not_a_collision(svc: ResumeEditService) -> None:
     assert entry_pages[0] == entry_pages[1] == 0 and entry_pages[2] == 1
     content = {"sections": [{"key": "internship", "entries": [
         {"id": "a"}, {"id": "b"}, {"id": "c"}]}]}
-    out = svc._apply_local_geometry(plan, content, RL)  # 无几何修改：必须通过
+    out = renderer.apply_local_geometry(plan, content, svc.geometry)  # 无几何修改：必须通过
     assert [e.page_index for e in out.sections[0].entries] == entry_pages
 
 
@@ -583,7 +514,7 @@ def test_local_mode_does_not_move_untargeted_entries(svc: ResumeEditService) -> 
     before = {e.instance_id: e.anchor_y_pt for e in plan.sections[0].entries}
     content = {"sections": [{"key": "s", "entries": [
         {"id": "a"}, {"id": "b", "dy_pt": 5.0}, {"id": "c"}]}]}
-    local = svc._apply_local_geometry(plan, content, RL)
+    local = renderer.apply_local_geometry(plan, content, svc.geometry)
     after_local = {e.instance_id: e.anchor_y_pt for e in local.sections[0].entries}
     assert after_local["b"] == pytest.approx(before["b"] + 5.0)
     assert after_local["a"] == pytest.approx(before["a"]), "local 不得动未选中条目"
@@ -606,7 +537,7 @@ def test_reflow_pushes_subsequent_sections(svc: ResumeEditService) -> None:
     base = RL.plan_layout(secs, ms)
     moved = RL.plan_layout(
         secs, ms,
-        entry_adjust=svc._geometry_adjust({"sections": [
+        entry_adjust=renderer.geometry_adjust({"sections": [
             {"key": "s1", "entries": [{"id": "a1", "dy_pt": 80.0}, {"id": "a2"}]},
             {"key": "s2", "entries": [{"id": "b1"}]},
         ]}),
@@ -675,7 +606,7 @@ def test_local_mode_rejects_collision_instead_of_pushing(svc: ResumeEditService)
     content = {"sections": [{"key": "s", "entries": [
         {"id": "a", "dy_pt": 10.0}, {"id": "b"}]}]}
     with pytest.raises(ToolError) as exc:
-        svc._apply_local_geometry(plan, content, RL)
+        renderer.apply_local_geometry(plan, content, svc.geometry)
     assert exc.value.code == "COLLISION"
 
 
@@ -757,46 +688,6 @@ def test_header_unknown_key_and_missing_photo_rejected(svc: ResumeEditService) -
     assert gen.ok is True
     record = svc.store.load_revision(gen.artifact_id, gen.revision)
     assert record["content"]["header"]["fields"]["name"] == "张三"
-
-
-@e2e
-def test_e2e_header_fields_and_photo_applied(tmp_path: Path) -> None:
-    """review #5：真实 Word 路径下 header.fields 与照片必须落到产物。"""
-    pytest.importorskip("pythoncom")
-    from PIL import Image as PILImage
-
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    src = svc.workspace / "sources" / "photo.png"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    PILImage.new("RGB", (600, 900), (10, 90, 160)).save(src)
-    content = _content()
-    content["header"] = {
-        "fields": {"name": "张三", "phone": "138-0000-0000", "school": "某某大学"},
-        "photo_path": "sources/photo.png",
-    }
-    gen = svc.generate(ResumeGenerateV2Request(
-        template_id="t109", content=ResumeContentV2(**content), request_id="g-head-e2e"))
-    assert gen.ok is True, gen.issues
-    record = svc.store.load_revision(gen.artifact_id, gen.revision)
-    applied = record["header"]["fields"]
-    assert applied["name"]["after"] == "张三" and applied["name"]["before"] == "简历模板资源网"
-    assert applied["phone"]["after"] == "138-0000-0000"
-    photo = record["header"]["photo"]
-    assert photo["part"] == "word/media/image1.png" and photo["height_pt"] > 0
-    # 产物 DOCX：媒体确实被替换（新 PNG 字节出现在包里），XML 里姓名/电话已更新
-    docx = svc.workspace / record["docx"]
-    with zipfile.ZipFile(docx) as z:
-        media = z.read("word/media/image1.png")
-        xml = z.read("word/document.xml").decode("utf-8")
-    assert media.startswith(b"\x89PNG")
-    assert media == src.read_bytes(), "替换后的媒体应等于传入照片（重编码为 PNG）"
-    template_media = zipfile.ZipFile(TEMPLATES / "t109" / "template.docx").read(
-        "word/media/image1.png"
-    )
-    assert media != template_media, "模板原照片必须被替换掉"
-    assert "张三" in xml and "138-0000-0000" in xml
-    # 渲染成功且机械门通过（照片替换不得破坏产物）
-    assert record["mechanical"]["passed"] is True, record["mechanical"]["errors"]
 
 
 # ============ P2-R2：执行中并发重试的幂等（review 第 1 项） ============
@@ -948,117 +839,6 @@ def test_concurrent_retry_while_first_still_running(tmp_path: Path,
     assert not errors, f"执行中重试必须幂等，实际失败：{[e.code for e in errors]}"
     assert {o.revision for o in outcomes} == {2}
     assert [o.data.get("idempotent_replay") for o in outcomes].count(True) == 1
-
-
-@e2e
-def test_e2e_reflow_moves_subsequent_sections(tmp_path: Path) -> None:
-    """review 第 2 项的真实 Word 反例：第一栏条目下移必须推动第二栏。
-
-    旧实现只平移本栏条目：第一栏正文底到 X，第二栏仍在原位 → 交叠却被接受。
-    """
-    pytest.importorskip("pythoncom")
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    content = {
-        "schema_version": "resume-content-v2", "template_id": "t109",
-        "sections": [
-            {"key": "edu", "title": "教育背景（Education）", "prototype": "plain_lines_v1",
-             "entries": [{"id": "e1", "lines": [
-                 "2005.07-2009.06            北京简历模板资源网师范大学             市场营销（本科）",
-                 "主修课程：管理学、微观经济学、宏观经济学。"]}]},
-            {"key": "intern", "title": "实习经历（Internship）", "prototype": "experience_v1",
-             "entries": [{"id": "i1",
-                          "head": {"date": "2012.06-至今", "org": "某公司", "role": "实习生"},
-                          "bullets": ["负责线上端资源的销售工作；", "跟踪客户的详细数据。"]}]},
-        ],
-    }
-    gen = svc.generate(ResumeGenerateV2Request(
-        template_id="t109", content=ResumeContentV2(**content), request_id="r2-gen"))
-    assert gen.ok is True, gen.issues
-    base = svc.store.load_revision(gen.artifact_id, gen.revision)
-    before = {s["section_key"]: s["anchor_y_pt"] for s in base["instance_model"]}
-    before_edu_bottom = max(
-        e["region"]["y_pt"] + e["region"]["h_pt"]
-        for s in base["instance_model"] if s["section_key"] == "edu"
-        for e in s["entries"]
-    )
-
-    rep = svc.repair(ResumeRepairV2Request(
-        artifact_id=gen.artifact_id, base_revision=gen.revision, request_id="r2-reflow",
-        layout_mode="reflow",
-        changes=[ResumeEditV2(op="move_component", instance_id="edu#e1", dy_pt=80.0)]))
-    assert rep.ok is True, rep.issues
-    rec = svc.store.load_revision(gen.artifact_id, rep.revision)
-    after = {s["section_key"]: s["anchor_y_pt"] for s in rec["instance_model"]}
-    after_edu_bottom = max(
-        e["region"]["y_pt"] + e["region"]["h_pt"]
-        for s in rec["instance_model"] if s["section_key"] == "edu"
-        for e in s["entries"]
-    )
-    assert after_edu_bottom - before_edu_bottom == pytest.approx(80.0, abs=0.6)
-    drift = after["intern"] - before["intern"]
-    assert drift == pytest.approx(80.0, abs=1.0), (
-        f"reflow 必须把后续栏目一起推动：actual drift={drift}pt"
-    )
-    # 第 2 栏标题必须仍在前一栏文字底之下（无交叠）
-    intern_title_top = after["intern"] + 10.55
-    assert intern_title_top > after_edu_bottom
-    plan = json.loads(
-        (svc.store.revision_dir(gen.artifact_id, rep.revision) / "layout_plan.json")
-        .read_text(encoding="utf-8")
-    )
-    assert plan["pages"] >= 1
-
-
-@e2e
-def test_e2e_reflow_repaginates_when_pushed_out(tmp_path: Path) -> None:
-    """下移把后续栏目推出页底时，必须真实分页（而不是让它越界/交叠）。"""
-    pytest.importorskip("pythoncom")
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    content = {
-        "schema_version": "resume-content-v2", "template_id": "t109",
-        "sections": [
-            {"key": "edu", "title": "教育背景（Education）", "prototype": "plain_lines_v1",
-             "entries": [{"id": "e1", "lines": [
-                 "2005.07-2009.06 北京简历模板资源网师范大学 市场营销（本科）",
-                 "主修课程：管理学、微观经济学、宏观经济学、管理信息系统、统计学。",
-                 "第二段补充内容用于加高该条目。",
-                 "第三段补充内容用于加高该条目。"]}]},
-            {"key": "intern", "title": "实习经历（Internship）", "prototype": "experience_v1",
-             "entries": [{"id": "i1",
-                          "head": {"date": "2012.06-至今", "org": "某公司", "role": "实习生"},
-                          "bullets": ["负责线上端资源的销售工作；", "跟踪客户的详细数据。"]}]},
-        ],
-    }
-    gen = svc.generate(ResumeGenerateV2Request(
-        template_id="t109", content=ResumeContentV2(**content), request_id="r2-gen2"))
-    assert gen.ok is True, gen.issues
-    base = svc.store.load_revision(gen.artifact_id, gen.revision)
-    assert base["page_count"] == 1
-    rep = svc.repair(ResumeRepairV2Request(
-        artifact_id=gen.artifact_id, base_revision=gen.revision, request_id="r2-push",
-        layout_mode="reflow",
-        changes=[
-            # 单次上限 ±120pt / +200pt；同批多次合法增量可累积，用于把内容
-            # 推出第 1 页（这是真实场景：连续微调把后续栏目挤到下一页）
-            ResumeEditV2(op="move_component", instance_id="edu#e1", dy_pt=120.0),
-            ResumeEditV2(op="resize_component", instance_id="edu#e1",
-                         height_delta_pt=200.0),
-            ResumeEditV2(op="resize_component", instance_id="edu#e1",
-                         height_delta_pt=200.0),
-        ]))
-    assert rep.ok is True, rep.issues
-    rec = svc.store.load_revision(gen.artifact_id, rep.revision)
-    assert rec["page_count"] == 2, (
-        f"内容被推出第 1 页时必须真实分页，实际 {rec['page_count']} 页"
-    )
-    pages = {s["section_key"]: s["page_index"] for s in rec["instance_model"]}
-    assert pages["intern"] == 1, f"第 2 栏应落到第 2 页：{pages}"
-    # 加高在本栏布局里真实生效（不是被忽略）
-    edu_h = max(e["region"]["h_pt"] for s in rec["instance_model"]
-                if s["section_key"] == "edu" for e in s["entries"])
-    base_h = max(e["region"]["h_pt"] for s in base["instance_model"]
-                 if s["section_key"] == "edu" for e in s["entries"])
-    assert edu_h - base_h == pytest.approx(400.0, abs=1.0)
 
 
 def test_request_index_survives_concurrent_writers(tmp_path: Path,

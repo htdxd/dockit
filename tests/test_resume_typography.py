@@ -3,17 +3,15 @@ import copy
 
 import pytest
 from lxml import etree
-
-from skill_toolbox.resume_layout import emit, layout, qa, t001, typography
+from resume_templates import body_for
+from skill_toolbox.resume_layout import emit, layout, qa, typography
 from skill_toolbox.resume_layout.t109 import TEMPLATE as T109
 
 T001 = T109.parent.parent / "t001/template.docx"
 
 
 def body_entry(template=T001):
-    root = emit.load_document_xml(template)
-    body = (t001.body_for(root, {"id": "work"}) if template == T001 else
-            emit.find_body_wsp(emit._anchor_by_docpr_name(root, "组合 216")))
+    body = body_for(template)
     emit.set_box_text(body, "职位\t组织\t2025\n负责业务实现", first_is_header=True)
     return body
 

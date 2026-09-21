@@ -1,4 +1,4 @@
-"""新增组件模板的共享 OOXML 几何与测量；模板模块只保存经核准的映射。"""
+"""模板定义、OOXML 组件几何与分区排版入口。"""
 from __future__ import annotations
 
 import copy
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from skill_toolbox.resume_layout import emit
 
-TEMPLATE_IDS = frozenset({'t002', 't003', 't015', 't024'})
+TEMPLATE_IDS = frozenset({'t001', 't002', 't003', 't015', 't024', 't109'})
 MC = '{http://schemas.openxmlformats.org/markup-compatibility/2006}'
 
 
@@ -36,6 +36,7 @@ def prepare_sections(sections, template_id):
 def plan_scenario(scenario, measurements, *, template_id, geometry, **options):
     """每个排版区域独立推进，共享现有条目分页器与高度约束。"""
     from dataclasses import replace
+
     from skill_toolbox.resume_layout import layout
     spec = get_spec(template_id)
     fit = (scenario.get('header') or {}).get('fit') or {}
@@ -66,7 +67,20 @@ def plan_scenario(scenario, measurements, *, template_id, geometry, **options):
 def ensure_archive(template, path, template_id):
     """未校准栏目使用分页器的显式通用间距，不冒充原件测量档案。"""
     import hashlib
-    from skill_toolbox.resume_layout.spacing import SpacingArchive, SCHEMA_VERSION, save_archive
+
+    from skill_toolbox.resume_layout.spacing import (
+        SCHEMA_VERSION,
+        SpacingArchive,
+        load_archive,
+        save_archive,
+    )
+    calibrated = template.with_name('spacing.json')
+    if calibrated.is_file():
+        archive = load_archive(calibrated)
+        if archive.template_sha256 != hashlib.sha256(template.read_bytes()).hexdigest():
+            raise ValueError('模板已变化，请重新校准间距档案')
+        save_archive(archive, path)
+        return archive
     archive = SpacingArchive(template_id, hashlib.sha256(template.read_bytes()).hexdigest(),
         SCHEMA_VERSION, get_spec(template_id)['title_text_top_pt'])
     save_archive(archive, path)
@@ -127,7 +141,12 @@ def load_normalized(template: Path, spec):
     anchors = list(root.iter(emit.WP+'anchor'))
     for item in anchors:
         ident = int(item.find(emit.WP+'docPr').get('id'))
-        x, y = spec['positions'][ident]
+        if 'positions' in spec:
+            x, y = spec['positions'][ident]
+        else:
+            x, y = (int(item.find(emit.WP+'position'+axis+'/'+emit.WP+'posOffset').text) / emit.EMU
+                    + spec.get('origin', {}).get(item.find(emit.WP+'position'+axis).get('relativeFrom'), 0)
+                    for axis in ('H', 'V'))
         set_position(item, x=x, y=y)
         item.getparent().remove(item)
     body = root.find(emit.W+'body')

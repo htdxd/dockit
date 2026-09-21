@@ -19,9 +19,6 @@ def test_t024_all_shapes_have_verified_page_positions():
             position = anchor.find(emit.WP + "position" + axis)
             assert position.get("relativeFrom") == "page"
             assert abs(int(position[0].text) / emit.EMU - value) < 0.01
-    before = emit.etree.tostring(root)
-    t024.normalize_positions(root)
-    assert emit.etree.tostring(root) == before
 
 
 def test_t024_semantic_mapping_has_distinct_titles_and_bodies():
@@ -36,8 +33,9 @@ def test_t024_semantic_mapping_has_distinct_titles_and_bodies():
         assert len(list(anchors[body_id].iter(emit.WPS + "wsp"))) == 1
         assert body_id not in seen
         seen.add(body_id)
-    assert t024.section_region({"id": "summary"}) == "sidebar"
-    assert t024.section_region({"id": "projects"}) == "main"
+    from skill_toolbox.resume_layout.component_template import source_key
+    assert t024.SPEC['sections']['summary']['region'] == 'sidebar'
+    assert t024.SPEC['sections'][source_key({'id': 'projects'}, t024.SPEC)]['region'] == 'main'
     left, right = (t024.SPEC["regions"][r] for r in ("sidebar", "main"))
     assert left["x_pt"] + left["width_pt"] < right["x_pt"]
     assert right["x_pt"] + right["width_pt"] < t024.PAGE_WIDTH_PT

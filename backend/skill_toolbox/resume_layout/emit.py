@@ -1,20 +1,4 @@
-# -*- coding: utf-8 -*-
-"""emit.py — LayoutPlan → DOCX（t109 探针）。
-
-核心几何操作（全部在副本上执行，原件只读）：
-1. 栏目（标题+图标+横线+正文框组合）整组克隆：deepcopy drawing（含 mc:AlternateContent
-   Choice/Fallback 同步），赋唯一 docPr id / anchorId / relativeHeight。
-2. 组内子对象只改 body wsp 的 ext.cy（正文本体）；标题框/图标/横线不动。
-3. 全链组伸展：wsp ext → 嵌套 grpSp chExt/ext → wgp chExt/ext → anchor extent。
-4. 页面放置：anchor posV 写目标 y；第二页用「真实分页符段落」承载——
-   在 body 末尾插入分页 run，克隆的 drawing 挂到分页后的段落 run 上，
-   posV 用 page 基准（每页相同坐标域）。
-5. 条目文本写入：克隆的正文框 txbxContent 整体替换，段落样式**按角色**复用
-   （P2-1：条目标题段 / 职责段，由 numPr 结构判定；不按段落序号套用——
-   序号式取样会把新增职责行映射到第 2 条经历的标题样式）。
-
-坐标语义（P0 基线锚定）：anchor posV 相对 page；同一 posV 在第 1/2 页含义相同。
-"""
+"""共享 OOXML 工具：包读写、唯一 ID、段落样式、字段和等比照片。"""
 from __future__ import annotations
 
 import copy
@@ -97,13 +81,6 @@ def _box_text(wsp) -> str:
     return "\n".join(
         "".join(t.text or "" for t in p.iter(W + "t")) for p in tx.iter(W + "p")
     )
-
-
-def _find_body_wsp(anchor, probe_text: str):
-    for wsp in anchor.iter(WPS + "wsp"):
-        if probe_text in _box_text(wsp):
-            return wsp
-    return None
 
 
 # ---------------- 文本写入（保样式：段落级快照） ----------------
@@ -289,10 +266,6 @@ def set_box_text(
 
 # ---------------- 组几何（全链伸展） ----------------
 
-def _xfrm_of_group(grp):
-    gpr = grp.find(WPG + "grpSpPr")
-    return gpr.find(A + "xfrm") if gpr is not None else None
-
 
 def set_child_width(wsp, cx_pt: float) -> None:
     """只改正文框宽度（ext.cx）。
@@ -434,49 +407,6 @@ def replace_photo(anchor, image_bytes: bytes, *, frame_cx_pt: float | None = Non
     }
 
 
-def resize_group_child_bottom(anchor, wsp, new_child_cy_pt: float) -> None:
-    """把 anchor 组合内 wsp 的 ext.cy 设为 new_child_cy_pt，并同步整条组链。
-
-    t109 结构（如 anchor 2）：
-      anchor > graphic > graphicData > wgp > grpSp(outer) > grpSp(inner) > [wsp...]
-    各层 xfrm 的 off/ext 是父空间坐标，chOff/chExt 是子空间坐标系。
-   伸展策略（保持 scale=1）：子内容底部 → 逐层重算 ext.cy 与 chExt.cy。
-    """
-    sp = wsp.find(WPS + "spPr")
-    xf = sp.find(A + "xfrm")
-    off = xf.find(A + "off")
-    ext = xf.find(A + "ext")
-    child_bottom = emu2pt(off.get("y")) + new_child_cy_pt
-    ext.set("cy", str(pt2emu(new_child_cy_pt)))
-    # wgp 的 chOff/chExt：t109 为 identity（0,0 / ext），子底部即 chExt 底
-    wgp = wsp.getparent()
-    while wgp is not None and etree.QName(wgp).localname != "wgp":
-        wgp = wgp.getparent()
-    if wgp is None:
-        # 无组（独立 anchor）——只调 anchor extent
-        aext = anchor.find(WP + "extent")
-        aext.set("cy", str(pt2emu(child_bottom)))
-        return
-    # wgp 直接子层（可能是 grpSp 或 wsp 列表）——重算 wgp 子空间包围盒
-    wxf = _xfrm_of_group(wgp)
-    wch_off = wxf.find(A + "chOff")
-    wch_ext = wxf.find(A + "chExt")
-    new_cy = child_bottom - emu2pt(wch_off.get("y"))
-    wch_ext.set("cy", str(pt2emu(new_cy)))
-    wxf.find(A + "ext").set("cy", str(pt2emu(new_cy)))
-    # anchor extent 同步（wgp off 一般为 0,0 → ext.cy = new_cy + off.y）
-    woff = wxf.find(A + "off")
-    aext = anchor.find(WP + "extent")
-    aext.set("cy", str(pt2emu(new_cy + emu2pt(woff.get("y")))))
-
-
-def set_anchor_pos_v(anchor, y_pt: float) -> None:
-    pv = anchor.find(WP + "positionV/" + WP + "posOffset")
-    if pv is None or pv.text is None:
-        raise RuntimeError("anchor 缺 positionV/posOffset")
-    pv.text = str(pt2emu(y_pt))
-
-
 # ---------------- ID 唯一化 ----------------
 
 def _scan_max(root, localname: str, attr: str) -> int:
@@ -516,54 +446,6 @@ def uniquify_ids(root, anchor, start_id: int) -> int:
 
 
 # ---------------- 克隆栏目 ----------------
-
-def insert_proto(root, proto_ac) -> etree._Element:
-    """把快照的 AlternateContent 原型挂回 body（生成克隆源 anchor）。
-
-    w:r 必须包在 w:p 里且置于 sectPr 之前（body 直接子级只允许 p/sectPr）。
-    """
-    body = root.find(W + "body")
-    p = etree.SubElement(body, W + "p")
-    host_run = etree.SubElement(p, W + "r")
-    host_run.append(proto_ac)
-    sect = body.find(W + "sectPr")
-    if sect is not None:
-        body.remove(p)
-        sect.addprevious(p)  # 保持 sectPr 最后
-    return proto_ac.find(".//" + WP + "anchor")
-
-
-def clone_section_anchor(root, source_anchor, *, title_text: str) -> etree._Element:
-    """深拷贝源栏目的整个 drawing（AlternateContent 一并拷贝），重写唯一 ID。
-
-    返回克隆 anchor（已在文档中，插入位置由调用方决定）。
-    标题文字写入克隆的标题框；正文框清空待填。
-    """
-    drawing = source_anchor.getparent()
-    while drawing is not None and etree.QName(drawing).localname != "drawing":
-        drawing = drawing.getparent()
-    if drawing is None:
-        raise RuntimeError("源栏目 anchor 不在 w:drawing 内")
-    # drawing 父链：Choice > AlternateContent > r；克隆整个 AlternateContent
-    ac = drawing.getparent()
-    while ac is not None and etree.QName(ac).localname != "AlternateContent":
-        ac = ac.getparent()
-    if ac is None:
-        raise RuntimeError("源栏目 drawing 不在 mc:AlternateContent 内")
-    host_run = ac.getparent()          # w:r
-    new_ac = copy.deepcopy(ac)
-    new_anchor = new_ac.find(".//" + WP + "anchor")
-    if new_anchor is None:
-        raise RuntimeError("克隆 AlternateContent 内无 anchor")
-    host_run.addnext(new_ac)
-    start = _scan_max(root, "docPr", "id") + 100
-    uniquify_ids(root, new_anchor, start)
-    # 标题框写入新标题（结构识别：组合顶部 off.y≈0、高≈30.2 的文本框；
-    # 不依赖标题文本是否含全角括号——见 find_title_wsp 的说明）
-    title_wsp = find_title_wsp(new_anchor)
-    if title_wsp is not None:
-        set_box_text(title_wsp, title_text)
-    return new_anchor
 
 
 def _box_geom(wsp) -> tuple[float, float]:
@@ -620,23 +502,3 @@ def find_body_wsp(anchor):
         empty.sort(key=lambda t: -t[0])
         return empty[0][1]
     raise RuntimeError("栏目 anchor 内无正文框")
-
-
-def strip_title_decorations(anchor) -> int:
-    """删除克隆条目中的标题框 / 图标 / 横线（仅保留正文框）。
-
-    用于「同栏目第 2+ 条」：复制条目不复制栏目标题。
-    返回删除的对象数。wsp 识别：正文框=最高的有 txbxContent 大框；
-    其余 wsp（标题框/Freeform 图标/Connector 横线）全删。
-    """
-    body = find_body_wsp(anchor)
-    removed = 0
-    # wgp 直接子节点与嵌套 grpSp 子节点中的 wsp 全部评估
-    for wsp in list(anchor.iter(WPS + "wsp")):
-        if wsp is body:
-            continue
-        parent = wsp.getparent()
-        if parent is not None:
-            parent.remove(wsp)
-            removed += 1
-    return removed
