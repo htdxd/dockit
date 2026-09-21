@@ -1,5 +1,6 @@
 """项目标题与技术栈的语义分离；兼容旧候选，不依赖模板列位猜字段。"""
 import re
+from urllib.parse import urlsplit
 
 
 def is_project(section):
@@ -11,9 +12,45 @@ def inline_metrics(section, entry):
             if is_project(section) and field["label"].strip().lower() in {"stars", "star", "forks", "fork"}]
 
 
+def repository_links(section, entry):
+    """仅缩短 GitHub 展示文字，完整网址和原始语义内容保持不变。"""
+    result = []
+    if not is_project(section):
+        return result
+    for field in entry.get("details", []):
+        if field in inline_metrics(section, entry):
+            continue
+        if field.get("layout", "auto") == "row":
+            continue
+        url = field.get("link") or field.get("value", "")
+        parsed = urlsplit(url)
+        parts = parsed.path.strip('/').split('/')
+        if parsed.scheme in {"http", "https"} and parsed.hostname in {"github.com", "www.github.com"} and len(parts) >= 2:
+            result.append({**field, "link": url, "text": '/'.join(parts[:2]).removesuffix('.git')})
+    return result
+
+
+def title_metrics(section, entry):
+    fields = [{**f, "text": f"{f['label']}：{f['value']}"} for f in inline_metrics(section, entry)]
+    return repository_links(section, entry) + fields
+
+
 def detail_rows(section, entry):
     inline = inline_metrics(section, entry)
-    return [field for field in entry.get("details", []) if field not in inline]
+    repos = repository_links(section, entry)
+    return [field for field in entry.get("details", []) if field not in inline
+            and not any(all(repo.get(k) == v for k, v in field.items() if k != 'link') for repo in repos)]
+
+
+def detail_groups(section, entry):
+    """相邻 inline 字段同行，保持用户给定顺序；独立字段不会被越过。"""
+    groups = []
+    for field in detail_rows(section, entry):
+        if field.get("layout") == "inline" and groups and groups[-1][-1].get("layout") == "inline":
+            groups[-1].append(field)
+        else:
+            groups.append([field])
+    return groups
 
 
 def canonical_entry(section, entry):

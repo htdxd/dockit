@@ -37,6 +37,15 @@ def apply_field_style(paragraph, field, *, value_only=False, accent=None):
                 old = etree.SubElement(props, W + "color")
             old.attrib.clear()
             old.set(W + "val", accent or accent_color(paragraph))
+        if field.get("background"):
+            shade = props.find(W + "shd")
+            if shade is None:
+                shade = etree.SubElement(props, W + "shd")
+            shade.attrib.clear()
+            color = accent or accent_color(paragraph)
+            fill = ''.join(f'{round(int(color[i:i+2], 16) * .14 + 255 * .86):02X}' for i in (0, 2, 4))
+            shade.set(W + "val", "clear")
+            shade.set(W + "fill", fill)
         if field.get("link"):
             hyperlink = etree.Element(W + "fldSimple")
             hyperlink.set(W + "instr", f' HYPERLINK "{field["link"]}" ')
@@ -45,46 +54,51 @@ def apply_field_style(paragraph, field, *, value_only=False, accent=None):
 
 
 def apply_inline_styles(paragraph, fields):
-    """拆分标题 run 保留 tab 与基础字号，只对指标文本应用强调。"""
+    """旧标题指标入口也使用统一的字符范围排版。"""
+    text = ''.join((node.text or '') if node.tag == W + 't' else '\t'
+                   for run in paragraph.iter(W + 'r') for node in run
+                   if node.tag in {W + 't', W + 'tab'})
+    spans = []
     for field in fields or []:
-        text = field["text"]
-        for node in list(paragraph.iter(W + "t")):
-            if not text or text not in (node.text or ""):
+        fragment = field['text']
+        start = text.find(fragment)
+        if fragment and start >= 0:
+            spans.append({**field, 'start': start, 'end': start + len(fragment)})
+    if spans:
+        apply_text_spans(paragraph, spans)
+
+
+def apply_text_spans(paragraph, spans):
+    """按整段字符位置拆分 run，保留 tab、链接和原格式；测量与输出共用。"""
+    accent = accent_color(paragraph)
+    cursor = 0
+    for run in list(paragraph.iter(W + "r")):
+        props = run.find(W + "rPr")
+        replacements = []
+        for child in run:
+            if child.tag == W + "rPr":
                 continue
-            run = node.getparent()
-            if run.tag != W + "r":
-                continue
-            # 标题的 w:r 中可能含多个文本与 tab，逐个复制以保持原顺序。
-            props = run.find(W + "rPr")
-            replacements = []
-            for child in run:
-                if child.tag == W + "rPr":
-                    continue
-                parts = (child.text or "").split(text) if child is node else None
-                chunks = []
-                if parts is None:
-                    chunks = [(copy.deepcopy(child), False)]
-                else:
-                    for i, part in enumerate(parts):
-                        if i:
-                            match = etree.Element(W + "t")
-                            match.text = text
-                            chunks.append((match, True))
-                        if part:
-                            chunk = etree.Element(W + "t")
-                            chunk.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-                            chunk.text = part
-                            chunks.append((chunk, False))
-                for chunk, styled in chunks:
-                    wrapper = etree.Element(W + "p")
-                    replacement = etree.SubElement(wrapper, W + "r")
-                    if props is not None:
-                        replacement.append(copy.deepcopy(props))
-                    replacement.append(chunk)
-                    if styled:
-                        apply_field_style(wrapper, field, accent=accent_color(paragraph))
-                    replacements.extend(list(wrapper))
-            for replacement in replacements:
-                run.addprevious(replacement)
-            run.getparent().remove(run)
-            break
+            length = len(child.text or "") if child.tag == W + "t" else int(child.tag == W + "tab")
+            cuts = {0, length}
+            for span in spans:
+                cuts.update(max(0, min(length, span[k] - cursor)) for k in ("start", "end"))
+            cuts = sorted(cuts)
+            chunks = list(zip(cuts, cuts[1:])) if length else [(0, 0)]
+            for start, end in chunks:
+                wrapper = etree.Element(W + "p")
+                new = etree.SubElement(wrapper, W + "r")
+                if props is not None:
+                    new.append(copy.deepcopy(props))
+                node = copy.deepcopy(child)
+                if node.tag == W + "t":
+                    node.text = (child.text or "")[start:end]
+                    node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                new.append(node)
+                for span in spans:
+                    if length and span["start"] <= cursor + start and cursor + end <= span["end"]:
+                        apply_field_style(wrapper, span, accent=accent)
+                replacements.extend(list(wrapper))
+            cursor += length
+        for replacement in replacements:
+            run.addprevious(replacement)
+        run.getparent().remove(run)

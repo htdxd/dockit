@@ -38,7 +38,13 @@
 - 用户允许摘要时按岗位和页数精选，保留贡献与成果。内容丰富且未限一页可合理分页。明确一页且内容较多时优先 density="compact"，按 page_budget 控制篇幅，不先原样搬入长简历再反复删改。
 - 调用 resume_generate。测量、排版、渲染、机械检查由工具完成。参数格式以当前 schema 为准。
 
-个人或项目链接仅使用用户提供的地址；GitHub/作品集可用 personal_fields 的 link、emphasis="bold_accent" 突出。Stars/Forks/下载量等用对应条目的 details（label/value/link/emphasis），不请求后端实时查询、不推测数字；Stars/Forks 自动放在项目性质之前，与项目名称同一标题行；其他字段放在技术栈之后，无需计算坐标。
+个人或项目链接仅使用用户提供的地址；GitHub/作品集可用 personal_fields 的 link、emphasis="bold_accent" 突出。Stars/Forks/下载量等用对应条目的 details（label/value/link/emphasis），不请求后端实时查询、不推测数字；GitHub 源码与 Stars/Forks 按下述规则放在项目首行；其余字段放在技术栈之后，无需计算坐标。
+
+用户希望突出某个亮点时，用条目的 highlights，而不是在文字里写 Markdown 星号。例：`{"field":"text","paragraph":0,"text":"完成自动化部署","emphasis":"bold","background":true}`；paragraph 从 0 开始，text 必须是该段唯一原文。机构/角色/日期/技术栈可指定 field=organization/role/date/tech_stack，不填 text 则强调整个字段。加粗用于关键词，accent 为模板主题色，background 为浅底纹；默认少量强调，不改变事实。update_entry 时省略 highlights 保留，传 [] 撤销；若修改了强调片段，须同步更新锚点。无需向用户询问内部定位参数。
+
+其他短指标可设 details.layout="inline"，相邻 inline 项自动合为一行；非 GitHub 长链接默认独立展示，实际换行交给 Word 测量。不要为了高亮或排版改写数字、来源或擅自删减正文。
+
+项目首行按“项目名称 · 用户名/项目名 · Stars/Forks · 项目性质”连续排布；GitHub 链接点击仍打开完整原始地址，技术栈单独在第二行。不显示项目日期，但已有日期保留在数据中；教育和工作经历日期正常展示。无需为源码另起一行；只有用户明确要求独立展示时才设 layout="row"。首行过长交给 Word 自然换行，不擅自缩小字号或截断。
 
 ## 检查、修改和交付
 

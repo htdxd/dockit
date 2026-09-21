@@ -203,7 +203,7 @@ def test_personal_component_add_rename_remove_retains_body(workflow):
         {"op": "update_person", "fields": {"github": "example.com/new"}},
         {"op": "remove_person_field", "key": "phone"},
     ]))
-    assert changed.data["content"]["personal_fields"] == [{"key": "github", "label": "GitHub", "value": "example.com/new", "emphasis": "normal", "link": ""}]
+    assert changed.data["content"]["personal_fields"] == [{"key": "github", "label": "GitHub", "value": "example.com/new", "emphasis": "normal", "link": "", "background": False}]
     assert "phone" not in changed.data["content"]["person"]
     assert changed.data["content"]["sections"] == first.data["content"]["sections"]
 
@@ -211,7 +211,7 @@ def test_personal_component_add_rename_remove_retains_body(workflow):
 def test_project_details_survive_text_only_edit(workflow):
     first = generate(workflow)
     target = first.data['content']['sections'][0]['entries'][0]['id']
-    fields = [{'label':'Stars','value':'120','link':'https://github.com/example/demo','emphasis':'bold_accent'}]
+    fields = [{'label':'Stars','value':'120','link':'https://github.com/example/demo','emphasis':'bold_accent','background':False,'layout':'auto'}]
     added = workflow.edit(EditRequest(candidate_id=first.data['candidate_id'], changes=[
         {'op':'update_entry','target_id':target,'entry':{'details':fields}}]))
     assert added.data['content']['sections'][0]['entries'][0]['details'] == fields

@@ -4,7 +4,7 @@ import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from skill_toolbox.contracts.resume_style import DetailField, FieldStyle
+from skill_toolbox.contracts.resume_style import DetailField, FieldStyle, EntryHighlight
 
 FontSize = Annotated[float, Field(ge=8, le=18)]
 ComponentScale = Annotated[float, Field(ge=0.75, le=1.25)]
@@ -21,11 +21,12 @@ class PrepareRequest(WorkflowModel):
 class EntryPatch(WorkflowModel):
     """只修改显式提供的字段；空 text 可用于清空原正文。"""
 
-    date: str = Field(default="", description="原材料中的起止日期，不编造日期；与机构、角色分开填写")
+    date: str = Field(default="", description="原材料中的起止日期，不编造日期；项目日期仅保存在数据中不显示，教育/工作等日期正常显示")
     organization: str = Field(default="", description="学校、公司或项目名称；不拼接日期或角色。技能/自评等纯文字条目只填 text，不把栏目标题填在这里")
     role: str = Field(default="", description="专业、岗位或项目性质（如公司项目、个人项目）；作为标题信息，不混入正文")
     text: list[str] = Field(default_factory=list)
-    details: list[DetailField] = Field(default_factory=list, description="项目亮点或自定义字段；Stars/Forks 自动放在项目性质前，同占标题行；其他字段位于技术栈后。空列表清除。")
+    details: list[DetailField] = Field(default_factory=list, description="项目首行按名称、GitHub 简写链接、Stars/Forks、性质排序；其余按 layout 排布。空列表清除。")
+    highlights: list[EntryHighlight] = Field(default_factory=list, description="字段或正文原文片段强调；省略保留已有强调，[] 全部撤销。修改文字后仍须能唯一匹配，否则需同时更新 highlights。")
     source_ids: list[str] = Field(default_factory=list, description="可选：本条经历的事实来源 ID，复制 prepare 的 source_id 或问答返回值；只改表达时省略以保留原引用，不填写文件路径")
     tech_stack: str = Field(default="", description="项目技术栈，单独排在项目名称/性质下方；用逗号分隔，不放入 role")
 

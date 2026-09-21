@@ -198,6 +198,7 @@ def set_box_text(
     tech_stack_line: int | None = None,
     detail_styles: dict | None = None,
     inline_styles: list | None = None,
+    paragraph_styles: dict | None = None,
 ) -> None:
     """整框替换文本，**按段落角色复用源样式**（P2-1）。
 
@@ -236,6 +237,7 @@ def set_box_text(
     first_p = paras[0]
     lines = new_text.split("\n")
     detail_styles = {int(key): value for key, value in (detail_styles or {}).items()}
+    paragraph_styles = {int(key): value for key, value in (paragraph_styles or {}).items()}
     # 清掉除首段外的全部段落
     for p in paras[1:]:
         tx.remove(p)
@@ -279,6 +281,9 @@ def set_box_text(
         if i < (header_lines or 0) and inline_styles:
             from skill_toolbox.resume_layout.field_style import apply_inline_styles
             apply_inline_styles(p, inline_styles)
+        if i in paragraph_styles:
+            from skill_toolbox.resume_layout.field_style import apply_text_spans
+            apply_text_spans(p, paragraph_styles[i])
         prev_p = p
 
 

@@ -13,7 +13,7 @@ def test_long_heading_stacks_without_dropping_text(tmp_path):
     scenario = engine._scenario_from_content({"sections": [{"key": "projects", "title": "项目经历", "entries": [entry]}]})
     data = scenario["sections"][0]["entries"][0]
     assert data["heading_lines"] == 1 and data["tech_stack_line"] == 1
-    assert data["text"].splitlines() == [entry["head"]["org"] + "\t个人项目 | 独立开发",
+    assert data["text"].splitlines() == [entry["head"]["org"] + " · 个人项目 | 独立开发",
         "技术栈：" + entry["head"]["role"].split(" · ", 1)[1].strip(), entry["bullets"][0]]
     root = emit.load_document_xml(TEMPLATE.parent.parent / "t001/template.docx")
     body = body_for(root, {"id": "work"})

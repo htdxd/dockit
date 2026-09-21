@@ -15,7 +15,7 @@ from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.tools.process import ProcessRunner
 from skill_toolbox.tools.workspace import atomic_write_json, sha256_file
 from skill_toolbox.tools.resume_store import ResumeStore
-from skill_toolbox.resume_content import canonical_entry, is_project, inline_metrics, detail_rows
+from skill_toolbox.resume_content import canonical_entry, is_project, title_metrics, detail_groups
 
 def _normalize_photo(path: Path) -> bytes:
     """把常见图片统一成 PNG；各模板写入对应部件并声明正确的媒体类型。"""
@@ -623,6 +623,11 @@ class ResumeEditService:
         幂等判定被有意上移到 generate/repair/restore 入口：那里才能拿到
         「与执行结果无关」的请求级签名（否则重试会因版本已推进而先撞版本检查）。
         """
+        # 无效强调在创建候选、启动 Word 前拒绝，不留下无法恢复的半个版本。
+        for section in content.get("sections", []):
+            for entry in section.get("entries", []):
+                if entry.get("highlights"):
+                    self._paragraph_styles(section, canonical_entry(section, entry))
         art_dir = self.store.artifact_dir(artifact_id)
         art_dir.mkdir(parents=True, exist_ok=True)
         index_path = art_dir / "index.json"
@@ -976,10 +981,10 @@ class ResumeEditService:
                  "has_heading": bool(self._entry_heading(sec, e)),
                  "heading_lines": len(self._entry_heading(sec, e).splitlines()),
                  "tech_stack_line": len(self._entry_heading(sec, e).splitlines()) if e.get("tech_stack") else None,
-                 "detail_styles": {len(self._entry_heading(sec, e).splitlines()) + bool(e.get("tech_stack")) + i: field
-                                   for i, field in enumerate(detail_rows(sec, e))},
-                 "inline_styles": [{**field, "text": f"{field['label']}：{field['value']}"}
-                                   for field in inline_metrics(sec, e)],
+                 "detail_styles": {len(self._entry_heading(sec, e).splitlines()) + bool(e.get("tech_stack")) + i: {}
+                                   for i, group in enumerate(detail_groups(sec, e))},
+                 "paragraph_styles": self._paragraph_styles(sec, e),
+                 "inline_styles": title_metrics(sec, e),
                  **{key: e[key] for key in ("width_pt", "font_size_pt", "scale")
                     if e.get(key) is not None}}
                 for e in (canonical_entry(sec, raw) for raw in sec.get("entries", []))
@@ -996,6 +1001,21 @@ class ResumeEditService:
             for sec in sections:
                 sec["body_offset_pt"] = SECTIONS[source_key(sec)][2]
         return {"sections": sections}
+
+    def _paragraph_styles(self, section, entry):
+        from skill_toolbox.resume_layout.highlights import compile_highlights
+        heading = self._entry_heading(section, entry)
+        start = len(heading.splitlines()) + bool(entry.get("tech_stack"))
+        groups = detail_groups(section, entry)
+        order = ("org", "role") if is_project(section) else self.profile.header_slot_order
+        result = compile_highlights(entry, heading, order, start + len(groups))
+        for index, group in enumerate(groups, start):
+            offset = 0
+            for field in group:
+                text = f"{field['label']}：{field['value']}"
+                result.setdefault(index, []).append({**field, "start": offset, "end": offset + len(text)})
+                offset += len(text) + 3  # ' · '
+        return result
 
     def _head_pattern(self, prototype: str) -> str:
         """原型条目标题段的**原件原文**（列位基准；运行时从原件 XML 读取）。"""
@@ -1033,36 +1053,22 @@ class ResumeEditService:
         parts = [header] if header else []
         if entry.get("tech_stack"):
             stack = entry["tech_stack"]
-            parts.append(stack if stack.startswith(("技术栈：", "技术栈:")) else "技术栈：" + stack)
-        parts.extend(f"{field['label']}：{field['value']}" for field in detail_rows(section, entry))
+            stack = stack if stack.startswith(("技术栈：", "技术栈:")) else "技术栈：" + stack
+            parts.append(stack)
+        parts.extend(" · ".join(f"{field['label']}：{field['value']}" for field in group)
+                     for group in detail_groups(section, entry))
         return "\n".join(parts + (bullets or lines))
 
     def _entry_heading(self, section, entry):
         entry = canonical_entry(section, entry)
         head = dict(entry.get("head") or {})
-        metrics = inline_metrics(section, entry)
-        if metrics:
-            head["role"] = " · ".join(f"{f['label']}：{f['value']}" for f in metrics) + (
-                " ｜ " + head["role"] if head.get("role") else "")
-        order = ("org", "role", "date") if is_project(section) else self.profile.header_slot_order
-        slots = [str(head.get(key) or "").strip() for key in order]
-        slots = [slot for slot in slots if slot]
-        if not is_project(section):
-            return "\t".join(slots)
-        if len(slots) < 2:
-            return "".join(slots)
-        scale = float(section.get("scale") or 1) * float(entry.get("scale") or 1)
-        font = float(entry.get("font_size_pt") or (10 if self.template_id == "t001" else 10.5)) * scale
-        width = float(entry.get("width_pt") or self.profile.body_width_pt * scale) - 14.4 * scale
-        # 仅用保守估算选择单行/分段；换行数和高度仍由 Word 实测。
-        sizes = [self._display_width(slot) * font * 0.58 for slot in slots]
-        fits = sum(sizes) + 12 <= width
-        if len(sizes) == 3:
-            fits = fits and 2 * max(sizes[0], sizes[2]) + sizes[1] + 12 <= width
-        elif self.template_id == "t109":
-            fits = fits and sizes[0] < width * 0.58 and sizes[1] < width * 0.4
-        separator = "\t" if fits else (" ｜ " if is_project(section) else "\n")
-        return separator.join(slots)
+        if is_project(section):
+            # 日期保留在内容数据中；项目标题连续排布，由 Word 按真实宽度换行。
+            slots = [head.get("org", ""), *[f['text'] for f in title_metrics(section, entry)],
+                     head.get("role", "")]
+            return " · ".join(str(slot).strip() for slot in slots if str(slot).strip())
+        return "\t".join(str(head[key]).strip() for key in self.profile.header_slot_order
+                         if str(head.get(key) or "").strip())
 
     # ---------- 内部：编辑动作 ----------
 

@@ -202,7 +202,7 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
             typography.scale_title(anchor, float(content.get("scale") or 1),
                                     body=wsp, template_id="t001")
             emit.set_box_text(wsp, data["text"], first_is_header=data.get("has_heading"),
-                              header_lines=data.get("heading_lines"), tech_stack_line=data.get("tech_stack_line"), detail_styles=data.get("detail_styles"), inline_styles=data.get("inline_styles"))
+                              header_lines=data.get("heading_lines"), tech_stack_line=data.get("tech_stack_line"), detail_styles=data.get("detail_styles"), inline_styles=data.get("inline_styles"), paragraph_styles=data.get("paragraph_styles"))
             metrics = typography.apply_body(wsp, data, content, "t001", numbering)
             anchor.find(emit.WP + "extent").set("cx", str(emit.pt2emu(metrics["body_width_pt"])))
             wsp.find(emit.WPS + "spPr/" + emit.A + "xfrm/" + emit.A + "ext").set(
