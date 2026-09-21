@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { sendBackend } from "./backend";
 import { createProviderController } from "./providerController";
 import { createTaskController } from "./taskController";
@@ -16,6 +17,10 @@ export async function initializeApp(): Promise<void> {
   }
   providers = createProviderController(sendBackend);
   tasks = createTaskController(sendBackend, providers);
+  if ("__TAURI_INTERNALS__" in window) {
+    const unlisten = await getCurrentWebview().onDragDropEvent(({ payload }) => tasks?.handleFileDrop(payload));
+    window.addEventListener("pagehide", unlisten, { once: true });
+  }
   await providers.loadSettings();
   await tasks.requestArtifactsScan();
 }

@@ -4,13 +4,14 @@ const startup = vi.hoisted(() => ({
   listen: vi.fn(), createProviders: vi.fn(), createTasks: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: startup.listen }));
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("./providerController", () => ({ createProviderController: startup.createProviders }));
 vi.mock("./taskController", () => ({ createTaskController: startup.createTasks }));
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 
 it("subscribes before enabling navigation-triggered settings and artifact requests", async () => {
-  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {}, addEventListener: vi.fn() });
   let subscribed!: (unlisten: () => void) => void;
   startup.listen.mockReturnValue(new Promise((resolve) => { subscribed = resolve; }));
   const providers = { loadSettings: vi.fn(async () => {}), handleEvent: vi.fn() };

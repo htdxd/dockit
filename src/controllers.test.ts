@@ -18,6 +18,35 @@ vi.mock("./ui", async (importOriginal) => ({
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("controller event ownership", () => {
+  it("appends native dropped paths at scaled coordinates without replacing prior files", () => {
+    let start!: () => void;
+    const button = { dataset: { start: "resume" }, addEventListener: (_event: string, fn: () => void) => { start = fn; } };
+    const zone = { getBoundingClientRect: () => ({ left: 100, top: 100, right: 300, bottom: 200, width: 200, height: 100 }),
+      classList: { toggle: vi.fn() } };
+    const list = { innerHTML: "" };
+    const node = { value: "E:/output", textContent: "", dataset: {}, addEventListener: vi.fn() };
+    vi.stubGlobal("document", {
+      addEventListener: vi.fn(),
+      getElementById: (id: string) => id === "materials-list-resume" ? list : node,
+      querySelectorAll: (s: string) => s === "[data-start]" ? [button] : [],
+      querySelector: (s: string) => s === '[data-pick="resume"]' ? zone : node,
+    });
+    vi.stubGlobal("window", { devicePixelRatio: 2, addEventListener: vi.fn() });
+    const send = vi.fn(async (_message: Record<string, unknown>) => {});
+    const controller = createTaskController(send, { validateSettings: () => "", capabilityEffective: () => true,
+      saveFields: vi.fn(), taskProvider: () => ({}) } as any);
+    const drop = (paths: string[], x = 400, y = 300) => controller.handleFileDrop({ type: "drop", paths, position: { x, y } } as any);
+    drop(["E:/简历.pdf", "E:/证书.png"]);
+    drop(["E:/简历.pdf", "E:/说明.txt"]);
+    drop(["E:/outside.pdf"], 20, 20);
+    start();
+    const payload = send.mock.calls[0][0].payload as Record<string, unknown>;
+    expect(payload.materials).toEqual(["E:/简历.pdf", "E:/证书.png", "E:/说明.txt"]);
+    expect(list.innerHTML).toContain("简历.pdf");
+    expect(list.innerHTML).not.toContain("outside.pdf");
+    controller.handleFileDrop({ type: "leave" });
+    expect(zone.classList.toggle).toHaveBeenLastCalledWith("drag", false);
+  });
   it.each(["light", "balanced", "strong"])("sends resume writing style %s as a structured option", (style) => {
     let start!: () => void;
     const button = { dataset: { start: "resume" }, addEventListener: (_event: string, fn: () => void) => { start = fn; } };

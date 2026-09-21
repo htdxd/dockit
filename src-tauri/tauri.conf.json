@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "DocKit Resume · AI 简历制作",
+        "dragDropEnabled": true,
         "width": 1080,
         "height": 780,
         "minWidth": 760,

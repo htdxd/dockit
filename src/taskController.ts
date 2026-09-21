@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import type { DragDropEvent } from "@tauri-apps/api/webview";
 import type { SendBackend } from "./backend";
 import type { ProviderController } from "./providerController";
 import { element } from "./dom";
@@ -13,6 +14,23 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
   const { validateSettings, capabilityEffective } = settings;
   /* ===== 每工具材料 ===== */
   const materialsByTool: Record<string, string[]> = { resume: [] };
+
+  function addMaterials(tool: string, paths: string[]): void {
+    materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...paths])];
+    renderFileRows(tool);
+  }
+
+  function handleFileDrop(event: DragDropEvent): void {
+    const zone = document.querySelector<HTMLElement>('[data-pick="resume"]');
+    if (!zone) return;
+    const rect = zone.getBoundingClientRect();
+    const scale = window.devicePixelRatio || 1;
+    const inside = event.type !== "leave" && rect.width > 0 && rect.height > 0
+      && event.position.x / scale >= rect.left && event.position.x / scale <= rect.right
+      && event.position.y / scale >= rect.top && event.position.y / scale <= rect.bottom;
+    zone.classList.toggle("drag", inside && event.type !== "drop");
+    if (event.type === "drop" && inside) addMaterials("resume", event.paths);
+  }
 
   function renderFileRows(tool: string): void {
     const list = document.getElementById(`materials-list-${tool}`);
@@ -31,7 +49,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       const selected = await open({ multiple: true, title: "选择材料文件" });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
-      materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...paths])];
+      addMaterials(tool, paths);
     } catch {
       // 非 Tauri 环境：退回原生文件选择（仅浏览器演示，无法提供真实路径）
       const input = document.getElementById(`materials-input-${tool}`) as HTMLInputElement | null;
@@ -64,7 +82,7 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
     }
   });
 
-  // 拖拽到上传区（桌面端仍走点击选择；浏览器演示可直接拖入）
+  // 浏览器拖入；桌面端由 Tauri 原生事件传递真实路径，不能使用 File.name 代替。
   document.querySelectorAll<HTMLElement>("[data-pick]").forEach((zone) => {
     const tool = zone.dataset.pick!;
     zone.addEventListener("dragover", (e) => {
@@ -78,11 +96,9 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
       const files = e.dataTransfer?.files;
       if (!files?.length) return;
       if ("__TAURI_INTERNALS__" in window) {
-        toast("桌面端请点击上传区选择文件", "warn");
         return;
       }
-      materialsByTool[tool] = [...new Set([...materialsByTool[tool], ...Array.from(files).map((f) => f.name)])];
-      renderFileRows(tool);
+      addMaterials(tool, Array.from(files).map((f) => f.name));
     });
   });
 
@@ -356,5 +372,5 @@ export function createTaskController(send: SendBackend, settings: ProviderContro
     void requestArtifactsScan();
   });
   renderTaskState(taskState);
-  return { handleEvent, requestArtifactsScan };
+  return { handleEvent, requestArtifactsScan, handleFileDrop };
 }
