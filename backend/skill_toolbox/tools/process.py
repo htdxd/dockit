@@ -19,7 +19,7 @@ from skill_toolbox.subprocess_utils import (
 
 
 class ProcessRunner:
-    """带注册/注销的同步 subprocess runner（对齐 MaterialService._run_subprocess）。
+    """材料解析与文档构建共用的受控 subprocess runner。
 
     cancel() 后新任务立即拒绝，活动进程被进程树终止；线程内超时由调用方
     捕获 subprocess.TimeoutExpired。
@@ -68,6 +68,9 @@ class ProcessRunner:
         with self._lock:
             self._active.append(proc)
         try:
+            if self._cancelled.is_set():
+                terminate_process_tree(proc)
+                raise RuntimeError("process runner was cancelled")
             if timeout is None:
                 out, err = proc.communicate()
             else:

@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-
 from skill_toolbox.contracts.common import ToolError
 from skill_toolbox.resume_layout import pipeline, renderer
 from skill_toolbox.resume_layout.t109 import TEMPLATE
@@ -72,4 +71,25 @@ def test_service_stage_cancel_terminates_active_worker(tmp_path, monkeypatch):
         with pytest.raises(ToolError) as error:
             task.result(timeout=5)
         assert error.value.code == "MEASURE_FAILED"
+    assert not runner._active
+
+
+def test_cancel_during_spawn_reaps_the_new_child(monkeypatch):
+    import skill_toolbox.tools.process as process
+    runner = ProcessRunner()
+    spawn = process.subprocess.Popen
+    command = [sys.executable, '-c', 'import threading; threading.Event().wait()']
+    children = []
+
+    def cancel_while_spawning(args, **kwargs):
+        child = spawn(args, **kwargs)
+        if args == command:
+            children.append(child)
+            runner.cancel()
+        return child
+
+    monkeypatch.setattr(process.subprocess, 'Popen', cancel_while_spawning)
+    with pytest.raises(RuntimeError, match='cancelled'):
+        runner.run(command, timeout=2)
+    assert children[0].poll() is not None
     assert not runner._active

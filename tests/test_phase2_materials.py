@@ -477,7 +477,7 @@ def test_material_subprocess_timeout_kills_child(tmp_path: Path) -> None:
     time.sleep(2.2)
 
     assert not marker.exists()
-    assert service._active_procs == []
+    assert service._runner._active == []
 
 
 # ---------------- 兼容投影单向生成 ----------------
