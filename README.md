@@ -6,7 +6,7 @@
 
 ## 当前能力
 
-- 两套经过实际排版验证的中文模板：t001、t109。
+- 六套经过实际排版验证的中文模板：t001、t002、t003、t015、t024、t109，共用编辑和排版流程。
 - 上传 PDF、DOCX、TXT、Markdown、PNG/JPEG/WebP，或手动填写资料，两者可同时使用。
 - 首次生成前准备全部解析文字；视觉模型逐张转录上传图片，保留来源与无法辨认项。原图与机械提取工具用于按需复核。
 - 通过问答补齐项目/实习的关键事实；GitHub、作品集、Stars/Forks 等由用户按需提供，不联网抓取或编造。
@@ -45,7 +45,7 @@ Word 端到端测试需要本机安装环境；纯逻辑测试不会调用付费
 
 - 桌面安装包：先 `uv run scripts/release_sources.py`，再 `npm run package`。
 - Windows 网页版：`uv run --extra web scripts/package_web.py`；按 [部署说明](deploy/resume-web/DEPLOY.md) 配置服务器密钥。
-- 环境检查：发行目录运行 `start-web.bat --check`，验证 Word 身份、两模板实际测量、PDF 导出和页面图片。
+- 环境检查：发行目录运行 `start-web.bat --check`，验证 Word 身份、代表模板（t001/t109）的实际测量、PDF 导出和页面图片。
 - [压测说明](deploy/resume-web/LOADTEST.md)：匿名无限制模式仅用于本机小范围压测，不用于公开访问。
 
 不要把模型/MinerU 密钥放入前端或公开安装包。Microsoft Office 无人值守服务的可靠性与许可需要独立评估。
@@ -57,11 +57,14 @@ Word 端到端测试需要本机安装环境；纯逻辑测试不会调用付费
 ## 代码结构
 
 - `src/`：共享桌面/网页简历界面与控制器。
+- `src/providerConfig.ts`、`providerRequests.ts`、`settings.ts`：配置规则、请求状态与持久化分别维护。
+- `materials.py`、`parsers/`、`material_assets.py`：材料登记与缓存、格式解析、资源路径与复制分别维护，共用 `ProcessRunner`。
 - `backend/skill_toolbox/material_intake.py`：生成前的图片转录与材料上下文准备。
 - `runtime.py`、`agent_loop.py`：任务入口与模型工具循环；只有当前任务开放的工具才能执行。
 - `resume_task.py`：材料准备、问答、工具绑定与交付装配；无需通用文件读写或脚本执行工具。
 - `contracts/resume_workflow.py`、`tools/resume_workflow.py`：简历语义操作，schema 与后端校验同源。
-- `resume_layout/`：组件模板、Word 测量、布局、DOCX 输出、渲染 QA。
+- `resume_actions.py`：一次计算内容编辑；`tools/resume_store.py` 管理版本、接受状态和预览记录。
+- `resume_layout/`：六模板的 SPEC 与间距档案，以及共享的 Word 测量、布局、DOCX 输出、渲染 QA。
 - `providers/`：官方 SDK 协议适配；可重试的模型请求最多重试 3 次（含首次最多 4 次）。
 - `web/`、`deploy/resume-web/`：网页版服务、环境诊断与压力测试。
 - `docs/`：设计与研究；旧日期文档可能描述已经退役的功能，以当前源码与本 README 为准。
@@ -72,6 +75,6 @@ v0.3.0 已退役 legacy 通用工具模式和旧版简历工具入口。组件�
 
 项目采用 [AGPL-3.0](LICENSE)，完整代码与构建脚本公开；若修改后以网络服务提供功能，也应按许可向使用者提供对应源码。模板与运行依赖见 [第三方说明](THIRD_PARTY_NOTICES.md)。
 
-PyMuPDF/MuPDF 按 AGPL 开源许可使用，Release 附对应 PDF 引擎源码包。两套模板的示例照片已换成自绘占位图；上游模板原有 MIT 声明继续保留。
+PyMuPDF/MuPDF 按 AGPL 开源许可使用，Release 附对应 PDF 引擎源码包。各模板的示例照片已换成自绘占位图；上游模板原有 MIT 声明继续保留。
 
 本轮同类项目比较与后续优先级见 [开源定位与优化报告](docs/开源定位与优化报告-2026-09-20.md)。
