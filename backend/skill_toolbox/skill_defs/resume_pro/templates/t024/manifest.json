@@ -1,0 +1,58 @@
+{
+  "id": "t024",
+  "name": "新媒体运营双栏",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "template_sha256": "83d362fc6a18a7ba55595d52ff2e69a63cb949986526fd6e4b8dcf2f191c2312",
+  "photo_part": "word/media/image1.jpeg",
+  "source_sha256": "bc40dcd30caf71d1e9f7effb7013a81136a47d36679f584249dd90ff318d84bf",
+  "fields": [],
+  "regions": {
+    "main": {
+      "x_pt": 196.9,
+      "width_pt": 365.05,
+      "top_pt": 37.8,
+      "bottom_pt": 815.0
+    },
+    "sidebar": {
+      "x_pt": 16.45,
+      "width_pt": 147.8,
+      "top_pt": 553.1,
+      "bottom_pt": 815.0
+    }
+  },
+  "sections": {
+    "education": {
+      "title_docpr_id": 14,
+      "body_docpr_id": 6,
+      "body_offset_pt": 22.25,
+      "region": "main"
+    },
+    "work": {
+      "title_docpr_id": 19,
+      "body_docpr_id": 5,
+      "body_offset_pt": 22.9,
+      "region": "main"
+    },
+    "awards": {
+      "title_docpr_id": 24,
+      "body_docpr_id": 8,
+      "body_offset_pt": 22.2,
+      "region": "main"
+    },
+    "skills": {
+      "title_docpr_id": 29,
+      "body_docpr_id": 7,
+      "body_offset_pt": 28.45,
+      "region": "main"
+    },
+    "summary": {
+      "title_docpr_id": 34,
+      "body_docpr_id": 9,
+      "body_offset_pt": 35.2,
+      "region": "sidebar"
+    }
+  },
+  "photo_source": "Original illustration reused from distributed t109 placeholder; original portrait removed.",
+  "sample_photo": "Generated neutral placeholder; scripts/sanitize_release_templates.py"
+}

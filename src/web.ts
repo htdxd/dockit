@@ -18,7 +18,6 @@ root.querySelector('.brand-sub')!.textContent = 'AI 简历生成';
 root.querySelector('.h-sub')!.textContent = '填信息 → 答少量问题 → 拿到文件';
 root.querySelector('.foot')!.innerHTML = '材料与产物保存在服务器；解析与生成会发送至配置的 AI / MinerU 服务。 <a href="https://github.com/htdxd/dockit" target="_blank" rel="noopener">源码 · AGPL-3.0</a>';
 root.querySelector('#page-resume .fmt')!.textContent = 'pdf / docx / md / txt / jpg / png / webp · 最多 6 个文件，总计 30 MB';
-root.querySelector('#page-resume .btn-note')!.textContent = '自动检查超页 / 溢出 / 层级';
 root.querySelector('.hello')!.insertAdjacentHTML('beforeend', '<span id="web-quota"></span><button class="btn-sec" id="web-logout" hidden>退出</button>');
 el('sub-resume-new').insertAdjacentHTML('beforeend', '<label class="web-consent"><input id="web-consent" type="checkbox"> 我同意将材料发送至网站配置的 AI / MinerU 服务。材料和任务日志保存 <span id="web-retention">7</span> 天。</label>');
 el('sub-resume-run').insertAdjacentHTML('afterbegin', '<select class="inp web-history" id="web-history" aria-label="选择任务"></select>');

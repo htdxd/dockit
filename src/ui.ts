@@ -241,6 +241,22 @@ export function mountLayout(root: HTMLElement, options: { resumeOnly?: boolean }
                 <img src="resume-templates/t109.jpg" alt="简约 word" loading="lazy">
                 <div class="tmpl-name">简约 word</div>
               </div>
+              <div class="tmpl-card" data-template="t002" tabindex="0" role="button" aria-label="选择模板 简约线条">
+                <img src="resume-templates/t002.jpg" alt="简约线条" loading="lazy">
+                <div class="tmpl-name">简约线条</div>
+              </div>
+              <div class="tmpl-card" data-template="t003" tabindex="0" role="button" aria-label="选择模板 应届毕业生">
+                <img src="resume-templates/t003.jpg" alt="应届毕业生" loading="lazy">
+                <div class="tmpl-name">应届毕业生</div>
+              </div>
+              <div class="tmpl-card" data-template="t015" tabindex="0" role="button" aria-label="选择模板 行政管理">
+                <img src="resume-templates/t015.jpg" alt="行政管理" loading="lazy">
+                <div class="tmpl-name">行政管理</div>
+              </div>
+              <div class="tmpl-card" data-template="t024" tabindex="0" role="button" aria-label="选择模板 双栏清晰">
+                <img src="resume-templates/t024.jpg" alt="双栏清晰" loading="lazy">
+                <div class="tmpl-name">双栏清晰</div>
+              </div>
             </div>
           </div>
           <div class="card">
@@ -265,7 +281,6 @@ export function mountLayout(root: HTMLElement, options: { resumeOnly?: boolean }
             </div>
             <div class="cta-row">
               <button class="btn" data-start="resume">开始生成简历</button>
-              <span class="btn-note">即将上线 · 自动检查超页 / 溢出 / 层级</span>
             </div>
           </div>
         </div>

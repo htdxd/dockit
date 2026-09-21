@@ -45,7 +45,7 @@ class SectionBox:
     bottom_pt: float
 
 
-_BULLET_CHARS = "⚫➢•·▪◦‣⁃●○■□–—-–*✦✧►▸·。：（）():;；,，、"
+_BULLET_CHARS = "⚫➢•·▪◦‣⁃●○■□◼◆–—-–*✦✧►▸·。：（）():;；,，、"
 
 
 def _norm(s: str) -> str:

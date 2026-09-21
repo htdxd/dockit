@@ -45,10 +45,12 @@ def test_artifact_opener_allows_user_selected_paths_only_with_default_app():
 def test_ui_only_offers_component_templates():
     ui = (ROOT / 'src/ui.ts').read_text(encoding='utf-8')
     assert set(re.findall(r'data-template="([^"]+)"', ui)) == SUPPORTED_TEMPLATES
+    manifest = json.loads((ROOT / 'backend/skill_toolbox/skill_defs/resume_pro/manifest.json').read_text(encoding='utf-8'))
+    assert {option['value'] for option in manifest['initial_form']['template']['options']} == SUPPORTED_TEMPLATES
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('template', ['t002', 't026', 't046'])
+@pytest.mark.parametrize('template', ['t004', 't026', 't046'])
 async def test_unadapted_template_rejected_before_model_call(tmp_path, template):
     result = await AgentRuntime(ScriptedProvider([AssistantTurn()]), lambda _: None).run(TaskRequest(
         skill_id='resume_pro', template_id=template, user_prompt='生成简历', output_dir=tmp_path))

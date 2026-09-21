@@ -89,6 +89,7 @@ class EntryPlan:
     text_top_offset_pt: float | None = None
     body_width_pt: float | None = None
     body_offset_pt: float | None = None
+    body_x_pt: float | None = None
 
 
 @dataclass
@@ -101,6 +102,7 @@ class SectionPlan:
     gap_after_pt: float | None = None    # 本栏文字底 → 下一栏 anchor 的增量
     gap_source: str = "default"          # archive | default | page_break
     title_text_top_offset_pt: float | None = None
+    region: str = "main"
 
 
 @dataclass
@@ -120,6 +122,7 @@ class LayoutPlan:
             "sections": [
                 {
                     "section_id": s.section_id,
+                    "region": s.region,
                     "title": s.title,
                     "page_index": s.page_index,
                     "anchor_y_pt": round(s.anchor_y_pt, 2),
@@ -139,6 +142,7 @@ class LayoutPlan:
                             "text_top_offset_pt": e.text_top_offset_pt,
                             "body_width_pt": e.body_width_pt,
                             "body_offset_pt": e.body_offset_pt,
+                            "body_x_pt": e.body_x_pt,
                             **({"adjusted_note": e.adjusted_note}
                                if e.adjusted_note else {}),
                         }

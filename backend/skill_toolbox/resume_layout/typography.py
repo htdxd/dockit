@@ -10,7 +10,7 @@ from skill_toolbox.resume_layout.profiles import get_profile
 
 
 def factors(entry: dict, section: dict, template_id: str) -> tuple[float, float]:
-    base = 10.0 if template_id == "t001" else 10.5
+    base = get_profile(template_id).base_font_pt
     geometry = float(entry.get("scale") or 1) * float(section.get("scale") or 1)
     font = float(entry.get("font_size_pt") or base) / base * geometry
     if base * font < 8.0 - 1e-6:
@@ -20,14 +20,15 @@ def factors(entry: dict, section: dict, template_id: str) -> tuple[float, float]
 
 def line_pitch(entry: dict, section: dict, template_id: str) -> float:
     font, _ = factors(entry, section, template_id)
-    base = 10.0 if template_id == "t001" else 10.5
-    return round((base * 1.5 if section.get("density") == "compact" else 18.0) * font * 20) / 20
+    profile = get_profile(template_id)
+    pitch = float(section.get('line_pitch_pt', profile.line_pitch_pt))
+    return round((profile.base_font_pt * 1.5 if section.get("density") == "compact" else pitch) * font * 20) / 20
 
 
 def apply_density(content: dict, density: str, template_id: str) -> None:
     """紧凑模式展开均匀缩放，保留等效字号和全部内容，恢复模板宽度。"""
     if density == "compact":
-        base = 10.0 if template_id == "t001" else 10.5
+        base = get_profile(template_id).base_font_pt
         for section in content["sections"]:
             for entry in section["entries"]:
                 font, _ = factors(entry, section, template_id)
@@ -66,7 +67,9 @@ class Numbering:
     """为有不同缩放的条目复制其编号样式，避免修改其它条目的 bullet。"""
     def __init__(self, template: Path):
         with zipfile.ZipFile(template) as package:
-            self.root = emit.etree.fromstring(package.read("word/numbering.xml"))
+            self.root = (emit.etree.fromstring(package.read("word/numbering.xml"))
+                         if "word/numbering.xml" in package.namelist()
+                         else emit.etree.Element(emit.W + "numbering"))
         self.cache = {}
         self.changed = False
 
@@ -176,7 +179,7 @@ def apply_body(body, entry: dict, section: dict, template_id: str, numbering: Nu
     """调用前栏目 anchor 已按 section.scale 缩放，body 只再缩放 entry.scale。"""
     profile = get_profile(template_id)
     font, geometry = factors(entry, section, template_id)
-    base = 10.0 if template_id == "t001" else 10.5
+    base = profile.base_font_pt
     extent = body.find(emit.WPS + "spPr/" + emit.A + "xfrm/" + emit.A + "ext")
     width = float(entry.get("width_pt") or (int(extent.get("cx")) / emit.EMU * float(entry.get("scale") or 1)))
     original_width = int(extent.get("cx")) / emit.EMU / float(section.get("scale") or 1)

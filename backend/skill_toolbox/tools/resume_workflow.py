@@ -107,7 +107,7 @@ class ResumeWorkflow:
                 "continuation_body_height_pt": round(geometry.page_bottom_pt - (
                     geometry.page_top_pt if continuation_top is None else continuation_top), 1),
                 "line_height_pt": 18,
-                "default_body_font_size_pt": 10.0 if self.template_id == "t001" else 10.5,
+                "default_body_font_size_pt": self.engine.profile.base_font_pt,
                 "max_lines_before_titles_and_gaps": int(body_height / 18),
                 "note": "这是模板默认字号下、未扣除标题和间距的容量上限，实际以测量为准。"
                         "经历丰富且未限定一页时可保留内容分为两三页；只有获准摘要时才精简。",

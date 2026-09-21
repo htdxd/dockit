@@ -237,7 +237,8 @@ def create_app(config: dict, *, runner_factory=JobRunner) -> FastAPI:
                 fields = Submission.model_validate({key: value for key, value in form.multi_items() if key != 'files'})
             except ValueError:
                 raise HTTPException(400, '提交字段不合法或内容过长') from None
-            if fields.template_id not in ('t001', 't109') or fields.output_format not in ('docx', 'pdf', 'both') or fields.writing_style not in ('light', 'balanced', 'strong'):
+            from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES
+            if fields.template_id not in SUPPORTED_TEMPLATES or fields.output_format not in ('docx', 'pdf', 'both') or fields.writing_style not in ('light', 'balanced', 'strong'):
                 raise HTTPException(400, '请选择支持的模板、格式和写作档位')
             if not fields.consent:
                 raise HTTPException(400, '请确认材料处理说明')

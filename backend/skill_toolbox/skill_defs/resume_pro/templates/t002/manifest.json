@@ -1,0 +1,13 @@
+{
+  "id": "t002",
+  "name": "简约风求职简历",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "template_sha256": "d11cea41c39b55e4721192a4e71b2288b68ecfa177ae113dec2146706f54ac17",
+  "component_adapter": "t002",
+  "fields": [],
+  "components": [],
+  "slot_components": {},
+  "sample_photo": "Generated neutral placeholder copied byte-for-byte from distributed t109 template",
+  "notes": "栏目、条目与头部字段通过统一语义组件引擎编辑；原始人像已替换。"
+}

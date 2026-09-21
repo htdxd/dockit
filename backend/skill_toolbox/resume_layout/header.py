@@ -128,6 +128,10 @@ def check_rendered_alignment(pdf_path, components: dict, tolerance: float = 1.0)
         label, value = normalize(field["label"]) + "：", normalize(field["after"])
         if not value:
             continue
+        if field.get("standalone"):
+            if stream.find(value) < 0 or "column" not in field:
+                issues.append(QAIssue("header_alignment", "error", f"个人信息 {key} 缺少完整渲染文字或列信息，无法验收对齐"))
+            continue
         start = stream.find(label + value)
         if start < 0 or "column" not in field:
             issues.append(QAIssue("header_alignment", "error", f"个人信息 {key} 缺少完整渲染文字或列信息，无法验收对齐"))
@@ -160,7 +164,9 @@ def rendered_field_bounds(page, components: dict) -> list:
     stream = normalize("".join(c["c"] for c in chars))
     bounds = []
     for field in components.values():
-        needle = normalize(field["label"] + "：" + field["after"])
+        needle = normalize(field["after"] if field.get("standalone") else field["label"] + "：" + field["after"])
+        if not needle:
+            continue
         start = stream.find(needle)
         if start < 0:
             raise ValueError("HEADER_CONTENT_MISSING: 无法定位个人信息真实底部")

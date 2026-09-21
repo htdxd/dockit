@@ -156,7 +156,7 @@ class ResumeEditService:
             raise ToolError(
                 "TEMPLATE_UNKNOWN",
                 f"本任务绑定组件模板 {self.template_id}（收到 {template_id}）。"
-                "其他模板请走 legacy 字段填充路线。",
+                "请在新任务中选择已组件化的模板。",
             )
         return tpl
 
@@ -181,7 +181,7 @@ class ResumeEditService:
         if scenario is not None:
             payload = {"sections": scenario["sections"]}
             header = scenario.get("header") or {}
-            components = {key: header[key] for key in ("fields", "hidden_fields", "custom_fields")
+            components = {key: header[key] for key in ("fields", "hidden_fields", "custom_fields", "hide_photo")
                           if header.get(key)}
             if components:
                 payload["header"] = components
@@ -713,12 +713,17 @@ class ResumeEditService:
         #   一起重排；
         # - local：先常规排版，再只平移目标条目，并做跨栏目碰撞检查。
         adjust = self._geometry_adjust(content) if layout_mode == "reflow" else None
+        from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS, plan_scenario
+
+        def plan_with_geometry(geometry):
+            options = dict(spacing=gap_source, min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT,
+                           entry_adjust=adjust, geometry=geometry)
+            if self.template_id in TEMPLATE_IDS:
+                return plan_scenario(scenario, measured, template_id=self.template_id, **options)
+            return RL.plan_layout(scenario['sections'], measured, **options)
+
         try:
-            plan = RL.plan_layout(
-                scenario["sections"], measured, spacing=gap_source,
-                min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT,
-                entry_adjust=adjust, geometry=self.geometry,
-            )
+            plan = plan_with_geometry(self.geometry)
         except RL.LayoutUnsatisfiable as exc:
             raise ToolError(
                 "LAYOUT_UNSATISFIABLE", str(exc), retryable=True,
@@ -730,12 +735,10 @@ class ResumeEditService:
             self._validate_plan_geometry(plan, RL)
         single_page_fit = None
         if layout_mode == "reflow" and plan.pages > 1:
-            unpaged = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
-                                    min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT, entry_adjust=adjust,
-                                    geometry=replace(self.geometry, page_bottom_pt=1_000_000))
+            unpaged = plan_with_geometry(replace(self.geometry, page_bottom_pt=1_000_000))
             bottom = max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries)
             reduction = max(0, bottom - self.geometry.page_bottom_pt)
-            pitch = min(row["line_pitch_pt"] for row in measurements["results"])
+            pitch = min(row.get("line_pitch_pt", self.profile.line_pitch_pt) for row in measurements["results"])
             single_page_fit = {"required_reduction_pt": round(reduction, 1),
                                "approx_lines_to_save": math.ceil(reduction / pitch),
                                "reference_line_pitch_pt": pitch}
@@ -753,14 +756,13 @@ class ResumeEditService:
         header_components = (emit_info.get("header") or {}).get("fields")
         if header_components is None:
             raise ValueError("HEADER_CONTRACT_MISSING: 模板必须返回个人信息组件")
-        body_top = body_start_from_render(render_dir / "resume.pdf", header_components,
-                                          self.geometry.page_top_pt)
+        body_top = (self.geometry.page_top_pt if self.template_id in TEMPLATE_IDS else
+                    body_start_from_render(render_dir / "resume.pdf", header_components,
+                                           self.geometry.page_top_pt))
         if abs(body_top - self.geometry.page_top_pt) > 1:
             dynamic_geometry = replace(self.geometry, page_top_pt=body_top,
                                        continuation_page_top_pt=self.geometry.continuation_page_top_pt or self.geometry.page_top_pt)
-            plan = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
-                                  min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT,
-                                  entry_adjust=adjust, geometry=dynamic_geometry)
+            plan = plan_with_geometry(dynamic_geometry)
             if layout_mode == "local":
                 plan = self._apply_local_geometry(plan, content, RL)
             self._validate_plan_geometry(plan, RL)
@@ -771,11 +773,9 @@ class ResumeEditService:
             self._run_stage([sys.executable, str(RENDER_SCRIPT), str(docx), str(render_dir)], "RENDER_FAILED")
             single_page_fit = None
             if layout_mode == "reflow" and plan.pages > 1:
-                unpaged = RL.plan_layout(scenario["sections"], measured, spacing=gap_source,
-                    min_visible_gap_pt=V2_MIN_VISIBLE_GAP_PT, entry_adjust=adjust,
-                    geometry=replace(dynamic_geometry, page_bottom_pt=1_000_000))
+                unpaged = plan_with_geometry(replace(dynamic_geometry, page_bottom_pt=1_000_000))
                 reduction = max(0, max(e.anchor_y_pt + e.body_h_pt for s in unpaged.sections for e in s.entries) - self.geometry.page_bottom_pt)
-                pitch = min(row["line_pitch_pt"] for row in measurements["results"])
+                pitch = min(row.get("line_pitch_pt", self.profile.line_pitch_pt) for row in measurements["results"])
                 single_page_fit = {"required_reduction_pt": round(reduction, 1),
                     "approx_lines_to_save": math.ceil(reduction / pitch), "reference_line_pitch_pt": pitch}
         (rev_dir / "layout_plan.json").write_text(
@@ -791,12 +791,20 @@ class ResumeEditService:
         header_components = (emit_info.get("header") or {}).get("fields")
         if header_components is None:
             raise ValueError("HEADER_CONTRACT_MISSING: 组件模板必须返回 header.fields（含 column），供共享对齐验收；无字段时显式返回空字典。")
-        qa_report = RR.qa_scenario(
-            rev_dir, scenario, plan.to_dict(), measured_view, pdf_name="resume",
-            header_values=header_values, template_id=self.template_id,
-            template=self._template_dir(self.template_id) / "template.docx",
-            header_components=header_components,
-        )
+        if self.template_id in TEMPLATE_IDS:
+            from skill_toolbox.resume_layout.component_qa import check_components
+            component_measurements = json.loads((work / 'component_measurements.json').read_text(encoding='utf-8'))
+            component_measurements = [{**row, 'entry_id': row['measurement_id']}
+                                      for row in component_measurements['parts']]
+            qa_report = check_components(render_dir / 'resume.pdf', scenario, plan.to_dict(),
+                emit_info, component_measurements, header_components)
+        else:
+            qa_report = RR.qa_scenario(
+                rev_dir, scenario, plan.to_dict(), measured_view, pdf_name="resume",
+                header_values=header_values, template_id=self.template_id,
+                template=self._template_dir(self.template_id) / "template.docx",
+                header_components=header_components,
+            )
         (rev_dir / "qa_report.json").write_text(
             json.dumps(qa_report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -978,6 +986,7 @@ class ResumeEditService:
         for sec in content.get("sections", []):
             entries = [
                 {"id": e["id"], "text": self._entry_text(sec, e),
+                 "head": dict(e.get("head") or {}),
                  "has_heading": bool(self._entry_heading(sec, e)),
                  "heading_lines": len(self._entry_heading(sec, e).splitlines()),
                  "tech_stack_line": len(self._entry_heading(sec, e).splitlines()) if e.get("tech_stack") else None,
@@ -1000,6 +1009,9 @@ class ResumeEditService:
             from skill_toolbox.resume_layout.t001 import SECTIONS, source_key
             for sec in sections:
                 sec["body_offset_pt"] = SECTIONS[source_key(sec)][2]
+        from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS, prepare_sections
+        if self.template_id in TEMPLATE_IDS:
+            prepare_sections(sections, self.template_id)
         return {"sections": sections}
 
     def _paragraph_styles(self, section, entry):
@@ -1425,7 +1437,8 @@ class ResumeEditService:
                     )
                 prev_text_bottom = text_top + entry.text_height_pt
         try:
-            RL.check_section_flow(plan.sections, geometry=self.geometry)
+            for region in {s.region for s in plan.sections}:
+                RL.check_section_flow([s for s in plan.sections if s.region == region], geometry=self.geometry)
         except RL.LayoutUnsatisfiable as exc:
             raise ToolError("COLLISION", str(exc)) from None
 
@@ -1450,7 +1463,8 @@ class ResumeEditService:
                         "instance_id": f"{sec.section_id}#{e.instance_id}",
                         "page_index": e.page_index,
                         "region": {
-                            "x_pt": self.profile.body_x_pt, "y_pt": round(e.anchor_y_pt, 2),
+                            "x_pt": e.body_x_pt if e.body_x_pt is not None else self.profile.body_x_pt,
+                            "y_pt": round(e.anchor_y_pt, 2),
                             "w_pt": getattr(e, "body_width_pt", None) or widths.get(e.instance_id) or body_width,
                             "h_pt": round(e.body_h_pt, 2),
                         },

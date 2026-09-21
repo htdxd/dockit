@@ -190,6 +190,7 @@ def test_move_section_preserves_all_entry_content(workflow):
     assert result.data["content"]["sections"] == list(reversed(first.data["content"]["sections"]))
 
 
+@pytest.mark.parametrize('workflow', ['t001', 't109', 't002', 't003', 't015', 't024'], indirect=True)
 def test_personal_component_add_rename_remove_retains_body(workflow):
     first = generate(workflow)
     added = workflow.edit(EditRequest(candidate_id=first.data["candidate_id"], changes=[
@@ -315,6 +316,7 @@ def test_font_defaults_and_text_edit_preserve_explicit_typography(workflow, styl
     assert section["entries"][0]["font_size_pt"] == 11
 
 
+@pytest.mark.parametrize('workflow', ['t001', 't109', 't002', 't003', 't015', 't024'], indirect=True)
 def test_format_scopes_set_absolute_values_and_preserve_other_entries(workflow):
     first = generate(workflow)
     second = workflow.edit(EditRequest(candidate_id=first.data["candidate_id"], changes=[

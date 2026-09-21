@@ -20,6 +20,10 @@ def measure_scenario(scenario: dict, work_dir: Path, *, template: Path, template
     逐栏目测量：每栏条目写入**本栏目自己的正文框**（样式档案不同——
     实习/校园职责段带项目符号、宽度缩进不同会影响 wrap），单实例批量。
     """
+    from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS
+    if template_id in TEMPLATE_IDS:
+        from skill_toolbox.resume_layout.component_body import measure_scenario as measure_components
+        return measure_components(scenario, work_dir, template=template, template_id=template_id)
     source_root = emit.load_document_xml(template)
     hosts = []
     for sec in scenario["sections"]:
@@ -92,6 +96,10 @@ def emit_scenario(
     - `header.photo_bytes` + `header.photo_part`：替换照片媒体部件（等比适配）
     - 条目级 `width_pt`：正文框宽度（由布局层按真实测量决定，变窄则多换行）
     """
+    from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS
+    if template_id in TEMPLATE_IDS:
+        from skill_toolbox.resume_layout.component_body import emit_scenario as emit_components
+        return emit_components(scenario, plan, out_docx, template=template, template_id=template_id)
     if template_id == "t001":
         from skill_toolbox.resume_layout import t001
         return t001.emit_scenario(scenario, plan, out_docx, template=template)
@@ -300,7 +308,11 @@ def main() -> None:
     if str(spec) != "-":
         measure_scenario(json.loads(spec.read_text(encoding="utf-8")), work,
                          template=template, template_id=template_id)
-    if template_id == "t001":
+    from skill_toolbox.resume_layout.component_template import TEMPLATE_IDS
+    if template_id in TEMPLATE_IDS:
+        from skill_toolbox.resume_layout.component_template import ensure_archive
+        ensure_archive(template, archive, template_id)
+    elif template_id == "t001":
         from skill_toolbox.resume_layout import t001
         t001.ensure_archive(template, archive)
     else:

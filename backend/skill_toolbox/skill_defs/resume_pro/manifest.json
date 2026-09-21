@@ -27,6 +27,22 @@
         {
           "value": "t109",
           "label": "简约 word"
+        },
+        {
+          "value": "t002",
+          "label": "简约线条"
+        },
+        {
+          "value": "t003",
+          "label": "应届毕业生"
+        },
+        {
+          "value": "t015",
+          "label": "行政管理"
+        },
+        {
+          "value": "t024",
+          "label": "双栏清晰"
         }
       ]
     }

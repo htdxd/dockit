@@ -1,0 +1,13 @@
+{
+  "id": "t003",
+  "name": "应届毕业生简历",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "template_sha256": "12256f41b610ac450348ee30ae7a44454f31762e51ab01312307557f70000b88",
+  "component_adapter": "t003",
+  "fields": [],
+  "components": [],
+  "slot_components": {},
+  "sample_photo": "Generated neutral placeholder copied byte-for-byte from distributed t109 template",
+  "notes": "标题文字、箭头和横线由语义栏目绑定；原始人像已替换，照片ContentType明确为image/png。"
+}

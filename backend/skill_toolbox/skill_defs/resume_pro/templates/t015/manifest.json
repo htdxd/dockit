@@ -1,0 +1,13 @@
+{
+  "id": "t015",
+  "name": "行政管理简历",
+  "source": "ResumeCollection (MIT)",
+  "template_file": "template.docx",
+  "template_sha256": "9ad5e2013f9b3631f2c1d8b6564a9e270255a03fca51faa811bfbcee4e3ef44d",
+  "component_adapter": "t015",
+  "fields": [],
+  "components": [],
+  "slot_components": {},
+  "sample_photo": "Generated neutral placeholder copied byte-for-byte from distributed t109 template",
+  "notes": "教育和工作经历包含左侧岗位日期与右侧组织正文；原始人像已替换，照片ContentType明确为image/png。"
+}

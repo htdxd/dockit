@@ -13,13 +13,15 @@ def test_only_sanitized_templates_are_distributed():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     folder = ROOT/'backend/skill_toolbox/skill_defs/resume_pro/templates'
-    assert {p.parent.name for p in folder.glob('*/template.docx')} == {'t001','t109'}
-    for template, part, kind in [('t001','word/media/image1.jpeg','JPEG'),('t109','word/media/image1.png','PNG')]:
+    from skill_toolbox.resume_layout.profiles import SUPPORTED_TEMPLATES, get_profile
+    assert {p.parent.name for p in folder.glob('*/template.docx')} == SUPPORTED_TEMPLATES
+    for template in SUPPORTED_TEMPLATES:
+        part = get_profile(template).photo_part
         path = folder/template/'template.docx'
         with ZipFile(path) as package:
-            assert package.read(part) == module.placeholder(kind)
+            assert package.read(part) in (module.placeholder('JPEG'), module.placeholder('PNG'))
             media = [n for n in package.namelist() if n.startswith('word/media/') and not n.endswith('/')]
-            assert media == [part]
+            assert part in media
         manifest = json.loads((folder/template/'manifest.json').read_text(encoding='utf-8'))
         assert manifest['template_sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
 

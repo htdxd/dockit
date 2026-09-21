@@ -58,6 +58,9 @@ def start_word():
     word = None
     try:
         word = client.DispatchEx('Word.Application')
+        # Word 的动态 IDispatch 偶尔把 Quit 报成属性；按明确的 COM 方法调用。
+        if isinstance(word, client.dynamic.CDispatch):
+            word._FlagAsMethod('Quit')
         validate_version(str(word.Version))
         if not (Path(str(word.Path)) / 'WINWORD.EXE').is_file():
             raise RuntimeError('WORD_UNAVAILABLE: COM 程序目录中没有 WINWORD.EXE，请修复 Microsoft Word 的安装或注册。')
