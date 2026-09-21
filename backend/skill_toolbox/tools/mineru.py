@@ -27,6 +27,29 @@ from skill_toolbox.tools.cache import HashCache
 from skill_toolbox.tools.workspace import sha256_file
 from skill_toolbox.unicode_utils import redact_secrets
 
+
+def resolve_mineru_cli() -> list[str]:
+    """解析 mineru-open-api 可执行入口，返回 argv 前缀（不含子命令）。
+
+    Windows 上 npm 全局装的 mineru-open-api 是 .cmd 包装器，CreateProcess
+    不能直接跑 .cmd → 优先 node + 包内 JS 入口，退化为 cmd.exe /c。
+    Sidecar 的 MinerU preflight 使用这一解析，保证启动门判定一致。
+    """
+    cli = shutil.which("mineru-open-api")
+    if not cli:
+        raise RuntimeError(
+            "未找到 mineru-open-api。请安装：npm install -g mineru-open-api，"
+            "或在设置页「第三方服务」确认 MinerU Token 已填写。"
+        )
+    cli_path = Path(cli)
+    if cli_path.suffix.lower() in {".cmd", ".bat"}:
+        js_bin = cli_path.parent / "node_modules" / "mineru-open-api" / "bin" / "mineru-open-api"
+        node = shutil.which("node")
+        if node and js_bin.is_file():
+            return [node, str(js_bin)]
+        return ["cmd.exe", "/c", str(cli_path)]
+    return [str(cli_path)]
+
 MINERU_ADAPTER_VERSION = "1"
 
 # 转换失败稳定错误码（与 materials.MINERU_FATAL_CODES 对齐）
@@ -86,8 +109,6 @@ def mineru_cli_version() -> str:
     版本变化；探测失败返回 "unknown"（不阻断转换，仅缓存项按 unknown 分组）。
     """
     try:
-        from skill_toolbox.tools.legacy import resolve_mineru_cli
-
         cli = resolve_mineru_cli()
     except RuntimeError:
         return "cli-missing"

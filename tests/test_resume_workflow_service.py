@@ -10,10 +10,9 @@ from skill_toolbox.contracts.common import OperationResult, ToolError
 from skill_toolbox.contracts.resume_workflow import (
     AcceptRequest, EditRequest, EntryPatch, GenerateRequest, PrepareRequest, PreviewRequest,
 )
-from skill_toolbox.llm_tools.dispatcher import DomainServices, dispatch_with_media
+from runtime_support import task_for, invoke
 from skill_toolbox.materials import MaterialService
 from skill_toolbox.resume_layout.t109 import TEMPLATE
-from skill_toolbox.runtime import TaskRequest, _domain_tool_specs, _resume_workflow_enabled
 from skill_toolbox.tools.materials import MaterialPlanService
 from skill_toolbox.tools.resume_edit import ResumeEditService
 from skill_toolbox.tools.resume_workflow import ResumeWorkflow
@@ -34,7 +33,9 @@ def workflow(tmp_path, monkeypatch, request):
     engine.test_render_count = 0
 
     def render(self, artifact_id, revision, content, *, layout_mode, base_revision, changes, rev_dir):
-        self.test_render_count += 1
+        self.test_render_count = getattr(self, 'test_render_count', 0) + 1
+        self.test_pages = getattr(self, 'test_pages', 1)
+        self.test_mechanical = getattr(self, 'test_mechanical', True)
         render_dir = rev_dir / "render"
         render_dir.mkdir(parents=True, exist_ok=True)
         pages = []
@@ -51,7 +52,7 @@ def workflow(tmp_path, monkeypatch, request):
             "mechanical": {"passed": self.test_mechanical, "errors": [] if self.test_mechanical else ["overlap"]},
             "visual": {"status": "pending", "delivered_pages": []},
             "docx": self._rel(docx), "pdf": None, "pages": pages,
-            "docx_sha256": "stub", "pdf_sha256": None,
+            "docx_sha256": __import__('hashlib').sha256(docx.read_bytes()).hexdigest(), "pdf_sha256": None,
             "instance_model": [], "renderer": "stub",
         }
         (rev_dir / "revision.json").write_text(json.dumps(record), encoding="utf-8")
@@ -98,10 +99,8 @@ async def test_internal_candidate_question_never_opens_user_dialog(workflow):
     from skill_toolbox.providers.mock import ScriptedProvider
     from skill_toolbox.runtime import AgentRuntime, UserInputBroker
     events = []
-    runtime = AgentRuntime(ScriptedProvider([]), events.append, input_broker=UserInputBroker())
-    result = await runtime._execute_call(ToolCall(id='q', name='ask_user_questions', arguments={
-        'questions': [{'id': 'candidate', 'label': '请提供 candidate_id'}]}), None,
-        domain_services=DomainServices(resume_workflow=workflow))
+    result = await invoke(task_for(workflow, events.append), 'ask_user_questions', {
+        'questions': [{'id': 'candidate', 'label': '请提供 candidate_id'}]})
     assert not result.success and 'INTERNAL_STATE_QUESTION' in result.content
     assert not any(event['type'] == 'questions_requested' for event in events)
 
@@ -255,18 +254,19 @@ def test_replace_photo_keeps_artifact_and_all_semantic_content(workflow):
     assert asset.id not in {exclusion["source_id"] for exclusion in plan["exclusions"]}
 
 
-def test_failed_candidate_keeps_repair_reference_through_dispatch(workflow):
+@pytest.mark.asyncio
+async def test_failed_candidate_keeps_repair_reference_through_dispatch(workflow):
     first = generate(workflow)
     workflow.engine.test_mechanical = False
-    text, images, meta = dispatch_with_media("resume_edit", {
+    result = await invoke(task_for(workflow), "resume_edit", {
         "candidate_id": first.data["candidate_id"],
         "changes": [{"op": "update_entry", "target_id": "internship#job-1", "entry": {"role": "分析师"}}],
-    }, DomainServices(resume_workflow=workflow))
-    payload = json.loads(text)
-    assert not meta["ok"]
+    })
+    payload = json.loads(result.content)
+    assert not result.success
     assert payload["data"]["candidate_id"] == f"{first.artifact_id}@2"
     assert payload["data"]["content"]["sections"][0]["entries"][0]["role"] == "分析师"
-    assert images
+    assert result.images
 
 
 def test_page_target_blocks_accept_even_with_passing_mechanical_qa(workflow):
@@ -423,13 +423,8 @@ def test_accept_retry_replays_same_candidate(workflow):
     assert repeated.data["candidate_id"] == accepted.data["candidate_id"]
 
 
-@pytest.mark.parametrize("template_id", ["t001", "t109"])
-def test_template_bound_schema_hides_low_level_and_manual_plan(tmp_path, template_id):
-    skill = SimpleNamespace(id="resume_pro", tool_mode="domain")
-    request = TaskRequest(skill_id="resume_pro", user_prompt="制作简历", output_dir=tmp_path,
-                          template_id=template_id, tool_mode="domain")
-    assert _resume_workflow_enabled(skill, request)
-    specs = _domain_tool_specs(skill, {"vision": True}, workflow=True)
+def test_template_bound_schema_hides_low_level_and_manual_plan(workflow):
+    specs = [definition.spec for definition in task_for(workflow).tools().values()]
     names = {spec["name"] for spec in specs}
     assert names & {"resume_prepare", "resume_generate", "resume_edit", "resume_preview", "resume_accept"} == {
         "resume_prepare", "resume_generate", "resume_edit", "resume_preview", "resume_accept"}
@@ -443,3 +438,30 @@ def test_update_entry_cannot_rename_identity():
         EditRequest(candidate_id="candidate@1", changes=[{
             "op": "update_entry", "target_id": "job-1", "entry": {"id": "another-job"},
         }])
+
+
+def test_accepted_artifact_tampering_is_rejected(workflow):
+    result = generate(workflow)
+    workflow.accept(AcceptRequest(candidate_id=result.data['candidate_id'], visual_notes='checked all pages'))
+    paths = [result.data['docx']]
+    workflow.verify_delivery(paths)
+    (workflow.engine.workspace / paths[0]).write_bytes(b'tampered after accept')
+    with pytest.raises(ValueError, match='hash'):
+        workflow.verify_delivery(paths)
+
+
+@pytest.mark.parametrize('defect',['unknown','duplicate','missing_asset'])
+def test_delivery_material_plan_retains_source_coverage_checks(workflow, defect):
+    generate(workflow)
+    workflow.materials.validate_content_plan()
+    path = workflow.engine.workspace/'work/plans/content-plan.json'
+    plan = json.loads(path.read_text(encoding='utf8'))
+    if defect == 'unknown':
+        plan['selections'][0]['source_id'] = 'not-a-source'
+    elif defect == 'duplicate':
+        plan['selections'].append(dict(plan['selections'][0]))
+    else:
+        plan['exclusions'] = []
+    path.write_text(json.dumps(plan),encoding='utf8')
+    with pytest.raises(ValueError):
+        workflow.materials.validate_content_plan()

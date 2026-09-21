@@ -1,3 +1,4 @@
+from test_resume_workflow_service import workflow
 import asyncio
 import dataclasses
 from pathlib import Path
@@ -69,86 +70,35 @@ async def test_sidecar_passes_structured_resume_template(
 
 
 @pytest.mark.asyncio
-async def test_sidecar_runs_task_and_emits_correlated_events(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "skill_toolbox.runtime.load_skill",
-        lambda skill_id: dataclasses.replace(
-            load_skill(skill_id), quality_actions=frozenset()
-        ),
-    )
-    provider = ScriptedProvider(
-        [
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="plan",
-                        name="write",
-                        arguments={
-                            "path": "work/plans/content-plan.json",
-                            "content": EMPTY_DOCX_PLAN,
-                        },
-                    )
-                ]
-            ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="write",
-                        name="write",
-                        arguments={
-                            "path": "artifacts/sidecar.md",
-                            "content": "Sidecar 测试",
-                        },
-                    )
-                ]
-            ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="write-qa",
-                        name="write",
-                        arguments={
-                            "path": "work/qa/mechanical.json",
-                            "content": '{"mechanical": "passed", "visual": "not_run"}',
-                        },
-                    )
-                ]
-            ),
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="finish",
-                        name="finish_task",
-                        arguments={"artifacts": ["artifacts/sidecar.md"]},
-                    )
-                ]
-            ),
-        ]
-    )
-    events: list[dict[str, object]] = []
-    service = SidecarService(events.append, provider_factory=lambda _: provider)
-    # MinerU 强依赖（§3.1）：任务前必须配置 Token，否则 preflight 直接失败
-    service._set_mineru_key("task-1", {"mineru_key": "test-token"})
+async def test_sidecar_runs_task_and_emits_correlated_events(tmp_path, workflow):
+    class Provider:
+        step = 0
+        candidate = None
+        path = None
+        async def complete(self, system, messages, tools):
+            self.step += 1
+            if self.step == 1:
+                name, args = 'resume_generate', {'content':{'sections':[{
+                    'key':'skills','title':'技能','entries':[{'text':['Python']}]}]}}
+            elif self.step == 2:
+                import json
+                data = json.loads(messages[-1].tool_results[0].content)['data']
+                self.candidate, self.path = data['candidate_id'], data['docx']
+                name,args = 'resume_accept', {'candidate_id':self.candidate,'visual_notes':'已检查全部页面'}
+            else:
+                name,args = 'finish_task', {'artifacts':[self.path]}
+            return AssistantTurn(tool_calls=[ToolCall(id=str(self.step),name=name,arguments=args)])
+    events=[]
+    service=SidecarService(events.append,provider_factory=lambda _:Provider())
+    service._set_mineru_key('task-1',{'mineru_key':'test-token'})
+    await service.handle({'id':'task-1','type':'start_task','payload':{
+        'provider':{'kind':'mock','model':'mock'},'skill_id':'resume_pro',
+        'template_id':workflow.template_id,'user_prompt':'测试','output_dir':str(tmp_path)}})
+    await asyncio.wait_for(service.wait_all(),timeout=10)
+    assert (tmp_path/'resume.resume_pro.docx').exists()
+    assert all(event['id']=='task-1' for event in events)
+    assert events[-1]['event']['type']=='task_completed'
 
-    await service.handle(
-        {
-            "id": "task-1",
-            "type": "start_task",
-            "payload": {
-                "provider": {"kind": "mock", "model": "mock"},
-                "skill_id": "resume_pro",
-                "user_prompt": "测试",
-                "output_dir": str(tmp_path),
-            },
-        }
-    )
-    await asyncio.wait_for(service.wait_all(), timeout=5)
-
-    assert (tmp_path / "sidecar.resume_pro.md").exists()
-    assert all(event["id"] == "task-1" for event in events)
-    assert events[-1]["event"]["type"] == "task_completed"
 
 
 @pytest.mark.asyncio
@@ -602,3 +552,10 @@ async def test_probe_runs_in_independent_task_not_blocking_stdin() -> None:
 
     pongs = [e["event"] for e in events if e["event"].get("type") == "pong"]
     assert len(pongs) == 1  # ping 未被阻塞，说明探测不占 stdin 循环
+
+
+@pytest.fixture(autouse=True)
+def no_external_word_probe(monkeypatch):
+    from skill_toolbox.tools.resume_edit import ResumeEditService
+    from skill_toolbox.contracts.common import OperationResult
+    monkeypatch.setattr(ResumeEditService,'prepare',lambda *a,**k:OperationResult(ok=True,data={'header_fields':['name','email']}))

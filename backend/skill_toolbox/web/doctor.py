@@ -65,7 +65,7 @@ def run_check(report_path: Path, config: dict) -> bool:
                   'llm_configured':bool(config.get('provider',{}).get('api_key')) and not str(config.get('provider',{}).get('api_key')).startswith('REPLACE_'),
                   'mineru_configured':bool(config.get('mineru_key')) and not str(config.get('mineru_key')).startswith('REPLACE_'),
                   'note':'仅检查配置是否填写，不验证云端有效性或模型能力。'}}
-    from skill_toolbox.tools import resolve_mineru_cli
+    from skill_toolbox.tools.mineru import resolve_mineru_cli
     for name, command in [('MinerU CLI',None),('Poppler',shutil.which('pdftoppm'))]:
         try:
             args = [*resolve_mineru_cli(),'--version'] if name == 'MinerU CLI' else [command,'-v']

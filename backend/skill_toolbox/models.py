@@ -41,6 +41,7 @@ class ToolResult(BaseModel):
     success: bool
     content: str
     images: list[ImageContent] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     @field_validator("content", mode="before")
     @classmethod

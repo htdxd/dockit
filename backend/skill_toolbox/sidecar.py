@@ -21,7 +21,7 @@ from skill_toolbox.providers import create_provider
 from skill_toolbox.providers.base import ModelProvider
 from skill_toolbox.runtime import AgentRuntime, TaskRequest, UserInputBroker
 from skill_toolbox.skills import load_skill, RETIRED_PDF_IDS, FEATURE_RETIRED_MESSAGE
-from skill_toolbox.tools import resolve_mineru_cli
+from skill_toolbox.tools.mineru import resolve_mineru_cli
 from skill_toolbox.unicode_utils import redact_secrets, sanitize_data
 
 Emitter = Callable[[dict[str, Any]], None]
@@ -284,8 +284,7 @@ class SidecarService:
             capabilities=capabilities,
             env=self._task_env(skill.id),
             mineru_token=self._mineru_key,
-            # 领域模式是 opt-in：调用方显式传 tool_mode="domain" 才切换；
-            # 未传时交给 Runtime 回落 Skill manifest，保持 legacy 请求契约。
+            # 兼容现有 domain 参数；legacy 由 Runtime 明确拒绝，不恢复旧工具。
             tool_mode=(
                 str(payload["tool_mode"])
                 if payload.get("tool_mode") in {"domain", "legacy"}

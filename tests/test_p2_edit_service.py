@@ -28,7 +28,7 @@ from skill_toolbox.contracts.resume import (
     ResumeRepairV2Request,
     ResumeRestoreRequest,
 )
-from skill_toolbox.tools.resume import ResumeEditService, format_head_slots
+from skill_toolbox.tools.resume_edit import ResumeEditService, format_head_slots
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = PROJECT_ROOT / "backend/skill_toolbox/skill_defs/resume_pro/templates"
@@ -405,63 +405,6 @@ def test_format_head_slots_keeps_columns_and_skips_missing() -> None:
     assert two.startswith("2019.07-2021.08") and two.endswith("产品运营")
     assert "  " in two.strip()
     assert format_head_slots(["", "", ""], pattern) == ""
-
-
-def test_v2_tools_exposed_and_registered() -> None:
-    from skill_toolbox.llm_tools.resume import resume_v2_tools
-    from skill_toolbox import runtime as RT
-
-    names = {t["name"] for t in resume_v2_tools()}
-    assert names == {"resume_prepare_v2", "resume_generate_v2", "resume_repair_v2",
-                     "resume_accept", "resume_restore", "resume_preview"}
-    assert names <= RT._DOMAIN_TOOL_NAMES
-    assert {"resume_generate_v2", "resume_repair_v2", "resume_restore"} <= RT.DOMAIN_ARTIFACT_TOOLS
-    assert all(name in RT.DOMAIN_TOOL_TIMEOUTS for name in names)
-
-
-def test_dispatch_with_media_returns_images(tmp_path: Path,
-                                            monkeypatch: pytest.MonkeyPatch) -> None:
-    """dispatcher 必须把 OperationResult.images 交给 Runtime（不是只给路径）。"""
-    from skill_toolbox.llm_tools.dispatcher import DomainServices, dispatch_with_media
-
-    monkeypatch.setattr(ResumeEditService, "_render_revision", _stub_render)
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    services = DomainServices(resume_v2=svc)
-    text, images, meta = dispatch_with_media(
-        "resume_generate_v2",
-        {"template_id": "t109", "content": _content(), "request_id": "g"},
-        services,
-    )
-    payload = json.loads(text)
-    assert payload["ok"] is True
-    assert meta["revision"] == 1
-    assert len(images) == 1 and images[0]["media_type"] == "image/png"
-    assert images[0]["base64_data"], "图像必须是真实 base64 载荷"
-    assert payload["images"][0]["inline"] is True
-
-
-def test_dispatch_error_is_stable_not_traceback(tmp_path: Path,
-                                                monkeypatch: pytest.MonkeyPatch) -> None:
-    from skill_toolbox.llm_tools.dispatcher import DomainServices, dispatch_with_media
-
-    monkeypatch.setattr(ResumeEditService, "_render_revision", _stub_render)
-    svc = ResumeEditService(tmp_path, TEMPLATES, capabilities={"vision": True})
-    text, images, meta = dispatch_with_media(
-        "resume_repair_v2",
-        {"artifact_id": "resume-nope", "base_revision": 1, "request_id": "r",
-         "changes": [{"op": "set_entry_gap", "section_key": "internship", "gap_pt": 6.0}]},
-        DomainServices(resume_v2=svc),
-    )
-    payload = json.loads(text)
-    assert payload["code"] == "ARTIFACT_UNKNOWN" and images == []
-    # 空 changes 是请求级错误，同样必须给稳定错误码而不是 traceback
-    text2, _img2, _meta2 = dispatch_with_media(
-        "resume_repair_v2",
-        {"artifact_id": "resume-nope", "base_revision": 1, "request_id": "r2",
-         "changes": []},
-        DomainServices(resume_v2=svc),
-    )
-    assert json.loads(text2)["code"] == "CONTENT_INVALID"
 
 
 # ---------------- e2e（Word COM） ----------------

@@ -1,4 +1,5 @@
 """材料整篇读取和实际图片必须可经领域工具发现并使用。"""
+
 import base64
 import json
 from unittest.mock import Mock
@@ -8,23 +9,24 @@ from PIL import Image
 
 from skill_toolbox.materials import MaterialService
 from skill_toolbox.llm_tools.common import shared_tools
-from skill_toolbox.llm_tools.dispatcher import DomainServices, dispatch_with_media
-from skill_toolbox.runtime import AgentRuntime
+from skill_toolbox.resume_task import operation_result
 from skill_toolbox.tools.materials import MaterialPlanService
 
 
-@pytest.mark.parametrize('encoding', ['utf-8-sig', 'utf-16', 'gb18030'])
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "gb18030"])
 def test_uploaded_text_encodings_reach_tool_output(tmp_path, encoding):
-    source = tmp_path / 'experience.txt'
-    text = '项目经历：独立设计测试台，完成控制程序开发。'
+    source = tmp_path / "experience.txt"
+    text = "项目经历：独立设计测试台，完成控制程序开发。"
     source.write_text(text, encoding=encoding)
-    service = MaterialService(tmp_path / 'workspace')
+    service = MaterialService(tmp_path / "workspace")
     service.prepare_material(source)
     catalog = service.catalog()
     ir = next(iter(catalog.irs.values()))
-    result, images, meta = dispatch_with_media('read_material', {'source_id': ir.material_id, 'view': 'blocks'},
-        DomainServices(materials=MaterialPlanService(tmp_path / 'workspace', catalog, 'resume')))
-    assert text in result and meta['ok'] and not images
+    svc = MaterialPlanService(tmp_path / "workspace", catalog, "resume")
+    result = operation_result(
+        "read_material", svc.read_material(ir.material_id, view="blocks")
+    )
+    assert text in result.content and result.success and not result.images
 
 
 def test_standalone_uploaded_image_reaches_all_protocol_payloads(tmp_path):
@@ -32,22 +34,41 @@ def test_standalone_uploaded_image_reaches_all_protocol_payloads(tmp_path):
     from skill_toolbox.providers.openai import OpenAIProvider
     from skill_toolbox.providers.openai_responses import OpenAIResponsesProvider
     from skill_toolbox.providers.anthropic import AnthropicProvider
-    source = tmp_path / 'resume-screenshot.png'
-    Image.new('RGB', (400, 600), 'white').save(source)
-    workspace = tmp_path / 'workspace'
+
+    source = tmp_path / "resume-screenshot.png"
+    Image.new("RGB", (400, 600), "white").save(source)
+    workspace = tmp_path / "workspace"
     service = MaterialService(workspace)
     service.prepare_material(source)
     catalog = service.catalog()
     ir = next(iter(catalog.irs.values()))
-    output, images, meta = dispatch_with_media('read_material', {'source_id': ir.assets[0].id},
-        DomainServices(materials=MaterialPlanService(workspace, catalog, 'resume', {'vision':True})))
-    assert meta['ok'] and len(images) == 1
-    messages = [ConversationMessage(role='assistant', tool_calls=[ToolCall(id='image',name='read_material')]),
-                ConversationMessage(role='tool', tool_results=[ToolResult(tool_call_id='image',name='read_material',
-                    success=True,content=output,images=images)])]
-    for payload in (OpenAIProvider._messages('test', messages),
-                    OpenAIResponsesProvider._response_input(messages), AnthropicProvider._messages(messages)):
-        assert images[0]['base64_data'] in json.dumps(payload)
+    svc = MaterialPlanService(workspace, catalog, "resume", {"vision": True})
+    result = operation_result("read_material", svc.read_material(ir.assets[0].id))
+    output, images = result.content, [i.model_dump() for i in result.images]
+    assert result.success and len(images) == 1
+    messages = [
+        ConversationMessage(
+            role="assistant", tool_calls=[ToolCall(id="image", name="read_material")]
+        ),
+        ConversationMessage(
+            role="tool",
+            tool_results=[
+                ToolResult(
+                    tool_call_id="image",
+                    name="read_material",
+                    success=True,
+                    content=output,
+                    images=images,
+                )
+            ],
+        ),
+    ]
+    for payload in (
+        OpenAIProvider._messages("test", messages),
+        OpenAIResponsesProvider._response_input(messages),
+        AnthropicProvider._messages(messages),
+    ):
+        assert images[0]["base64_data"] in json.dumps(payload)
 
 
 @pytest.fixture
@@ -56,7 +77,9 @@ def material(tmp_path):
     source.mkdir()
     Image.new("RGB", (8, 10), "blue").save(source / "photo.png")
     text = "完整正文" * 100
-    (source / "resume.md").write_text(f"# 简历\n\n{text}\n\n![照片](photo.png)\n\n最后一段。", encoding="utf-8")
+    (source / "resume.md").write_text(
+        f"# 简历\n\n{text}\n\n![照片](photo.png)\n\n最后一段。", encoding="utf-8"
+    )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     service = MaterialService(workspace)
@@ -70,14 +93,19 @@ def test_material_blocks_are_paginated_without_truncating_text(material):
     workspace, catalog, ir = material
     svc = MaterialPlanService(workspace, catalog, "resume")
     first = svc.read_material(ir.material_id, view="blocks", limit=2).data
-    rest = svc.read_material(ir.material_id, view="blocks", offset=first["next_offset"]).data
+    rest = svc.read_material(
+        ir.material_id, view="blocks", offset=first["next_offset"]
+    ).data
     blocks = first["blocks"] + rest["blocks"]
     assert blocks == [block.model_dump() for block in ir.blocks]
     assert first["has_more"] and not rest["has_more"]
     assert rest["next_offset"] is None
     assert max(len(block["text"]) for block in blocks) > 200
     assert svc.read_material(ir.material_id).data["block_count"] == len(ir.blocks)
-    assert svc.read_material(ir.material_id, view="assets").data["assets"][0]["id"] == ir.assets[0].id
+    assert (
+        svc.read_material(ir.material_id, view="assets").data["assets"][0]["id"]
+        == ir.assets[0].id
+    )
 
 
 def test_pdf_native_text_is_optional_paginated_and_keeps_empty_pages(material):
@@ -86,22 +114,31 @@ def test_pdf_native_text_is_optional_paginated_and_keeps_empty_pages(material):
 
     workspace, catalog, ir = material
     ir.source_format = "pdf"
-    source = workspace / "sources" / material_id_dir(workspace, ir.material_id).name / "original.pdf"
+    source = (
+        workspace
+        / "sources"
+        / material_id_dir(workspace, ir.material_id).name
+        / "original.pdf"
+    )
     source.parent.mkdir(parents=True, exist_ok=True)
     with pymupdf.open() as pdf:
         pdf.new_page().insert_text((30, 40), "FLUX.1 inference acceleration 93%")
         pdf.new_page()
         pdf.save(source)
     svc = MaterialPlanService(workspace, catalog, "resume")
-    assert svc.material_summary(ir.material_id).data["supplementary_views"] == ["native_text"]
-    text, images, meta = dispatch_with_media("read_material", {
-        "source_id": ir.material_id, "view": "native_text", "limit": 1,
-    }, DomainServices(materials=svc))
-    data = json.loads(text)["data"]
-    assert meta["ok"] and not images
+    assert svc.material_summary(ir.material_id).data["supplementary_views"] == [
+        "native_text"
+    ]
+    result = operation_result(
+        "read_material", svc.read_material(ir.material_id, view="native_text", limit=1)
+    )
+    data = json.loads(result.content)["data"]
+    assert result.success and not result.images
     assert "FLUX.1 inference acceleration 93%" in data["pages"][0]["text"]
     assert data["pages"][0]["page"] == 1 and data["next_offset"] == 1
-    second = svc.read_material(ir.material_id, view="native_text", offset=1, limit=1).data
+    second = svc.read_material(
+        ir.material_id, view="native_text", offset=1, limit=1
+    ).data
     assert second["pages"] == [{"page": 2, "text": ""}]
     assert not second["has_more"]
 
@@ -110,31 +147,27 @@ def test_individual_block_keeps_character_slice_semantics(material):
     workspace, catalog, ir = material
     svc = MaterialPlanService(workspace, catalog, "resume")
     block = next(block for block in ir.blocks if len(block.text) > 200)
-    assert svc.read_material(block.id, offset=2, limit=7).data["block"]["text"] == block.text[2:9]
+    assert (
+        svc.read_material(block.id, offset=2, limit=7).data["block"]["text"]
+        == block.text[2:9]
+    )
 
 
 @pytest.mark.parametrize("vision", [False, True])
 def test_asset_visual_payload_reaches_dispatcher_only_with_vision(material, vision):
     workspace, catalog, ir = material
     svc = MaterialPlanService(workspace, catalog, "resume", {"vision": vision})
-    text, images, meta = dispatch_with_media("read_material", {
-        "source_id": ir.assets[0].id, "view": "assets",
-    }, DomainServices(materials=svc))
-    assert meta["ok"]
+    result = operation_result(
+        "read_material", svc.read_material(ir.assets[0].id, view="assets")
+    )
+    text, images = result.content, [i.model_dump() for i in result.images]
+    assert result.success
     assert json.loads(text)["data"]["asset"]["image_payload"] is vision
     assert len(images) == int(vision)
     if vision:
         assert images[0]["media_type"] == "image/png"
-        assert base64.b64decode(images[0]["base64_data"]) == (workspace / ir.assets[0].path).read_bytes()
+        assert (
+            base64.b64decode(images[0]["base64_data"])
+            == (workspace / ir.assets[0].path).read_bytes()
+        )
         assert images[0]["base64_data"] not in text
-
-
-def test_banner_and_tool_schema_explain_whole_material_access(material):
-    _, catalog, ir = material
-    runtime = AgentRuntime(provider=Mock(), emit=Mock())
-    banner = runtime._materials_banner(catalog, domain_mode=True)
-    assert f'read_material(source_id="{ir.material_id}", view="blocks")' in banner
-    assert 'read_material(' not in runtime._materials_banner(catalog)
-    spec = next(tool for tool in shared_tools() if tool["name"] == "read_material")
-    assert "material_id" in spec["description"]
-    assert "字符数" in spec["input_schema"]["properties"]["limit"]["description"]

@@ -8,9 +8,6 @@
   "optional_capabilities": [
     "vision"
   ],
-  "quality_actions": [
-    "fill_resume"
-  ],
   "max_steps": 24,
   "initial_form": {
     "prompt": {
@@ -31,23 +28,6 @@
           "value": "t109",
           "label": "简约 word"
         }
-      ]
-    }
-  },
-  "scripts": {
-    "fill_resume": {
-      "entry": "fill_resume.py",
-      "argv": [
-        "${SKILL_DIR}/templates/{template}",
-        "{data}",
-        "{output}"
-      ]
-    },
-    "render_pages": {
-      "entry": "render_pages.py",
-      "argv": [
-        "{source}",
-        "{output_dir}"
       ]
     }
   }

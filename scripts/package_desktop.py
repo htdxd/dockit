@@ -91,7 +91,7 @@ def main(*, resume_web=False):
         raise SystemExit('先运行 uv run scripts/release_sources.py，准备第三方许可与对应源码清单')
     shutil.copytree(ROOT / 'licenses', target / 'licenses')
 
-    from skill_toolbox.tools import resolve_mineru_cli
+    from skill_toolbox.tools.mineru import resolve_mineru_cli
     cli = resolve_mineru_cli()
     if len(cli) == 2 and Path(cli[1]).name == "mineru-open-api":
         npm_package = Path(cli[1]).parent.parent

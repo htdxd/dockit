@@ -12,18 +12,19 @@ from test_resume_workflow_service import generate, workflow  # noqa: F401
 
 @pytest.mark.asyncio
 async def test_workflow_first_delivery_requires_accept(workflow, tmp_path, monkeypatch):
-    original_build = rt._build_domain_services
+    from skill_toolbox import resume_task
+    original_build = resume_task.build_workflow
     events = []
 
     def build(*args, **kwargs):
-        services = original_build(*args, **kwargs)
-        engine = services.resume_v2
+        flow = original_build(*args, **kwargs)
+        engine = flow.engine
         engine.test_pages = 1
         engine.test_mechanical = True
         engine.test_render_count = 0
-        return services
+        return flow
 
-    monkeypatch.setattr(rt, "_build_domain_services", build)
+    monkeypatch.setattr(resume_task, "build_workflow", build)
 
     class Provider:
         calls = 0

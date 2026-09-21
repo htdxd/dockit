@@ -45,6 +45,26 @@ class MaterialPlanService:
         self.capabilities = capabilities or {}
         self.vision = bool(self.capabilities.get("vision", False))
 
+    def validate_content_plan(self) -> ContentPlan:
+        path = self.workspace / 'work/plans/content-plan.json'
+        if not path.is_file():
+            raise ValueError('缺少 ContentPlan，请先生成简历候选。')
+        plan = ContentPlan.model_validate_json(path.read_text(encoding='utf-8'))
+        if plan.task_type != self.task_type or (not self.vision and plan.mode != 'conservative'):
+            raise ValueError('ContentPlan 与当前任务或视觉能力不一致')
+        selected = [s.source_id for s in plan.selections]
+        excluded = [s.source_id for s in plan.exclusions]
+        if len(selected) != len(set(selected)) or len(excluded) != len(set(excluded)) or set(selected)&set(excluded):
+            raise ValueError('ContentPlan 包含重复或同时选择与排除的 source_id')
+        known = {i.id for ir in self.catalog.irs.values() for i in [*ir.blocks, *ir.assets]}
+        used = set(selected) | set(excluded)
+        if used-known:
+            raise ValueError(f'ContentPlan 引用了未知 source_id: {sorted(used-known)}')
+        missing = {a.id for ir in self.catalog.irs.values() for a in ir.assets}-used
+        if missing:
+            raise ValueError(f'ContentPlan 必须选择或明确排除每个候选 Asset: {sorted(missing)}')
+        return plan
+
     # ---------------- read_material ----------------
 
     def read_material(

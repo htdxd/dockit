@@ -1,15 +1,9 @@
-"""共享可见工具 schema、schema 工厂与固定错误格式（实施计划 §3.2/§5.2）。
-
-三个 Skill 只共享这些工具；普通任务不暴露 write/edit/exec_cmd/spec_append。
-finish_task 由 Runtime 自动执行；如保留为 LLM 兜底，只接受已注册 artifact_id[]。
-"""
+"""材料补查、问答和任务结束工具；在 ResumeTask 中与 handler 绑定。"""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from skill_toolbox.contracts.common import OperationResult, ToolError
 
 
 def function_schema(
@@ -18,7 +12,7 @@ def function_schema(
     properties: dict[str, Any],
     required: list[str],
 ) -> dict[str, Any]:
-    """与旧 tool_specs._function 相同的 schema 形状（JSON Schema function）。"""
+    """共享控制工具的 schema（JSON Schema function）。"""
     return {
         "name": name,
         "description": description,
@@ -31,21 +25,15 @@ def function_schema(
     }
 
 
-def operation_text(result: OperationResult) -> str:
-    """把内部 OperationResult 翻译为 LLM 可见的紧凑文本（不含 traceback）。"""
-    return json.dumps(result.as_dict(), ensure_ascii=False, indent=2)
 
 
-def error_text(exc: ToolError) -> str:
-    """固定错误格式：code / message / retryable / suggestion。"""
-    return json.dumps(exc.to_dict(), ensure_ascii=False)
 
 
 def shared_tools() -> list[dict]:
     return [
         function_schema(
             "read_material",
-            "优先用材料横幅的 material_id 配合 view=blocks 一次读取整篇正文（默认200块）；"
+            "首次消息已提供准备后的材料；需要补查时用 material_id 配合 view=blocks 读取正文（默认200块）；"
             "has_more=true 时用 next_offset 继续。也可使用返回的真实 block/asset ID 单独读取。"
             "材料ID配合 summary 查看摘要、assets 查看资源列表。"
             "单独读取图片 asset 时有 Vision 返回实际图片，无 Vision 仅返回元数据。不接受任意路径。",
@@ -56,29 +44,6 @@ def shared_tools() -> list[dict]:
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "材料ID：块/资源数量；单block ID：字符数（默认200）"},
             },
             ["source_id"],
-        ),
-        function_schema(
-            "create_content_plan",
-            "由后端写入 work/plans/content-plan.json 并补齐 task_type/mode/schema_version。"
-            "selected_source_ids / excluded_source_ids 必须是真实 source_id；"
-            "每个候选 Asset 必须被选择或明确排除（未列出的 Asset 自动排除并留痕）。",
-            {
-                "selected_source_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "要使用的 block/asset 真实 ID 列表",
-                },
-                "excluded_source_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "要排除的 block/asset 真实 ID 列表（可选）",
-                },
-                "exclusion_reasons": {
-                    "type": "object",
-                    "description": "可选：source_id → 排除原因（irrelevant/duplicate/low_confidence/unsupported/user_rejected）",
-                },
-            },
-            ["selected_source_ids"],
         ),
         function_schema(
             "ask_user_questions",

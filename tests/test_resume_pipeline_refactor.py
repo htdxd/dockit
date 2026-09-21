@@ -13,7 +13,7 @@ from skill_toolbox.contracts.common import ToolError
 from skill_toolbox.resume_layout import pipeline
 from skill_toolbox.resume_layout.t109 import TEMPLATE
 from skill_toolbox.tools.process import ProcessRunner
-from skill_toolbox.tools.resume import ResumeEditService
+from skill_toolbox.tools.resume_edit import ResumeEditService
 
 
 def test_measurement_worker_uses_supplied_template_and_excludes_photo(tmp_path):

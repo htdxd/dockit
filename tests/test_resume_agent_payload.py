@@ -5,7 +5,7 @@ import json
 import pytest
 
 from skill_toolbox.contracts.common import OperationResult
-from skill_toolbox.llm_tools import dispatcher
+from skill_toolbox.resume_task import operation_result
 from skill_toolbox.tools.resume_workflow import compact_agent_result
 
 
@@ -25,14 +25,13 @@ def test_compact_wire_keeps_candidate_content_images_and_failure(monkeypatch, ok
             "actual_changes": [{"text": body}], "applied_changes": [{"entry": {"text": body}}]},
     )
     original = copy.deepcopy(result.data)
-    monkeypatch.setattr(dispatcher, "build_dispatcher", lambda _: {"resume_edit": lambda _: result})
-    text, images, meta = dispatcher.dispatch_with_media(
-        "resume_edit", {}, dispatcher.DomainServices(resume_workflow=object()))
+    output = operation_result('resume_edit', result)
+    text, images = output.content, [i.model_dump() for i in output.images]
     payload = json.loads(text)
     assert payload["data"]["content"]["sections"][0]["entries"][0]["text"] == [body]
     assert payload["data"]["candidate_id"] == "resume-test@2"
     assert payload["data"]["remaining_pages"] == []
-    assert images == result.images and meta["ok"] is ok
+    assert images == result.images and output.success is ok
     if not ok:
         assert payload["code"] == "PAGE_TARGET_EXCEEDED"
     assert result.data == original

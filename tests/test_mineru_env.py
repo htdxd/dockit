@@ -4,63 +4,12 @@ import pytest
 from skill_toolbox.models import ToolCall
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.sidecar import SidecarService
-from skill_toolbox.tools import ToolRegistry
 
 ECHO_ENV_SCRIPT = """\
 import os, sys
 print(os.environ.get("MINERU_TOKEN", "MISSING"))
 sys.exit(0)
 """
-
-
-def _make_skill_dir(tmp_path: Path) -> Path:  # type: ignore[no-untyped-def]
-    skill_dir = tmp_path / "skill"
-    scripts = skill_dir / "scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "echo_env.py").write_text(ECHO_ENV_SCRIPT, encoding="utf-8")
-    return skill_dir
-
-
-async def _run_exec_cmd(tool_registry: ToolRegistry, tmp_path: Path) -> str:  # type: ignore[no-untyped-def]
-    call = ToolCall(
-        id="run-env",
-        name="exec_cmd",
-        arguments={"action": "echo_env", "args": {}},
-    )
-    result = await tool_registry.execute(call)
-    assert result.success, result.content
-    return result.content
-
-
-@pytest.mark.asyncio
-async def test_exec_cmd_receives_extra_env(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """ToolRegistry forwards extra_env to exec_cmd subprocesses (MINERU_TOKEN)."""
-    skill_dir = _make_skill_dir(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    registry = ToolRegistry(
-        WorkspacePolicy(workspace),
-        skill_dir=skill_dir,
-        scripts={"echo_env": ("echo_env.py", ())},
-        env={"MINERU_TOKEN": "sk-mineru-test"},
-    )
-    content = await _run_exec_cmd(registry, tmp_path)
-    assert "sk-mineru-test" in content
-
-
-@pytest.mark.asyncio
-async def test_exec_cmd_omits_extra_env_when_unset(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """Without extra_env, MINERU_TOKEN is absent from the subprocess env."""
-    skill_dir = _make_skill_dir(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    registry = ToolRegistry(
-        WorkspacePolicy(workspace),
-        skill_dir=skill_dir,
-        scripts={"echo_env": ("echo_env.py", ())},
-    )
-    content = await _run_exec_cmd(registry, tmp_path)
-    assert "MISSING" in content
 
 
 def test_task_env_never_exposes_mineru_token_to_agent_scripts() -> None:

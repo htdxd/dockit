@@ -88,14 +88,13 @@ class ResumeWorkflow:
             })
         self.material_ids = ids
         self.facts.save()
-        capabilities = self.engine.prepare(self.template_id).data
         geometry = self.engine.profile.geometry
         body_height = geometry.page_bottom_pt - geometry.page_top_pt
         continuation_top = geometry.continuation_page_top_pt
         return OperationResult(ok=True, status="validated", data={
             "candidate_state": self.candidate_state(),
             "template_id": self.template_id,
-            "person_fields": capabilities["header_fields"],
+            "person_fields": sorted(set(self.engine.profile.header_labels.values())),
             "materials": documents,
             "material_review": {"total": len(documents),
                                 "needs_review": [{"material_id": d["material_id"], "name": d["name"]}
@@ -174,7 +173,7 @@ class ResumeWorkflow:
         }
 
     def generate(self, request):
-        allowed = self.engine.prepare(self.template_id).data["header_fields"]
+        allowed = sorted(set(self.engine.profile.header_labels.values()))
         content = request.content
         unknown = set(content.person) - set(allowed)
         if unknown:
@@ -465,6 +464,11 @@ class ResumeWorkflow:
             allowed = {(workspace / record[key]).resolve() for key in ("docx", "pdf") if record.get(key)}
             if not all(path in allowed for path in resolved):
                 raise ValueError("交付文件必须来自同一已接受版本的 DOCX/PDF。")
+            from skill_toolbox.tools.workspace import sha256_file
+            for kind in ('docx', 'pdf'):
+                path = (workspace / record[kind]).resolve() if record.get(kind) else None
+                if path in resolved and (not path.is_file() or sha256_file(path) != record.get(kind + '_sha256')):
+                    raise ValueError('交付文件与已接受版本的 hash 不一致，必须重新生成或修复。')
             report_path = self.engine.store.revision_dir(artifact_id, revision) / "delivery_report.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
             if (record.get("mechanical", {}).get("passed") is not True

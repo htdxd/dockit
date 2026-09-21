@@ -16,7 +16,7 @@ from skill_toolbox.contracts.resume import (
 from skill_toolbox.contracts.common import ToolError
 from skill_toolbox.resume_layout import emit, layout, pipeline, qa, t001
 from skill_toolbox.resume_layout.profiles import get_profile
-from skill_toolbox.tools.resume import ResumeEditService
+from skill_toolbox.tools.resume_edit import ResumeEditService
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "backend/skill_toolbox/skill_defs/resume_pro/templates"
 TEMPLATE = TEMPLATES / "t001/template.docx"

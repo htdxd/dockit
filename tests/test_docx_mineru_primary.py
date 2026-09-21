@@ -40,12 +40,13 @@ def test_docx_mineru_primary_and_native_backup_keep_original_images(tmp_path, mo
     assert ir.model_dump_json() == saved and len(calls) == 1
     from types import SimpleNamespace
     from skill_toolbox.tools.resume_workflow import ResumeWorkflow
-    from skill_toolbox.llm_tools.dispatcher import DomainServices, dispatch_with_media
+    from skill_toolbox.resume_task import operation_result
     workflow = ResumeWorkflow(SimpleNamespace(workspace=workspace), tools, 't001')
-    output, _, meta = dispatch_with_media('read_material', {'source_id':ir.material_id, 'view':'native_text'},
-        DomainServices(materials=tools, resume_workflow=workflow))
-    row = json.loads(output)['data']['blocks'][0]
-    assert meta['ok'] and workflow.facts.sources[row['source_id']]['text'] == '原件文字 93%'
+    result = tools.read_material(ir.material_id, view='native_text')
+    workflow.record_native_read(result)
+    output = operation_result('read_material', result)
+    row = json.loads(output.content)['data']['blocks'][0]
+    assert output.success and workflow.facts.sources[row['source_id']]['text'] == '原件文字 93%'
     original = next(a for a in ir.assets if a.source_locator.startswith('docx-original:'))
     assert (original.width, original.height) == (80,100)
     assert (workspace / original.path).read_bytes() == original_image.read_bytes()

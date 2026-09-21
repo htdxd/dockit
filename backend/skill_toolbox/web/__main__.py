@@ -71,7 +71,7 @@ def main():
         return
     if sys.platform != 'win32':
         raise SystemExit('当前简历渲染需要 Windows + Microsoft Word；此版本不支持 Linux 渲染。')
-    from skill_toolbox.tools import resolve_mineru_cli
+    from skill_toolbox.tools.mineru import resolve_mineru_cli
     resolve_mineru_cli()
     if not shutil.which('pdftoppm'):
         raise SystemExit('缺少随包提供的 Poppler，请使用 start-web.bat 启动。')

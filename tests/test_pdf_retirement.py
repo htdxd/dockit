@@ -4,9 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from skill_toolbox.llm_tools.dispatcher import DomainServices, build_dispatcher, dispatch
 from skill_toolbox.providers.mock import ScriptedProvider
-from skill_toolbox.runtime import AgentRuntime, TaskRequest, _DOMAIN_TOOL_FACTORIES
+from skill_toolbox.runtime import AgentRuntime, TaskRequest
 from skill_toolbox.sidecar import SidecarService
 from skill_toolbox.skills import load_skill
 
@@ -39,19 +38,6 @@ async def test_retired_sidecar_rejects_before_provider_validation(payload):
     assert events[0]["event"]["type"] == "task_failed"
     assert "FEATURE_RETIRED" in events[0]["event"]["error"]
     assert not service.tasks
-
-
-def test_conversion_tools_removed_but_shared_and_resume_tools_remain():
-    services = DomainServices()
-    handlers = build_dispatcher(services)
-    assert "pdf_docx_routing" not in _DOMAIN_TOOL_FACTORIES
-    for name in ("pdf_prepare", "pdf_audit", "pdf_repair", "pdf_finalize"):
-        assert name not in handlers
-        assert "TOOL_NOT_AVAILABLE" in dispatch(name, {}, services)
-    assert "read_material" in handlers
-    assert "resume_generate_v2" in handlers
-    assert "resume_accept" in handlers
-    services.cancel_all()
 
 
 def test_ui_retirement_preserves_history_route_and_pdf_uploads():

@@ -1096,16 +1096,16 @@ def _relative_to(workspace: Path, path: Path) -> str:
 
 
 def _image_width(path: Path) -> int | None:
-    from skill_toolbox.tools import _image_size
+    from skill_toolbox.tools.assets import image_size
 
-    dims = _image_size(path)
+    dims = image_size(path)
     return dims[0] if dims else None
 
 
 def _image_height(path: Path) -> int | None:
-    from skill_toolbox.tools import _image_size
+    from skill_toolbox.tools.assets import image_size
 
-    dims = _image_size(path)
+    dims = image_size(path)
     return dims[1] if dims else None
 
 
