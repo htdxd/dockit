@@ -1,6 +1,6 @@
 [package]
 name = "skill-toolbox"
-version = "0.2.0"
+version = "0.3.0"
 license = "AGPL-3.0-only"
 description = "DocKit Resume: AI-assisted Chinese resume creation"
 authors = ["Skill Toolbox Contributors"]

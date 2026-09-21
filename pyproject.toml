@@ -1,6 +1,6 @@
 [project]
 name = "skill-toolbox"
-version = "0.2.0"
+version = "0.3.0"
 description = "DocKit Resume: AI-assisted Chinese resumes with measured Word layouts"
 readme = "README.md"
 license = "AGPL-3.0-only"

@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import json
 import tarfile
+import tomllib
 from urllib.request import urlretrieve
 import zipfile
 
@@ -40,7 +41,8 @@ def main():
                 target.write_bytes(archive.extractfile(entry).read())
         records.append({'file':name,'url':url,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
     (notices/'sources.json').write_text(json.dumps(records,indent=2)+'\n',encoding='utf-8')
-    output=ROOT/'backend-dist/DocKit-Resume-0.2.0-PDF-Sources.zip'
+    version = tomllib.loads((ROOT/'pyproject.toml').read_text(encoding='utf8'))['project']['version']
+    output=ROOT/f'backend-dist/DocKit-Resume-{version}-PDF-Sources.zip'
     with zipfile.ZipFile(output,'w',zipfile.ZIP_STORED) as archive:
         for record in records:
             archive.write(folder/record['file'],record['file'])
