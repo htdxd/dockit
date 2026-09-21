@@ -192,6 +192,22 @@ function mountLayout(root2, options = {}) {
                 <img src="resume-templates/t109.jpg" alt="\u7B80\u7EA6 word" loading="lazy">
                 <div class="tmpl-name">\u7B80\u7EA6 word</div>
               </div>
+              <div class="tmpl-card" data-template="t002" tabindex="0" role="button" aria-label="\u9009\u62E9\u6A21\u677F \u7B80\u7EA6\u7EBF\u6761">
+                <img src="resume-templates/t002.jpg" alt="\u7B80\u7EA6\u7EBF\u6761" loading="lazy">
+                <div class="tmpl-name">\u7B80\u7EA6\u7EBF\u6761</div>
+              </div>
+              <div class="tmpl-card" data-template="t003" tabindex="0" role="button" aria-label="\u9009\u62E9\u6A21\u677F \u5E94\u5C4A\u6BD5\u4E1A\u751F">
+                <img src="resume-templates/t003.jpg" alt="\u5E94\u5C4A\u6BD5\u4E1A\u751F" loading="lazy">
+                <div class="tmpl-name">\u5E94\u5C4A\u6BD5\u4E1A\u751F</div>
+              </div>
+              <div class="tmpl-card" data-template="t015" tabindex="0" role="button" aria-label="\u9009\u62E9\u6A21\u677F \u884C\u653F\u7BA1\u7406">
+                <img src="resume-templates/t015.jpg" alt="\u884C\u653F\u7BA1\u7406" loading="lazy">
+                <div class="tmpl-name">\u884C\u653F\u7BA1\u7406</div>
+              </div>
+              <div class="tmpl-card" data-template="t024" tabindex="0" role="button" aria-label="\u9009\u62E9\u6A21\u677F \u53CC\u680F\u6E05\u6670">
+                <img src="resume-templates/t024.jpg" alt="\u53CC\u680F\u6E05\u6670" loading="lazy">
+                <div class="tmpl-name">\u53CC\u680F\u6E05\u6670</div>
+              </div>
             </div>
           </div>
           <div class="card">
@@ -216,7 +232,6 @@ function mountLayout(root2, options = {}) {
             </div>
             <div class="cta-row">
               <button class="btn" data-start="resume">\u5F00\u59CB\u751F\u6210\u7B80\u5386</button>
-              <span class="btn-note">\u5373\u5C06\u4E0A\u7EBF \xB7 \u81EA\u52A8\u68C0\u67E5\u8D85\u9875 / \u6EA2\u51FA / \u5C42\u7EA7</span>
             </div>
           </div>
         </div>
@@ -771,7 +786,6 @@ root.querySelector(".brand-sub").textContent = "AI \u7B80\u5386\u751F\u6210";
 root.querySelector(".h-sub").textContent = "\u586B\u4FE1\u606F \u2192 \u7B54\u5C11\u91CF\u95EE\u9898 \u2192 \u62FF\u5230\u6587\u4EF6";
 root.querySelector(".foot").innerHTML = '\u6750\u6599\u4E0E\u4EA7\u7269\u4FDD\u5B58\u5728\u670D\u52A1\u5668\uFF1B\u89E3\u6790\u4E0E\u751F\u6210\u4F1A\u53D1\u9001\u81F3\u914D\u7F6E\u7684 AI / MinerU \u670D\u52A1\u3002 <a href="https://github.com/htdxd/dockit" target="_blank" rel="noopener">\u6E90\u7801 \xB7 AGPL-3.0</a>';
 root.querySelector("#page-resume .fmt").textContent = "pdf / docx / md / txt / jpg / png / webp \xB7 \u6700\u591A 6 \u4E2A\u6587\u4EF6\uFF0C\u603B\u8BA1 30 MB";
-root.querySelector("#page-resume .btn-note").textContent = "\u81EA\u52A8\u68C0\u67E5\u8D85\u9875 / \u6EA2\u51FA / \u5C42\u7EA7";
 root.querySelector(".hello").insertAdjacentHTML("beforeend", '<span id="web-quota"></span><button class="btn-sec" id="web-logout" hidden>\u9000\u51FA</button>');
 el("sub-resume-new").insertAdjacentHTML("beforeend", '<label class="web-consent"><input id="web-consent" type="checkbox"> \u6211\u540C\u610F\u5C06\u6750\u6599\u53D1\u9001\u81F3\u7F51\u7AD9\u914D\u7F6E\u7684 AI / MinerU \u670D\u52A1\u3002\u6750\u6599\u548C\u4EFB\u52A1\u65E5\u5FD7\u4FDD\u5B58 <span id="web-retention">7</span> \u5929\u3002</label>');
 el("sub-resume-run").insertAdjacentHTML("afterbegin", '<select class="inp web-history" id="web-history" aria-label="\u9009\u62E9\u4EFB\u52A1"></select>');
