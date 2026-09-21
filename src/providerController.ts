@@ -1,33 +1,32 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import type { SendBackend } from "./backend";
+import { ProviderRequests } from "./providerRequests";
+import { modelListIdentity, probeIdentity } from "./providerConfig";
 import type { BackendEnvelope } from "./types";
 import { element } from "./dom";
-import {
-  DEFAULT_GLOBAL_SETTINGS,
-  defaultProviderName,
-  deleteProvider,
-  effectiveModel,
-  initDb,
-  kindLabel,
-  listProviders,
-  loadGlobalSettings,
-  saveGlobalSettings,
-  saveProvider,
-  _defaultProvider,
-  type CapabilityProbeReport,
-  type CapabilityProbeResult,
-  type GlobalSettings,
-  type ProviderConfig,
-} from "./settings";
+import { deleteProvider, initDb, listProviders, loadGlobalSettings, saveGlobalSettings, saveProvider } from "./settings";
+import { DEFAULT_GLOBAL_SETTINGS, defaultProviderName, effectiveModel, kindLabel, _defaultProvider,
+  parseStoredProbe, probeFingerprint, effectiveCapability,
+  type CapabilityProbeReport, type CapabilityProbeResult, type GlobalSettings, type ProviderConfig } from "./providerConfig";
 import { escapeHtml, goSub, setModelSummary, toast } from "./ui";
 
 /** 供应商表单、模型选择与能力探测拥有同一份设置状态。 */
 export function createProviderController(send: SendBackend) {
+  const requests = new ProviderRequests();
   /* ===== 供应商状态（DB 驱动） ===== */
   let providers: ProviderConfig[] = [];
   let globalSettings: GlobalSettings = { ...DEFAULT_GLOBAL_SETTINGS };
   let mineruReady: boolean | null = null;
   let settingsModels: string[] = [];
+
+  function resetRequestButtons(channel?: "models-fetch" | "probe-capabilities"): void {
+    for (const [owner, id, label] of [["models-fetch", "btn-fetch-models", "⟳ 获取模型列表"],
+      ["probe-capabilities", "btn-probe", "🔍 检测模型能力"]] as const) {
+      if (channel && owner !== channel) continue;
+      const button = document.getElementById(id) as HTMLButtonElement | null;
+      if (button) { button.disabled = false; button.textContent = label; }
+    }
+  }
 
   function activeProvider(): ProviderConfig {
     return providers.find((p) => p.id === globalSettings.active_provider) ?? providers[0] ?? _defaultFormProvider();
@@ -36,18 +35,6 @@ export function createProviderController(send: SendBackend) {
   function _defaultFormProvider(): ProviderConfig {
     const kind = element<HTMLSelectElement>("#provider-kind").value as ProviderConfig["kind"];
     return _defaultProvider({ kind });
-  }
-
-  /* ===== 客户端视觉判定：镜像后端 capabilities.py 的静态表（仅用于 UI 提示，后端为准） */
-  const VISION_MODEL_RE = [
-    /gpt-4o/i, /gpt-4\.1/i, /gpt-4\.5/i, /gpt-4-vision/i, /gpt-5/i,
-    /gemini/i, /claude-3/i, /claude-4/i,
-    /qwen[0-9.\-]*vl/i, /glm-[0-9.]+v/i, /doubao[0-9.\-]*vision/i, /minimax[-_]vl/i,
-    /llava/i, /internvl/i, /deepseek-vl/i, /pixtral/i,
-  ];
-
-  function isVisionModel(name: string): boolean {
-    return VISION_MODEL_RE.some((re) => re.test(name));
   }
 
   function renderModelPicker(): void {
@@ -126,20 +113,20 @@ export function createProviderController(send: SendBackend) {
     }
   });
 
-  let pickerModelsRequest = 0;
 
   /** 对当前激活供应商发起一次 fetch_models 请求，结果渲染进二级模型列表 */
   function fetchModelsForPicker(): void {
     const host = pickerModelsHost();
     if (!host) return;
     const p = activeProvider();
-    const reqId = `mp-models-${++pickerModelsRequest}`;
+    const reqId = requests.begin("mp-models", modelListIdentity(p));
     host.innerHTML = `<div class="mp-empty">正在获取模型列表…</div>`;
     void send({
       id: reqId,
       type: "fetch_models",
       payload: { kind: p.kind, base_url: p.base_url, api_key: p.api_key },
     }).catch(() => {
+      if (!requests.take("mp-models", reqId, () => modelListIdentity(activeProvider()))) return;
       host.innerHTML = `<div class="mp-empty">获取失败，请到设置页检查配置</div>`;
     });
   }
@@ -184,11 +171,18 @@ export function createProviderController(send: SendBackend) {
     syncModelSummary();
   }
 
+  function selectProvider(id: string): void {
+    requests.clear();
+    resetRequestButtons();
+    globalSettings = { ...globalSettings, active_provider: id };
+  }
+
   async function activateProvider(id: string): Promise<void> {
     const provider = providers.find((p) => p.id === id);
     if (!provider) return;
-    globalSettings = { ...globalSettings, active_provider: id };
+    selectProvider(id);
     await saveGlobalSettings(globalSettings);
+    if (globalSettings.active_provider !== id) return;
     applyProviderToForm(provider);
     renderProviderCards();
     syncModelSummary();
@@ -198,9 +192,10 @@ export function createProviderController(send: SendBackend) {
   async function addProvider(): Promise<void> {
     const provider = _defaultFormProvider();
     providers.push(provider);
-    globalSettings = { ...globalSettings, active_provider: provider.id };
+    selectProvider(provider.id);
     await saveGlobalSettings(globalSettings);
     await saveProvider(provider);
+    if (globalSettings.active_provider !== provider.id) return;
     applyProviderToForm(provider);
     renderProviderCards();
     syncModelSummary();
@@ -219,7 +214,7 @@ export function createProviderController(send: SendBackend) {
       providers.push(fresh);
       await saveProvider(fresh);
     }
-    globalSettings = { ...globalSettings, active_provider: providers[0].id };
+    selectProvider(providers[0].id);
     await saveGlobalSettings(globalSettings);
     applyProviderToForm(activeProvider());
     renderProviderCards();
@@ -346,15 +341,6 @@ export function createProviderController(send: SendBackend) {
     syncCapabilityUi();
   }
 
-  /** 能力默认值：tool_calling 默认开启；vision 按模型静态表判定 */
-  function capabilityDefault(cap: "tool_calling" | "vision"): boolean {
-    const status = parseStoredProbe(activeProvider().capability_probe)?.[cap].status;
-    if (status === "verified") return true;
-    if (status === "unsupported") return false;
-    if (cap === "vision") return isVisionModel(modelName());
-    return true;
-  }
-
   function capabilityOverride(cap: "tool_calling" | "vision"): boolean | null {
     const p = activeProvider();
     if (cap === "vision") return p.vision_override ?? null;
@@ -362,7 +348,7 @@ export function createProviderController(send: SendBackend) {
   }
 
   function capabilityEffective(cap: "tool_calling" | "vision"): boolean {
-    return capabilityOverride(cap) ?? capabilityDefault(cap);
+    return effectiveCapability(activeProvider(), cap);
   }
 
   const CAP_IDS: Record<"tool_calling" | "vision", string> = {
@@ -438,11 +424,12 @@ export function createProviderController(send: SendBackend) {
   });
 
   /* ===== 设置页：获取模型列表 / 校验连接 / 输出目录 ===== */
-  const MODELS_REQUEST_ID = "models-fetch";
   let modelsFetchTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** 向 sidecar 请求模型列表（Tauri），浏览器演示降级为本地模拟列表 */
   function fetchModels(): void {
+    if (modelsFetchTimer) clearTimeout(modelsFetchTimer);
+    modelsFetchTimer = null;
     const btn = element<HTMLButtonElement>("#btn-fetch-models");
     const hint = element<HTMLElement>("#model-hint");
     const kind = element<HTMLSelectElement>("#provider-kind").value;
@@ -465,11 +452,13 @@ export function createProviderController(send: SendBackend) {
     btn.disabled = true;
     btn.textContent = "获取中…";
     hint.textContent = base ? `GET ${base}/models` : "正在请求默认端点…";
+    const requestId = requests.begin("models-fetch", modelListIdentity(formToProvider()));
     void send({
-      id: MODELS_REQUEST_ID,
+      id: requestId,
       type: "fetch_models",
       payload: { kind, base_url: base, api_key: apiKey },
     }).catch((error) => {
+      if (!requests.take("models-fetch", requestId, () => modelListIdentity(formToProvider()))) return;
       hint.textContent = `请求失败：${String(error)}`;
       btn.disabled = false;
       btn.textContent = "⟳ 获取模型列表";
@@ -519,6 +508,9 @@ export function createProviderController(send: SendBackend) {
 
   /* 填完 api_key / base_url / 切换 Provider 后自动请求模型列表（300ms 防抖） */
   function scheduleFetchModels(): void {
+    requests.cancel("models-fetch");
+    requests.cancel("probe-capabilities");
+    resetRequestButtons();
     if (modelsFetchTimer) clearTimeout(modelsFetchTimer);
     modelsFetchTimer = setTimeout(() => {
       const apiKey = element<HTMLInputElement>("#api-key").value.trim();
@@ -542,25 +534,13 @@ export function createProviderController(send: SendBackend) {
   });
 
   /* ===== 能力探测（真实请求） ===== */
-  const PROBE_REQUEST_ID = "probe-capabilities";
   /** 发送探测时的快照指纹；回包时用它校验，避免过期结果写进别的供应商 */
-  let probeRequestFingerprint: string | undefined;
-
-  /** 从 DB 行解析探测报告；解析失败/为空 → null（显示「未检测」） */
-  function parseStoredProbe(raw: string): CapabilityProbeReport | null {
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as CapabilityProbeReport;
-      if (!parsed?.tool_calling || !parsed?.vision || !parsed?.reasoning_control) return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  }
 
   /** 修改 kind/base_url/model 后立即把探测状态重置为「未检测」。
    *  不自动联网；由用户点击「检测模型能力」或首次任务显式触发。 */
   function invalidateProbe(): void {
+    requests.cancel("probe-capabilities");
+    resetRequestButtons("probe-capabilities");
     const provider = activeProvider();
     const idx = providers.findIndex((p) => p.id === provider.id);
     if (idx < 0) return;
@@ -620,21 +600,6 @@ export function createProviderController(send: SendBackend) {
     });
   }
 
-  /** 探测指纹：kind + base_url + 生效模型（镜像后端 capabilities.probe_fingerprint，
-   *  前后端一致，用于校验探测结果是否仍适用于当前供应商）。
-   *  手动输入模型（model === "__custom"）时须用 model_custom 参与指纹计算：
-   *  发送端（modelName()）与后端都按「生效模型」算指纹，落库端若直接用原始
-   *  "__custom" 会得到不同指纹，导致探测结果被误判为「配置已变更」而丢弃。 */
-  function probeFingerprint(p: {
-    kind: string;
-    base_url?: string | null;
-    model: string;
-    model_custom?: string;
-  }): string {
-    const model = p.model === "__custom" || !p.model ? (p.model_custom ?? "") : p.model;
-    return JSON.stringify([p.kind, (p.base_url ?? "").replace(/\/+$/, ""), model]);
-  }
-
   /** 把探测报告持久化到当前供应商 —— 仅当 kind/base_url/model 未变（指纹一致）时
    *  才落库。探测期间用户切走/改了供应商时，过期结果直接丢弃，绝不写进别的行。 */
   function persistProbeReport(
@@ -646,25 +611,8 @@ export function createProviderController(send: SendBackend) {
     if (requestFingerprint !== undefined && requestFingerprint !== currentFingerprint) {
       renderProbeStatus(null);
       toast("模型配置已变更，探测结果已丢弃", "warn");
-      // TEMP DEBUG: 记录指纹供定位
-      try {
-        localStorage.setItem("dockit.probeDebug", JSON.stringify({
-          t: Date.now(),
-          mismatch: true,
-          currentFingerprint,
-          requestFingerprint,
-          current: { kind: provider.kind, base_url: provider.base_url, model: provider.model, model_custom: provider.model_custom, id: provider.id },
-          active_provider: globalSettings.active_provider,
-          providers_len: providers.length,
-        }));
-      } catch { /* ignore */ }
       return;
     }
-    try {
-      localStorage.setItem("dockit.probeDebug", JSON.stringify({
-        t: Date.now(), mismatch: false, currentFingerprint, requestFingerprint,
-      }));
-    } catch { /* ignore */ }
     const idx = providers.findIndex((p) => p.id === provider.id);
     if (idx < 0) return;
     const patch = { ...provider, capability_probe: JSON.stringify(report),
@@ -690,13 +638,9 @@ export function createProviderController(send: SendBackend) {
     btn.textContent = "探测中…";
     const provider = activeProvider();
     // 发送瞬间的快照指纹：回包比对以此为准（与后端 probe_fingerprint 归一化一致）
-    probeRequestFingerprint = probeFingerprint({
-      kind: element<HTMLSelectElement>("#provider-kind").value,
-      base_url: element<HTMLInputElement>("#base-url").value.trim() || null,
-      model: modelName(),
-    });
+    const requestId = requests.begin("probe-capabilities", probeIdentity(formToProvider()));
     void send({
-      id: PROBE_REQUEST_ID,
+      id: requestId,
       type: "probe_capabilities",
       payload: {
         provider: {
@@ -709,6 +653,7 @@ export function createProviderController(send: SendBackend) {
         },
       },
     }).catch((error) => {
+      if (!requests.take("probe-capabilities", requestId, () => probeIdentity(formToProvider()))) return;
       toast(`探测请求失败：${String(error)}`, "warn");
       btn.disabled = false;
       btn.textContent = "🔍 检测模型能力";
@@ -717,6 +662,8 @@ export function createProviderController(send: SendBackend) {
 
   element<HTMLButtonElement>("#btn-probe").addEventListener("click", probeCapabilities);
   element<HTMLSelectElement>("#reasoning-level").addEventListener("change", () => {
+    requests.cancel("probe-capabilities");
+    resetRequestButtons("probe-capabilities");
     saveCurrentProvider();
     renderProbeStatus(parseStoredProbe(activeProvider().capability_probe), false);
   });
@@ -754,11 +701,12 @@ export function createProviderController(send: SendBackend) {
        return；其它 id（如任务完成事件）必须继续走下方 task 分发，不能被吞掉。 */
     if (payload.event.type === "models_fetched") {
       const event = payload.event as { models?: string[]; error?: string };
-      const isSettingsFetch = payload.id === MODELS_REQUEST_ID;
-      const isPickerFetch = typeof payload.id === "string" && payload.id.startsWith("mp-models-");
+      const isSettingsFetch = requests.owns("models-fetch", payload.id);
+      const isPickerFetch = requests.owns("mp-models", payload.id);
       if (!isSettingsFetch && !isPickerFetch) {
         // 不是模型列表请求 → 不拦截，继续走任务事件分发
       } else if (isSettingsFetch) {
+        if (!requests.take("models-fetch", payload.id, () => modelListIdentity(formToProvider()))) return true;
         const btn = document.getElementById("btn-fetch-models") as HTMLButtonElement | null;
         const hint = document.getElementById("model-hint");
         if (event.error) {
@@ -778,6 +726,7 @@ export function createProviderController(send: SendBackend) {
         }
         return true;
       } else {
+        if (!requests.take("mp-models", payload.id, () => modelListIdentity(activeProvider()))) return true;
         const host = pickerModelsHost();
         if (!host) return true;
         if (event.error) {
@@ -798,7 +747,8 @@ export function createProviderController(send: SendBackend) {
         return true;
       }
     }
-    if (payload.id === PROBE_REQUEST_ID && payload.event.type === "capabilities_probed") {
+    if (requests.owns("probe-capabilities", payload.id) && payload.event.type === "capabilities_probed") {
+      if (!requests.take("probe-capabilities", payload.id, () => probeIdentity(formToProvider()))) return true;
       const event = payload.event as {
         report?: CapabilityProbeReport;
         error?: string;
@@ -815,7 +765,7 @@ export function createProviderController(send: SendBackend) {
       } else if (event.report) {
         // 用发送瞬间的快照指纹校验（而非当前表单值），防止探测期间用户
         // 切走/改了模型后，过期结果写进别的供应商。
-        const sentFingerprint = probeRequestFingerprint;
+        const sentFingerprint = probeFingerprint(formToProvider());
         const serverFingerprint = event.fingerprint;
         const effectiveFingerprint = serverFingerprint ?? sentFingerprint;
         renderProbeStatus(event.report);
