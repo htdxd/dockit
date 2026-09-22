@@ -38,9 +38,10 @@ async def test_all_images_are_transcribed_before_first_resume_turn(tmp_path, mon
     text = tmp_path / '经历.txt'
     text.write_text('独立开发工具，用户提供 Stars 120。', encoding='utf-8')
     provider = Reader()
-    await AgentRuntime(provider, lambda e: None).run(TaskRequest(
+    events = []
+    await AgentRuntime(provider, events.append).run(TaskRequest(
         skill_id='resume_pro', user_prompt='手动填写：张三，求职开发工程师', output_dir=tmp_path/'out',
-        materials=[*files, text], template_id='t001', tool_mode='domain',
+        materials=[*files, files[0], text], template_id='t001', tool_mode='domain',
         capabilities={'vision':True,'tool_calling':True}))
     assert provider.read == 6
     content = provider.initial[0].text
@@ -49,6 +50,14 @@ async def test_all_images_are_transcribed_before_first_resume_turn(tmp_path, mon
     assert '"total": 7' in content and '"needs_review": []' in content
     assert content.count('"reading_status": "transcribed"') == 7
     assert not provider.initial[0].images
+    progress = [event for event in events if event['type'] == 'material_progress']
+    assert all(event.get('material_id') for event in progress)
+    assert len({event['material_id'] for event in progress}) == 7
+    for source in files:
+        reading = [event for event in progress if event['path'] == source.name]
+        staged = [event for event in progress if event['path'].endswith('/' + source.name)]
+        assert len(reading) == 2
+        assert {event['material_id'] for event in reading + staged} == {reading[0]['material_id']}
 
 
 @pytest.mark.asyncio

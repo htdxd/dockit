@@ -16,6 +16,7 @@ from skill_toolbox.llm_tools.resume_workflow import REQUEST_MODELS, workflow_too
 from skill_toolbox.material_intake import initial_material_context, prepare_images
 from skill_toolbox.material_models import QAReport
 from skill_toolbox.materials import MaterialService, safe_stem
+from skill_toolbox.material_assets import material_id_for
 from skill_toolbox.models import ConversationMessage, ImageContent, ToolResult
 from skill_toolbox.policy import WorkspacePolicy
 from skill_toolbox.resume_facts import WRITING_STYLES
@@ -110,6 +111,10 @@ class ResumeTask:
             relative = (
                 f"sources/{index}-{safe_stem(source.name) or 'material'}/{source.name}"
             )
+            # The display path changes after image transcription (staged path vs.
+            # original filename), so include the content-derived id in every event.
+            # The UI can then coalesce both phases into one row.
+            material_id = material_id_for(source)
             target = self.workspace / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -121,7 +126,7 @@ class ResumeTask:
                 }
             )
             self.emit(
-                {"type": "material_progress", "path": relative, "phase": "parsing"}
+                {"type": "material_progress", "path": relative, "material_id": material_id, "phase": "parsing"}
             )
             try:
                 await asyncio.to_thread(self.material_service.prepare_material, source)
@@ -130,6 +135,7 @@ class ResumeTask:
                     {
                         "type": "material_progress",
                         "path": relative,
+                        "material_id": material_id,
                         "phase": "failed",
                         "error": getattr(exc, "code", "MATERIAL_FAILED"),
                     }
@@ -137,7 +143,7 @@ class ResumeTask:
                 raise
             finally:
                 self.material_service.terminate_active()
-            self.emit({"type": "material_progress", "path": relative, "phase": "done"})
+            self.emit({"type": "material_progress", "path": relative, "material_id": material_id, "phase": "done"})
         await prepare_images(
             self.material_service,
             self.provider,

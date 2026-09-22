@@ -44,7 +44,7 @@ export interface TaskState {
   debug: DebugEntry[];
   debugLogPath: string;
   /** 材料预处理进度（阶段 3+）：path → parsing/done/failed */
-  materialProgress: Array<{ path: string; phase: string; error?: string }>;
+  materialProgress: Array<{ path: string; phase: string; error?: string; material_id?: string }>;
   /** 任务级质量状态（阶段 4+）：mechanical/visual 分开呈现，不能合并 */
   qa: QAState;
   /** 无 Vision 警告（阶段 7：开始按钮旁提示） */
@@ -60,4 +60,3 @@ export interface QAState {
   used_assets: number;
   skipped_assets: number;
 }
-

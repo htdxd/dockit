@@ -63,9 +63,11 @@ export function reduceTaskEvent(state: TaskState, event: BackendEvent): TaskStat
       const item = {
         path: String(event.path ?? ""),
         phase: String(event.phase ?? ""),
+        ...(event.material_id ? { material_id: String(event.material_id) } : {}),
         ...(event.error ? { error: String(event.error) } : {}),
       };
-      const rest = state.materialProgress.filter((p) => p.path !== item.path);
+      const key = item.material_id || item.path;
+      const rest = state.materialProgress.filter((p) => (p.material_id || p.path) !== key);
       return { ...state, materialProgress: [...rest, item] };
     }
     case "qa_status": {

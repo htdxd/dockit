@@ -44,6 +44,22 @@ describe("reduceTaskEvent", () => {
     expect(done.materialProgress).toEqual([{ path: "sources/a.md", phase: "done" }]);
   });
 
+  it("coalesces staged and original-name progress for one material", () => {
+    const running = { ...initialTaskState, status: "running" as const };
+    const staged = reduceTaskEvent(running, {
+      type: "material_progress", path: "sources/0-photo/photo.jpg", material_id: "abc.jpg", phase: "done",
+    });
+    const original = reduceTaskEvent(staged, {
+      type: "material_progress", path: "photo.jpg", material_id: "abc.jpg", phase: "done",
+    });
+    expect(original.materialProgress).toHaveLength(1);
+    expect(original.materialProgress[0].path).toBe("photo.jpg");
+    const other = reduceTaskEvent(original, {
+      type: "material_progress", path: "photo.jpg", material_id: "different.jpg", phase: "parsing",
+    });
+    expect(other.materialProgress).toHaveLength(2);
+  });
+
   it("tracks material preprocessing failure with stable code", () => {
     const running = { ...initialTaskState, status: "running" as const };
     const failed = reduceTaskEvent(running, {
@@ -79,4 +95,3 @@ describe("reduceTaskEvent", () => {
     expect(emptyQA().visual).toBe("not_run");
   });
 });
-
