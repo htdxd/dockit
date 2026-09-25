@@ -32,6 +32,8 @@ def _norm(s: str) -> str:
     与栏目英文括注属于版式结构，不是内容缺失/多余的信号。
     """
     s = re.sub(r"\s+", "", s)
+    # Wingdings 等符号字体的项目符号：Word 导出为 Unicode（➢），WPS 保留私用区码位 U+F0xx。
+    s = re.sub("[-]", "", s)
     return s.translate(str.maketrans("", "", _BULLET_CHARS))
 
 

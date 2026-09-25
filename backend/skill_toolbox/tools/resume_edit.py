@@ -56,6 +56,16 @@ def _payload_hash(payload: object) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _pdf_creator(pdf: Path) -> str:
+    """记录实际导出应用（Word/WPS/LibreOffice 写入 PDF creator），不按配置猜测。"""
+    if not pdf.is_file():
+        return "unknown"
+    import pymupdf
+
+    with pymupdf.open(pdf) as document:
+        return document.metadata.get("creator") or document.metadata.get("producer") or "unknown"
+
+
 class ResumeEditService:
     """候选版本、幂等提交、验收与预览；动作和构建委托给共享模块。"""
 
@@ -646,7 +656,7 @@ class ResumeEditService:
             "docx_sha256": sha256_file(docx),
             "pdf_sha256": sha256_file(pdf) if pdf.is_file() else None,
             "instance_model": self._instance_model(plan, content),
-            "renderer": "Word COM ExportAsFixedFormat + pdftoppm 120dpi",
+            "renderer": f"{_pdf_creator(pdf)} PDF + pdftoppm 120dpi",
         }
         self.store.save_revision(artifact_id, revision, record)
         # QAReport（Runtime 的机械硬门读这里）：机械结果来自本版真实 QA；

@@ -15,6 +15,9 @@ from skill_toolbox.resume_layout import (
 )
 from skill_toolbox.resume_layout import component_template as ct
 
+W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
+# WPS 导出 PDF 时会栅格化的 w14 文字特效；textFill 等纯着色不在此列。
+RASTER_EFFECTS = {W14 + name for name in ("shadow", "glow", "reflection", "textOutline", "props3d", "scene3d")}
 
 def _body(anchor):
     return next(anchor.iter(emit.WPS + "wsp"))
@@ -299,7 +302,7 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
             records.append({"instance_id": entry["id"], "page": entry_plan.page_index})
     overrides = numbering.parts()
     header = component_header.apply_header(root, template, spec, scenario.get("header") or {}, overrides)
-    fixed_texts = []
+    fixed_texts, decorative_texts = [], []
     for anchor in root.iter(emit.WP + "anchor"):
         if anchor.find(emit.WP + "docPr").get("id") in component_ids:
             continue
@@ -309,9 +312,12 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
             if width <= 0.01 or height <= 0.01:
                 continue
             for paragraph in shape.iter(emit.W + "p"):
-                text = "".join(t.text or "" for t in paragraph.iter(emit.W + "t"))
-                if text.strip():
-                    fixed_texts.append(text)
+                # w14 阴影/发光等特效文字：Word 导出为文字，WPS 导出为位图；QA 允许整体二者之一。
+                for run in paragraph.iter(emit.W + "r"):
+                    decorative = any(child.tag in RASTER_EFFECTS for child in run.iterfind(emit.W + "rPr/*"))
+                    text = "".join(t.text or "" for t in run.iter(emit.W + "t"))
+                    if text.strip():
+                        (decorative_texts if decorative else fixed_texts).append(text)
     components = [{"id": part["measurement_id"], "entry_id": part["instance_id"],
                    "text": part["text"], "page_index": part["page"],
                    "x_pt": part["box"][0], "y_pt": part["box"][1],
@@ -319,4 +325,5 @@ def emit_scenario(scenario: dict, plan: layout.LayoutPlan, out_docx: Path, *, te
                    "measurement_id": part["measurement_id"]} for part in emitted_parts]
     emit.save_document_xml(root, template, out_docx, part_overrides=overrides or None)
     return {"pages": plan.pages, "header": header, "emit_records": records, "boxes": [],
-            "parts": emitted_parts, "components": components, "fixed_texts": fixed_texts}
+            "parts": emitted_parts, "components": components, "fixed_texts": fixed_texts,
+            "decorative_texts": decorative_texts}

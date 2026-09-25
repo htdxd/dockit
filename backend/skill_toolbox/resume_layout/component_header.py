@@ -8,6 +8,7 @@ from pathlib import Path
 from skill_toolbox.resume_layout import emit
 from skill_toolbox.resume_layout.field_style import apply_field_style
 from skill_toolbox.resume_layout.header import _set_label_value, apply_header_components
+from skill_toolbox.word_com import text_overflows
 
 
 def _geometry(anchor) -> dict:
@@ -240,17 +241,17 @@ def _measure_shape(shape) -> dict:
             text_bottom = max(top + count * pitch, last_top + max(font_size, pitch))
             height = max(height, text_bottom - float(shape.Top) + float(frame.MarginBottom))
             lines += count
-    if frame.Overflowing:
+    if text_overflows(shape):
         raise ValueError("HEADER_OVERFLOW: 个人信息文字超出当前页可用高度")
     # Word 的自动行距还包含不可见段尾行框；在真实行位下界上验证最小容纳框。
     capacity = float(shape.Height)
     shape.Height = min(capacity, height)
-    if shape.TextFrame.Overflowing:
+    if text_overflows(shape):
         low, high = float(shape.Height), capacity
         while high - low > 0.5:
             middle = (low + high) / 2
             shape.Height = middle
-            if shape.TextFrame.Overflowing:
+            if text_overflows(shape):
                 low = middle
             else:
                 high = middle

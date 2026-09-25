@@ -3,9 +3,9 @@
 Usage: python render_pages.py <input.docx> <output_dir>
 
 Pipeline: DOCX -> PDF -> PNG.
-- Windows: Word COM (ExportAsFixedFormat) — best fidelity for Word/WPS.
-- Fallback: LibreOffice headless (soffice --convert-to pdf) when Word is
-  unavailable.
+- Windows: Word or WPS COM (ExportAsFixedFormat), same engine as measurement.
+- Fallback: LibreOffice headless (soffice --convert-to pdf) when neither is
+  available.
 - Rasterize with pdftoppm (Poppler) at 120 DPI.
 
 Output: JSON {"pdf": ..., "images": [...page-N.png...], "page_images_created": N}
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -56,27 +57,35 @@ def _ps_encoded(script: str) -> str:
 
 
 def _render_with_word(source: Path, pdf_path: Path) -> None:
+    # 与测量同一选择规则：测量用 WPS 时导出也用 WPS，避免跨应用错配。
+    from skill_toolbox.word_com import ENGINES, select_engine
+    progid = ENGINES[select_engine()[0]][0]
     script = (
         "$ErrorActionPreference='Stop';"
-        "$word=New-Object -ComObject Word.Application;"
+        "$word=$null;$doc=$null;"
+        "try {"
+        f"$word=New-Object -ComObject {progid};"
         "$word.Visible=$false;$word.DisplayAlerts=0;"
         f"$doc=$word.Documents.Open({_ps_str(source)},$false,$true);"
         # 先删旧 pdf，避免 ExportAsFixedFormat 弹"是否覆盖"对话框阻塞无人值守渲染
         f"Remove-Item -Force {_ps_str(pdf_path)} -ErrorAction SilentlyContinue;"
         f"$doc.ExportAsFixedFormat({_ps_str(pdf_path)},17);"
-        "$doc.Close($false);$word.Quit()"
+        "} finally {"
+        "try {if ($null -ne $doc) {$doc.Close($false)}} "
+        "finally {if ($null -ne $word) {$word.Quit()}}"
+        "}"
     )
     rc, stdout, stderr = _run_capture(
         ["powershell", "-NoProfile", "-EncodedCommand", _ps_encoded(script)], 180
     )
     if rc or not pdf_path.is_file():
-        raise RuntimeError(stderr[-2000:] or stdout[-2000:] or "Word rendering failed")
+        raise RuntimeError(stderr[-2000:] or stdout[-2000:] or "Word/WPS rendering failed")
 
 
 def _render_with_soffice(source: Path, pdf_path: Path) -> None:
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
-        raise RuntimeError("Neither Word COM nor LibreOffice (soffice) is available")
+        raise RuntimeError("Neither Word/WPS COM nor LibreOffice (soffice) is available")
     rc, stdout, stderr = _run_capture(
         [
             soffice,
@@ -106,11 +115,17 @@ def main() -> None:
 
     try:
         _render_with_word(source, pdf_path)
-    except (RuntimeError, OSError):
+    except (RuntimeError, OSError) as office_error:
+        from skill_toolbox.word_com import ENGINE_ENV
+
+        # 显式选定的引擎不能静默换成另一种排版器，包括无效配置。
+        if os.environ.get(ENGINE_ENV, '').strip():
+            print(json.dumps({"error": str(office_error)}, ensure_ascii=False))
+            sys.exit(1)
         try:
             _render_with_soffice(source, pdf_path)
-        except RuntimeError as exc:
-            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        except (RuntimeError, OSError) as exc:
+            print(json.dumps({"error": f"Word/WPS: {office_error}; LibreOffice: {exc}"}, ensure_ascii=False))
             sys.exit(1)
 
     pdftoppm = shutil.which("pdftoppm")

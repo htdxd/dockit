@@ -77,3 +77,26 @@ def test_component_outside_page_is_rejected(tmp_path):
     args[3]['components'][0]['x_pt'] = -1
     report = check_components(*args)
     assert any(i['check'] == 'within_page' for i in report['issues'])
+
+
+@pytest.mark.parametrize('extra, passed', [
+    ('Resume', True),    # Word：特效文字作为文字导出
+    ('', True),          # WPS：特效文字整体转成位图
+    ('Res', False),      # 只导出一部分，不能当作位图化而放过
+])
+def test_decorative_text_is_either_fully_text_or_fully_raster(tmp_path, extra, passed):
+    args = sample(tmp_path)
+    if extra:
+        with fitz.open(args[0]) as doc:
+            doc[0].insert_text((300, 400), extra, fontsize=10)
+            doc.saveIncr()
+    args[3]['decorative_texts'] = ['Resume']
+    report = check_components(*args)
+    assert report['passed'] is passed
+    assert passed or any(i['check'] == 'no_extra_rendered_content' for i in report['issues'])
+
+
+def test_symbol_font_bullets_are_ignored_like_unicode_bullets():
+    from skill_toolbox.resume_layout.qa import _norm
+    # WPS 导出 Wingdings 项目符号为私用区码位，Word 导出为 ➢/●。
+    assert _norm('完成设计') == _norm('➢完成●设计') == '完成设计'

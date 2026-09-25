@@ -1,4 +1,4 @@
-"""隔离进程执行真实 Word 检查，不调用 LLM 或 MinerU 云端。"""
+"""隔离进程执行真实 Word/WPS 检查，不调用 LLM 或 MinerU 云端。"""
 import json
 import os
 import platform
@@ -12,13 +12,13 @@ from pathlib import Path
 
 
 def probe(stage: str):
-    from skill_toolbox.word_com import check_registered_word, close_word, start_word
+    from skill_toolbox.word_com import ENGINES, close_word, select_engine, start_word
     if stage == 'identity':
-        registration = check_registered_word()
+        engine, registration = select_engine()
         word = start_word()
         try:
-            return {'registration':registration, 'name':str(word.Name), 'version':str(word.Version),
-                    'application_path':str(word.Path)}
+            return {'engine':engine, 'registration':registration, 'name':ENGINES[engine][2],
+                    'version':str(word.Version), 'application_path':str(word.Path)}
         finally:
             close_word(word)
     from skill_toolbox.resume_layout import pipeline

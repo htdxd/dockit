@@ -320,7 +320,7 @@ class ResumeTask:
             if code == "WORD_UNAVAILABLE":
                 return TaskResult(
                     "failed",
-                    error=f"[WORD_UNAVAILABLE] {result.metadata.get('message', 'Microsoft Word 不可用')}",
+                    error=f"[WORD_UNAVAILABLE] {result.metadata.get('message', 'Microsoft Word 或 WPS 文字不可用')}",
                 )
             if code == "MEASURE_FAILED":
                 self.measurement_failures += 1

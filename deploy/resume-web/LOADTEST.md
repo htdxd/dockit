@@ -4,9 +4,9 @@
 
 `start-web.bat` 是正式邀请码版；`start-benchmark.bat` 是仅本机压测版。两者使用同一套桌面风格页面和生成逻辑。压测版自动建立独立浏览器会话，不需要发码、不限制次数、允许一个会话提交多个任务。文件大小和单任务超时限制仍保留；并发由参数指定，不会无限拉起 Word。
 
-先配置 `server.json` 的模型和 MinerU Key，安装并激活 Word、字体，运行 `start-web.bat --check` 和 `--probe`。不要在公网反向代理中开放压测入口。不要把压测配置覆盖正式站正在使用的配置。
+先配置 `server.json` 的模型和 MinerU Key，安装并激活 Word 或 WPS 文字及所需字体，运行 `start-web.bat --check` 和 `--probe`。默认优先 Word，未安装 Word 时使用 WPS。不要在公网反向代理中开放压测入口。不要把压测配置覆盖正式站正在使用的配置。
 
-也可以先不填密钥执行 `start-web.bat --check`：它会实际验证两套模板的测量、PDF 导出及 PNG 渲染，报告写入 `environment-check.json`。**仅装 WPS 不符合要求，兼容接口报告的 COM 12.0 不能证明 Microsoft Word 已安装。** 请先通过环境检查再运行生成压测，避免把环境错误误当作并发瓶颈。
+也可以先不填密钥执行 `start-web.bat --check`：它会实际验证两套模板的测量、PDF 导出及 PNG 渲染，报告写入 `environment-check.json`，其中 identity 写明实际引擎。WPS 使用独立的 `KWPS.Application` 注册识别，不按它报告的 Word 兼容版本号判断。请先通过环境检查再运行生成压测，避免把环境错误误当作并发瓶颈。
 
 手动试用不限次数版本（另选端口，避免与正式站冲突）：
 
@@ -37,6 +37,20 @@ stress-test.bat --mode http --levels 1,8,16,32 --rounds 100 --execute
 ```bat
 stress-test.bat --mode generate --levels 1,2,4 --rounds 2 --execute
 ```
+
+只验证一次真实 LLM + WPS 工作流，可在 PowerShell 中临时指定引擎（不修改默认选择规则）：
+
+```powershell
+$previousEngine = $env:DOCKIT_OFFICE_ENGINE
+try {
+    $env:DOCKIT_OFFICE_ENGINE = 'wps'
+    .\stress-test.bat --mode generate --levels 1 --rounds 1 --template t109 --format both --execute
+} finally {
+    $env:DOCKIT_OFFICE_ENGINE = $previousEngine
+}
+```
+
+当前资源报告中的 `word_count` 和 `peak_word_processes` 只统计 WINWORD.EXE，不代表 WPS 进程数；WPS 是否实际参与导出应核对产物记录的 `renderer` 和 PDF 元数据。
 
 上例共 14 份简历，t001/t109 交替，输出 DOCX+PDF，使用合成经历；自动对补充问题选择无更多信息。它测的是生成服务能力，不包含真人回答延迟。程序下载成品、检查文件可解析及每任务独有姓名标识，发现内容串单也判失败。
 

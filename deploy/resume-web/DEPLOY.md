@@ -4,7 +4,7 @@
 
 本包提供新建任务、进度/报错、产物导出三个页面。没有供应商设置页、其他文档功能或付款接口。支持上传材料与手动填写同时提交、在进度页补充信息、DOCX/PDF 下载和自愿反馈。只开放已组件化的 t001、t109。
 
-**先买短期试用服务器，不建议未经验证直接购买长期套餐。** 当前两个模板的文字测量与渲染都依赖 Microsoft Word COM，无法直接运行在 Linux 或 Linux Docker 中。网页和 API 跨平台，但完整生成路径仍需 Windows。
+**先买短期试用服务器，不建议未经验证直接购买长期套餐。** 当前两个模板的文字测量与渲染都依赖 Microsoft Word 或 WPS 文字的 COM 接口，无法直接运行在 Linux 或 Linux Docker 中。网页和 API 跨平台，但完整生成路径仍需 Windows。
 
 建议试用机：Windows Server 2025 Desktop Experience，4 vCPU、16 GB RAM、100 GB SSD、5–10 Mbps 公网带宽，无需 GPU。LLM 和 MinerU 均调用云端 API。Windows/Office 费用需单独核实。资源建议是工程估算，**不是该云机上的压力测试结果**。
 
@@ -50,7 +50,7 @@ start-web.bat --invite 10 --quota 5
 start-web.bat
 ```
 
-`--check` 不需要填写密钥或先创建 server.json，也不调用付费 API。它检查 COM 实际注册程序（排除 WPS 兼容接口）、Word 版本与程序目录，再对 t001/t109 实际测量正文及个人信息、导出 PDF、校验替换文字并生成 PNG。完整结果保存为配置文件所在目录的 `environment-check.json`；失败时请提供此报告。Word 2007（12.0）不支持当前文本框结构，建议采用已验证的 Word 16.x 系列。版本号本身不代表环境可用。
+`--check` 不需要填写密钥或先创建 server.json，也不调用付费 API。它检查 COM 实际注册程序（Word 优先，未安装时用 WPS 文字；`DOCKIT_OFFICE_ENGINE=word|wps` 可强制指定），Word 另检查版本与程序目录，再对 t001/t109 实际测量正文及个人信息、导出 PDF、校验替换文字并生成 PNG。报告的 identity 项写明实际使用的引擎。完整结果保存为配置文件所在目录的 `environment-check.json`；失败时请提供此报告。Word 2007（12.0）不支持当前文本框结构，建议采用已验证的 Word 16.x 系列。版本号本身不代表环境可用。WPS 服务端自动化的稳定性与授权同样需要单独确认。
 
 `--probe` 则调用真实模型验证工具/视觉/强制工具能力，并把报告写入服务端配置。工具或视觉未通过时不要开放试用。探测可能产生少量 API 费用，未验证的强制工具能力保持不启用。MinerU Token 是否有效仍需一次真实文档解析验证。环境检查不证明云端凭据有效，也不替代观感验收。
 

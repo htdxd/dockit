@@ -70,7 +70,7 @@ def main():
             raise SystemExit('工具或视觉能力未验证通过，请换用可靠模型后再开放网站。')
         return
     if sys.platform != 'win32':
-        raise SystemExit('当前简历渲染需要 Windows + Microsoft Word；此版本不支持 Linux 渲染。')
+        raise SystemExit('当前简历渲染需要 Windows + Microsoft Word 或 WPS 文字；此版本不支持 Linux 渲染。')
     from skill_toolbox.tools.mineru import resolve_mineru_cli
     resolve_mineru_cli()
     if not shutil.which('pdftoppm'):

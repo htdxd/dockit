@@ -1,4 +1,4 @@
-"""一个 Word 测试流程覆盖六模板：生成、修改、照片比例和真实分页。"""
+"""一个 Word/WPS 测试流程覆盖六模板：生成、修改、照片比例和真实分页；DOCKIT_OFFICE_ENGINE 选择引擎。"""
 import hashlib
 import json
 
@@ -13,6 +13,32 @@ from skill_toolbox.tools.resume_edit import ResumeEditService
 from skill_toolbox.tools.resume_workflow import ResumeWorkflow
 
 
+PHOTO_SIZE, PHOTO_RGB = (300, 200), (0x35, 0x72, 0x8f)
+
+
+def photo_aspect(pdf, page):
+    """照片在页面上的宽高比。Word 原样嵌入照片位图；WPS 可能把相框特效与照片合成一张位图，
+    此时按照片纯色像素区域测量。标题特效等其他位图不参与。"""
+    import io
+    infos = [i for i in page.get_image_info(xrefs=True) if not i['has-mask']]
+    direct = [i for i in infos if (i['width'], i['height']) == PHOTO_SIZE]
+    if direct:
+        assert len(direct) == 1
+        x0, y0, x1, y1 = direct[0]['bbox']
+        return (x1-x0)/(y1-y0)
+    boxes = []
+    for info in infos:
+        with Image.open(io.BytesIO(pdf.extract_image(info['xref'])['image'])) as raw:
+            image = raw.convert('RGB')
+        mask = image.point(lambda v: 255).convert('L')
+        mask.putdata([255 if sum(abs(a-b) for a, b in zip(p, PHOTO_RGB)) < 30 else 0 for p in image.getdata()])
+        if (box := mask.getbbox()) and (box[2]-box[0]) * (box[3]-box[1]) > 1000:
+            boxes.append(box)
+    assert len(boxes) == 1, f'照片应只出现一次，实际 {len(boxes)}'
+    x0, y0, x1, y1 = boxes[0]
+    return (x1-x0)/(y1-y0)
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize('template_id', TEMPLATE_IDS)
 def test_template_generation_edit_and_pagination(tmp_path, template_id):
@@ -20,7 +46,7 @@ def test_template_generation_edit_and_pagination(tmp_path, template_id):
     original = TEMPLATES / template_id / 'template.docx'
     digest = hashlib.sha256(original.read_bytes()).hexdigest()
     photo = tmp_path / 'portrait.png'
-    Image.new('RGB', (300, 200), '#35728f').save(photo)
+    Image.new('RGB', PHOTO_SIZE, '#35728f').save(photo)
     materials = MaterialService(tmp_path)
     ir = materials.prepare_material(photo)
     engine = ResumeEditService(tmp_path, TEMPLATES, {'vision': True}, template_id=template_id)
@@ -44,11 +70,7 @@ def test_template_generation_edit_and_pagination(tmp_path, template_id):
     first_record = engine.store.load_revision(first.artifact_id, first.revision)
     assert first_record['mechanical']['passed'] and first_record['page_count'] == 1
     with pymupdf.open(tmp_path / first_record['pdf']) as pdf:
-        # Word 可能把照片阴影/标题效果也导出为带 mask 的图；原照片是不透明位图。
-        images = [image for image in pdf[0].get_image_info() if not image['has-mask']]
-        assert len(images) == 1
-        x0, y0, x1, y1 = images[0]['bbox']
-        assert (x1-x0)/(y1-y0) == pytest.approx(1.5, abs=.01)
+        assert photo_aspect(pdf, pdf[0]) == pytest.approx(1.5, abs=.01)
     changes = [{'op': 'insert_entry', 'section_id': 'projects', 'entry': {
         'id': f'additional-{n}', 'organization': f'扩展项目{n}', 'role': '独立负责',
         'text': [f'第{k}项：完成需求分析、实现和回归测试。' for k in range(8)], 'source_ids': ['fixture']}}

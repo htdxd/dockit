@@ -1,5 +1,10 @@
 """在隔离进程中测量已经写入完整样式的正文组件。"""
-from skill_toolbox.word_com import close_document, close_word, start_word
+from skill_toolbox.word_com import (
+    close_document,
+    close_word,
+    start_word,
+    text_overflows,
+)
 
 
 def measure_documents(hosts: list[dict]) -> list[dict]:
@@ -12,7 +17,7 @@ def measure_documents(hosts: list[dict]) -> list[dict]:
             try:
                 doc.Repaginate()
                 shape = doc.Shapes("ResumeMeasureBody")
-                if shape.TextFrame.Overflowing:
+                if text_overflows(shape):
                     raise ValueError(f"LAYOUT_OVERFLOW: 条目 {host['entry_id']} 的 {host['part']} 单框超过一页")
                 paras = shape.TextFrame.TextRange.Paragraphs
                 tops, counts = [], []

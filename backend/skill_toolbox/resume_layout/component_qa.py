@@ -74,6 +74,10 @@ def check_components(pdf_path, scenario, plan, emit_info, measurements, header_c
         full_text = ''.join(page.get_text() for page in doc)
         expected_text = ''.join(c['text'] for c in components) + ''.join(emit_info['fixed_texts'])
         actual, expected = Counter(qa._norm(full_text)), Counter(qa._norm(expected_text))
+        decorative = Counter(qa._norm(''.join(emit_info.get('decorative_texts', []))))
+        # 特效文字要么整体作为文字导出（Word），要么整体转成位图（WPS），不允许部分缺失。
+        if decorative and actual - expected == decorative:
+            actual -= decorative
         if actual != expected:
             issues.append(qa.QAIssue('no_extra_rendered_content', 'error',
                 f"全文内容不守恒：缺失 {dict(expected-actual)}；多余 {dict(actual-expected)}"))

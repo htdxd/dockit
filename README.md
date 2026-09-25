@@ -12,12 +12,12 @@
 - 通过问答补齐项目/实习的关键事实；GitHub、作品集、Stars/Forks 等由用户按需提供，不联网抓取或编造。
 - 自定义个人字段、栏目与项目指标；支持字号、整体缩放、链接，以及字段/正文短语的加粗、主题色和浅底纹。
 - 项目首行按“名称 · 用户名/项目名 · Stars/Forks · 项目性质”紧凑排布，技术栈独立下一行；项目日期保留数据但不显示，教育/工作日期正常显示。
-- Word 实际测量文本高度与换行，布局后检查边界、重叠、文字完整性，再向视觉模型返回页面进行复核。
+- Word/WPS 实际测量文本高度与换行，布局后检查边界、重叠、文字完整性，再向视觉模型返回页面进行复核。
 - 桌面版与简历专用网页版。PPT 制作、通用 Word 制作、独立 PDF→DOCX 转换已退出产品。
 
 ## 环境要求
 
-高质量生成路径需要 **Windows + Microsoft Word + Poppler**。本机验证使用 Word 16.x；只有 WPS 的环境不支持当前测量引擎。生成的 DOCX 可由兼容软件打开，但不同软件显示可能有差异。
+高质量生成路径需要 **Windows + Microsoft Word 或 WPS 文字 + Poppler**。两者都安装时优先使用 Word；设置环境变量 `DOCKIT_OFFICE_ENGINE=word` 或 `wps` 可强制指定。测量与 PDF 导出始终使用同一个程序，生成记录的 `renderer` 字段写明实际导出程序。本机验证使用 Word 16.x（Office 2021）与 WPS 12.1；两者对同一段落的换行绝大多数一致，个别段落可能相差一行，因此同一份简历在两个引擎下的分页不保证完全相同。生成的 DOCX 可由兼容软件打开，但不同软件显示可能有差异。
 
 需要配置支持工具调用的 LLM。图片内容理解与视觉验收需要视觉能力；未启用视觉时会明确标记未识别图片与未执行的视觉检查。PDF/DOCX 主解析使用 MinerU 云服务，需要 CLI 与 Token。
 
@@ -39,13 +39,13 @@ npm test
 npm run build
 ```
 
-Word 端到端测试需要本机安装环境；纯逻辑测试不会调用付费模型。真实模型效果仍需单独验证。
+Word/WPS 端到端测试需要本机安装环境，可用 `DOCKIT_OFFICE_ENGINE` 分别运行；纯逻辑测试不会调用付费模型。真实模型效果仍需单独验证。
 
 ## 部署与打包
 
 - 桌面安装包：先 `uv run scripts/release_sources.py`，再 `npm run package`。
 - Windows 网页版：`uv run --extra web scripts/package_web.py`；按 [部署说明](deploy/resume-web/DEPLOY.md) 配置服务器密钥。
-- 环境检查：发行目录运行 `start-web.bat --check`，验证 Word 身份、代表模板（t001/t109）的实际测量、PDF 导出和页面图片。
+- 环境检查：发行目录运行 `start-web.bat --check`，验证 Word/WPS 身份、代表模板（t001/t109）的实际测量、PDF 导出和页面图片。
 - [压测说明](deploy/resume-web/LOADTEST.md)：匿名无限制模式仅用于本机小范围压测，不用于公开访问。
 
 不要把模型/MinerU 密钥放入前端或公开安装包。Microsoft Office 无人值守服务的可靠性与许可需要独立评估。
